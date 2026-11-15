@@ -12,25 +12,43 @@ This repository only hosts installers; it contains no source code.
 
 ## 繁體中文
 
-「我是導演」是 [iamdirector.app](https://iamdirector.app) 的 Mac 桌面版：寫一段故事，拍成一支影片。
+「我是導演」是 [iamdirector.app](https://iamdirector.app) 的桌面版：寫一段故事，拍成一支影片。需要網路連線。
 
-### 系統需求
-- Apple 晶片的 Mac（M1 以上）。目前沒有 Intel 版。
-- macOS 12 Monterey 以上。
-- 需要網路連線。
+### 下載哪一個
 
-### 下載與安裝
-1. 到 [最新版](https://github.com/tkappletoken/iamdirector-releases/releases/latest) 下載 `iamdirector-<版本>-mac-arm64.dmg`。
-2. 打開 dmg，把「我是導演」拖進「應用程式」資料夾。
-3. 第一次開啟時，macOS 會提醒這是從網路下載的 App，按「打開」即可。
-   App 已用 Apple Developer ID（NT IT co., ltd.）簽章並經 Apple 公證。
+| 電腦 | 檔案 |
+|---|---|
+| Mac（Apple 晶片，M1 以上） | `iamdirector-<版本>-mac-arm64.dmg` |
+| Mac（Intel） | `iamdirector-<版本>-mac-x64.dmg` |
+| Windows（一般電腦） | `iamdirector-<版本>-win-x64.exe` |
+| Windows（ARM，例如 Snapdragon） | `iamdirector-<版本>-win-arm64.exe` |
+| Linux x64 | `iamdirector-<版本>-linux-x86_64.AppImage` 或 `…-linux-amd64.deb` |
+| Linux ARM | `iamdirector-<版本>-linux-arm64.AppImage` 或 `…-linux-arm64.deb` |
+
+不知道自己的 Mac 是哪一種：左上角  →「關於這台 Mac」，「晶片」寫 Apple M 開頭就選 arm64，寫 Intel 就選 x64。
+
+### Mac
+1. 打開 dmg，把「我是導演」拖進「應用程式」。
+2. 第一次開啟時 macOS 會提醒這是從網路下載的 App，按「打開」。App 已用 Apple Developer ID（NT IT co., ltd.）簽章並經 Apple 公證。
+3. 需要 macOS 12 以上。
+
+### Windows
+⚠ **Windows 版目前沒有程式碼簽章**。第一次執行安裝檔時會出現「**Windows 已保護您的電腦**」，這不是病毒警告：
+1. 按「**其他資訊**」。
+2. 確認應用程式名稱是 `iamdirector-<版本>-win-….exe`，再按「**仍要執行**」。
+3. 依照安裝程式完成安裝。
+
+需要 Windows 10 或 11（64 位元）。
+
+### Linux
+- **AppImage**：下載後在終端機執行 `chmod +x iamdirector-*.AppImage`，再執行它。部分發行版需要先安裝 `libfuse2`。
+- **deb**（Ubuntu、Debian）：`sudo apt install ./iamdirector-*.deb`
+- 建議 Ubuntu 22.04 以上或同等的發行版。
 
 ### 確認檔案完整
-每一版的發佈說明都附有 SHA-256。可以在「終端機」執行下面這行，比對結果是否相同：
-
-```sh
-shasum -a 256 ~/Downloads/iamdirector-*-mac-arm64.dmg
-```
+每一版的發佈說明都列出所有檔案的 SHA-256。
+- Mac／Linux：`shasum -a 256 <檔案>`（Linux 也可以用 `sha256sum <檔案>`）
+- Windows（PowerShell）：`Get-FileHash <檔案> -Algorithm SHA256`
 
 ### 更新
 目前請到這裡下載新版，覆蓋安裝即可，登入狀態會保留。
@@ -39,25 +57,43 @@ shasum -a 256 ~/Downloads/iamdirector-*-mac-arm64.dmg
 
 ## English
 
-iamdirector is the Mac desktop app for [iamdirector.app](https://iamdirector.app): write a story, shoot it as a film.
+iamdirector is the desktop app for [iamdirector.app](https://iamdirector.app): write a story, shoot it as a film. An internet connection is required.
 
-### Requirements
-- A Mac with Apple silicon (M1 or later). There is no Intel build yet.
-- macOS 12 Monterey or later.
-- An internet connection.
+### Which file
 
-### Download and install
-1. Download `iamdirector-<version>-mac-arm64.dmg` from the [latest release](https://github.com/tkappletoken/iamdirector-releases/releases/latest).
-2. Open the dmg and drag “我是導演” (iamdirector) into the Applications folder.
-3. On first launch macOS will note that the app was downloaded from the internet. Click **Open**.
-   The app is signed with an Apple Developer ID (NT IT co., ltd.) and notarized by Apple.
+| Computer | File |
+|---|---|
+| Mac (Apple silicon, M1 or later) | `iamdirector-<version>-mac-arm64.dmg` |
+| Mac (Intel) | `iamdirector-<version>-mac-x64.dmg` |
+| Windows (most PCs) | `iamdirector-<version>-win-x64.exe` |
+| Windows (ARM, e.g. Snapdragon) | `iamdirector-<version>-win-arm64.exe` |
+| Linux x64 | `iamdirector-<version>-linux-x86_64.AppImage` or `…-linux-amd64.deb` |
+| Linux ARM | `iamdirector-<version>-linux-arm64.AppImage` or `…-linux-arm64.deb` |
+
+Not sure which Mac you have?  menu → **About This Mac**: if “Chip” starts with Apple M, pick arm64; if it says Intel, pick x64.
+
+### Mac
+1. Open the dmg and drag “我是導演” (iamdirector) into Applications.
+2. On first launch, macOS notes the app was downloaded from the internet. Click **Open**. The app is signed with an Apple Developer ID (NT IT co., ltd.) and notarized by Apple.
+3. Requires macOS 12 or later.
+
+### Windows
+⚠ **The Windows build is not code-signed yet.** When you first run the installer, Windows shows “**Windows protected your PC**”. This is not a virus warning:
+1. Click **More info**.
+2. Check that the app name is `iamdirector-<version>-win-….exe`, then click **Run anyway**.
+3. Follow the installer.
+
+Requires Windows 10 or 11 (64-bit).
+
+### Linux
+- **AppImage**: run `chmod +x iamdirector-*.AppImage`, then run the file. Some distributions need `libfuse2` installed first.
+- **deb** (Ubuntu, Debian): `sudo apt install ./iamdirector-*.deb`
+- Ubuntu 22.04 or later (or an equivalent distribution) is recommended.
 
 ### Verify the download
-Each release lists the SHA-256 of the dmg. Compare it with the output of:
-
-```sh
-shasum -a 256 ~/Downloads/iamdirector-*-mac-arm64.dmg
-```
+Each release lists the SHA-256 of every file.
+- Mac / Linux: `shasum -a 256 <file>` (or `sha256sum <file>` on Linux)
+- Windows (PowerShell): `Get-FileHash <file> -Algorithm SHA256`
 
 ### Updating
 For now, download the new version here and install it over the old one. You stay signed in.
@@ -66,25 +102,43 @@ For now, download the new version here and install it over the old one. You stay
 
 ## 日本語
 
-「我是導演（iamdirector）」は [iamdirector.app](https://iamdirector.app) の Mac デスクトップ版です。ストーリーを書いて、一本の映像に。
+「我是導演（iamdirector）」は [iamdirector.app](https://iamdirector.app) のデスクトップ版です。ストーリーを書いて、一本の映像に。インターネット接続が必要です。
 
-### 動作環境
-- Apple シリコン搭載の Mac（M1 以降）。Intel 版はまだありません。
-- macOS 12 Monterey 以降。
-- インターネット接続が必要です。
+### どれをダウンロードするか
 
-### ダウンロードとインストール
-1. [最新リリース](https://github.com/tkappletoken/iamdirector-releases/releases/latest) から `iamdirector-<バージョン>-mac-arm64.dmg` をダウンロードします。
-2. dmg を開き、「我是導演」を「アプリケーション」フォルダにドラッグします。
-3. 初回起動時、インターネットからダウンロードしたアプリである旨が表示されたら「開く」をクリックします。
-   本アプリは Apple Developer ID（NT IT co., ltd.）で署名され、Apple の公証を受けています。
+| パソコン | ファイル |
+|---|---|
+| Mac（Apple シリコン、M1 以降） | `iamdirector-<バージョン>-mac-arm64.dmg` |
+| Mac（Intel） | `iamdirector-<バージョン>-mac-x64.dmg` |
+| Windows（一般的な PC） | `iamdirector-<バージョン>-win-x64.exe` |
+| Windows（ARM、Snapdragon など） | `iamdirector-<バージョン>-win-arm64.exe` |
+| Linux x64 | `iamdirector-<バージョン>-linux-x86_64.AppImage` または `…-linux-amd64.deb` |
+| Linux ARM | `iamdirector-<バージョン>-linux-arm64.AppImage` または `…-linux-arm64.deb` |
+
+Mac の種類がわからない場合：  メニュー →「この Mac について」で「チップ」が Apple M で始まれば arm64、Intel なら x64 を選んでください。
+
+### Mac
+1. dmg を開き、「我是導演」を「アプリケーション」フォルダにドラッグします。
+2. 初回起動時、インターネットからダウンロードしたアプリである旨が表示されたら「開く」をクリックします。本アプリは Apple Developer ID（NT IT co., ltd.）で署名され、Apple の公証を受けています。
+3. macOS 12 以降が必要です。
+
+### Windows
+⚠ **Windows 版は現在コード署名されていません。** インストーラーを初めて実行すると「**Windows によって PC が保護されました**」と表示されます。ウイルスの警告ではありません。
+1. 「**詳細情報**」をクリックします。
+2. アプリ名が `iamdirector-<バージョン>-win-….exe` であることを確認し、「**実行**」をクリックします。
+3. インストーラーの指示に従ってインストールします。
+
+Windows 10 または 11（64 ビット）が必要です。
+
+### Linux
+- **AppImage**：`chmod +x iamdirector-*.AppImage` を実行してから、ファイルを実行します。ディストリビューションによっては先に `libfuse2` のインストールが必要です。
+- **deb**（Ubuntu・Debian）：`sudo apt install ./iamdirector-*.deb`
+- Ubuntu 22.04 以降（または同等のディストリビューション）を推奨します。
 
 ### ファイルの確認
-各リリースには dmg の SHA-256 を記載しています。「ターミナル」で次を実行し、一致するか確認してください。
-
-```sh
-shasum -a 256 ~/Downloads/iamdirector-*-mac-arm64.dmg
-```
+各リリースにすべてのファイルの SHA-256 を記載しています。
+- Mac／Linux：`shasum -a 256 <ファイル>`（Linux では `sha256sum <ファイル>` も可）
+- Windows（PowerShell）：`Get-FileHash <ファイル> -Algorithm SHA256`
 
 ### アップデート
 現在は、ここから新しいバージョンをダウンロードして上書きインストールしてください。ログイン状態は保持されます。
