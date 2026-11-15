@@ -50,8 +50,10 @@ This repository only hosts installers; it contains no source code.
 - Mac／Linux：`shasum -a 256 <檔案>`（Linux 也可以用 `sha256sum <檔案>`）
 - Windows（PowerShell）：`Get-FileHash <檔案> -Algorithm SHA256`
 
-### 更新
-目前請到這裡下載新版，覆蓋安裝即可，登入狀態會保留。
+### 自動更新
+- **0.1.5 起會自動更新**：app 會自動檢查新版本。小改版在背景下載，完成後詢問是否重新啟動；較大的改版會先詢問是否下載。可在「說明」選單關閉「結束時自動安裝更新」。
+- **0.1.4 以前的版本**沒有自動更新，請到這裡手動下載安裝一次，之後就會自動更新。覆蓋安裝即可，登入狀態會保留。
+- **Linux deb 版**不會自動更新，請改用 AppImage。
 
 ---
 
@@ -95,8 +97,10 @@ Each release lists the SHA-256 of every file.
 - Mac / Linux: `shasum -a 256 <file>` (or `sha256sum <file>` on Linux)
 - Windows (PowerShell): `Get-FileHash <file> -Algorithm SHA256`
 
-### Updating
-For now, download the new version here and install it over the old one. You stay signed in.
+### Automatic updates
+- **From 0.1.5 on, the app updates itself.** It checks for new versions automatically. Minor updates download in the background and you are asked before restarting; larger updates ask before downloading. To turn this off, uncheck “結束時自動安裝更新” (install updates when quitting) in the “說明” (Help) menu.
+- **Versions 0.1.4 and earlier** cannot update themselves. Download and install a new version here once; later versions arrive automatically. Install over the old one; you stay signed in.
+- **The Linux deb package** does not update automatically. Use the AppImage instead.
 
 ---
 
@@ -140,8 +144,10 @@ Windows 10 または 11（64 ビット）が必要です。
 - Mac／Linux：`shasum -a 256 <ファイル>`（Linux では `sha256sum <ファイル>` も可）
 - Windows（PowerShell）：`Get-FileHash <ファイル> -Algorithm SHA256`
 
-### アップデート
-現在は、ここから新しいバージョンをダウンロードして上書きインストールしてください。ログイン状態は保持されます。
+### 自動アップデート
+- **0.1.5 以降は自動でアップデートされます。** 新しいバージョンを自動で確認し、小さな更新はバックグラウンドでダウンロードして再起動の前に確認します。大きな更新はダウンロードの前に確認します。「說明」（ヘルプ）メニューの「結束時自動安裝更新」（終了時にアップデートをインストール）でオフにできます。
+- **0.1.4 以前のバージョン**は自動アップデートできません。ここから一度手動でダウンロードしてインストールしてください。以降は自動で更新されます。上書きインストールでログイン状態は保持されます。
+- **Linux の deb 版**は自動アップデートされません。AppImage をご利用ください。
 
 ---
 
