@@ -154,4 +154,4 @@ Windows 10 または 11（64 ビット）が必要です。
 
 ---
 
-© NT Technology. All rights reserved.
+© The iamdirector Authors. Source code licensed under Apache-2.0; see LICENSE.
