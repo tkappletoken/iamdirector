@@ -11,7 +11,7 @@ function updateUnavailableText(version) {
   };
 }
 
-function buildTemplate({ isMac, dev, version, askEveryDownload, downloadDir, updateConfigured, autoInstallOnQuit, mode, actions }) {
+function buildTemplate({ isMac, dev, version, askEveryDownload, downloadDir, updateConfigured, autoInstallOnQuit, actions }) {
   const a = actions;
   return [
     ...(isMac ? [{
@@ -32,8 +32,7 @@ function buildTemplate({ isMac, dev, version, askEveryDownload, downloadDir, upd
       label: '檔案',
       submenu: [
         { label: '回到工作台', accelerator: 'CmdOrCtrl+Shift+H', click: a.goHome },
-        ...(a.switchMode ? [{ label: mode === 'local' ? '登入 iamdirector 帳號（雲端）…' : '改用本機模式（不登入）…',
-          click: a.switchMode }] : []),
+        ...(a.openKey ? [{ label: 'AppleToken 金鑰…', click: a.openKey }] : []),
         { type: 'separator' },
         { label: '設定成片下載資料夾…', click: a.chooseDownloadDir },
         {

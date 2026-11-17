@@ -477,8 +477,25 @@ ipcMain.handle('desktop:cloud-status', async (e) => {
   if (!fromOwnPage(e) || MODE !== 'local') return { linked: false };
   try {
     const res = await cloudFetch('/api/cloud/works');
-    return { linked: res.status === 200, unavailable: res.status === 503, status: res.status, host: new URL(CLOUD_URL).host };
+    const email = res.status === 200 ? String((await res.json().catch(() => ({}))).email || '').slice(0, 200) : '';
+    return { linked: res.status === 200, email, unavailable: res.status === 503, status: res.status, host: new URL(CLOUD_URL).host };
   } catch (_) { return { linked: false, offline: true, host: new URL(CLOUD_URL).host }; }
+});
+
+ipcMain.handle('desktop:cloud-logout', async (e) => {
+  if (!fromOwnPage(e) || MODE !== 'local') return { ok: false };
+  try { await cloudFetch('/api/logout', { method: 'POST' }); } catch (_) { }
+  const jar = session.fromPartition(PARTITION).cookies;
+  for (const c of await jar.get({ url: CLOUD_URL })) {
+    await jar.remove(CLOUD_URL, c.name).catch(() => {});
+  }
+  trace('cloud-logout', {});
+  return { ok: true };
+});
+
+ipcMain.on('desktop:cloud-open-web', (e) => {
+  if (!fromOwnPage(e)) return;
+  shell.openExternal(CLOUD_URL);
 });
 
 ipcMain.handle('desktop:cloud-link', async (e, provider) => {
@@ -653,7 +670,6 @@ function buildMenu() {
     askEveryDownload: s.askEveryDownload,
     downloadDir: s.downloadDir,
     updateConfigured: updater.configured(),
-    mode: MODE,
     autoInstallOnQuit: s.autoInstallOnQuit !== false,
     actions: {
       goHome: go('/'),
@@ -666,7 +682,7 @@ function buildMenu() {
       checkUpdatesNow: () => updater.checkNow(settings.get),
       toggleAutoInstallOnQuit: (mi) => { settings.set({ autoInstallOnQuit: mi.checked }); updater.setAutoInstallOnQuit(mi.checked); },
       showUpdateInfo,
-      switchMode,
+      openKey: MODE === 'local' ? openKeyScreen : null,
       openh264Settings: localRuntime && openh264.applies({ fs, platform: process.platform, ffmpegDir: localRuntime.ffmpegDir })
         ? openh264Settings : null,
     },
@@ -694,7 +710,22 @@ async function decideMode() {
     const got = await session.fromPartition(PARTITION).cookies.get({ url: policy.PROD_URL, name: 'studio_session' });
     hasCloudSession = got.length > 0;
   } catch (_) {}
-  return modeMod.decide({ saved: settings.get().mode, envUrl: process.env.IAMDIRECTOR_URL, hasCloudSession });
+  needMoveNotice = modeMod.moveNotice({ saved: settings.get().mode, hasCloudSession, noticed: settings.get().movedNoticeShown });
+  return modeMod.decide({ envUrl: process.env.IAMDIRECTOR_URL, packaged: app.isPackaged });
+}
+
+let needMoveNotice = false;
+let startNotice = Promise.resolve();
+async function showMoveNotice() {
+  if (!needMoveNotice || MODE !== 'local' || !win) return;
+  settings.set({ movedNoticeShown: true });
+  const r = await dialog.showMessageBox(win, {
+    type: 'info', buttons: ['在瀏覽器開啟', '從雲端下載', '知道了'], defaultId: 1, cancelId: 2,
+    title: '桌面版改成本機工具',
+    message: '桌面版改成本機工具，你的雲端作品仍在 iamdirector.app，可以在瀏覽器繼續做，或從雲端下載到本機。',
+  });
+  if (r.response === 0) shell.openExternal(CLOUD_URL);
+  if (r.response === 1) settings.set({ startAction: 'cloud-list' });
 }
 
 async function startLocal() {
@@ -724,30 +755,19 @@ async function startLocal() {
   trace('local-server-ready', { pid: srv.pid });
 }
 
-async function switchMode() {
-  const to = MODE === 'local' ? 'cloud' : 'local';
-  const r = await dialog.showMessageBox(win, {
-    type: 'question', buttons: ['切換並重新開啟', '取消'], defaultId: 0, cancelId: 1,
-    title: to === 'cloud' ? '登入 iamdirector 帳號' : '改用本機模式',
-    message: to === 'cloud'
-      ? '切換到雲端版並登入。本機的作品會留在這台電腦，隨時可以切回來。'
-      : '切換到本機模式（不用登入）。雲端的作品不會受影響。',
-  });
-  if (r.response !== 0) return;
-  settings.set({ mode: to });
-  quitting = true;
-  if (localSrv) localSrv.stop();
-  app.relaunch();
-  app.exit(0);
-}
-
 let quitting = false;
 app.on('will-quit', () => { quitting = true; if (localSrv) localSrv.stop(); });
 
-ipcMain.on('desktop:switch-mode', (e) => {
-  if (!win || e.sender !== win.webContents) return;
-  if (!policy.isAppUrl(e.senderFrame?.url || '', START_URL)) return;
-  switchMode();
+function openKeyScreen() {
+  if (MODE === 'local' && win) win.webContents.send('desktop:open-key');
+}
+
+ipcMain.handle('desktop:take-start-action', async (e) => {
+  if (!fromOwnPage(e) || MODE !== 'local') return '';
+  await startNotice;
+  const a = settings.get().startAction;
+  if (a) settings.set({ startAction: null });
+  return ['key', 'cloud-list'].includes(a) ? a : '';
 });
 
 app.whenReady().then(async () => {
@@ -762,12 +782,12 @@ app.whenReady().then(async () => {
         title: '本機服務沒有啟動', message: '本機服務沒有啟動，暫時不能用本機模式。', detail: String(err && err.message) });
       if (r.response !== 0) { app.exit(1); return; }
       MODE = 'cloud';
-      settings.set({ mode: 'cloud' });
     }
   }
   setupSession();
   buildMenu();
   createWindow();
+  startNotice = showMoveNotice().catch(() => {});
   updater.start(settings.get);
   app.on('activate', () => { if (!win) createWindow(); });
   const link = extLogin.findProtocolArg(process.argv);

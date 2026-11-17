@@ -668,6 +668,10 @@ class Handler(BaseHTTPRequestHandler):
                 "points": False, "default": "own_key" if (k and prov) else None, "last_choice": None,
             })
         return {"capabilities": caps,
+                "sources": [{"id": "appletoken", "name": "AppleToken", "has_key": bool(k),
+                             "last4": last4(k) if k else "", "verified_at": st.key_verified_at,
+                             "available": True}],
+                "payer_choice": {"value": "own_key" if k else None, "mixed": False},
                 "providers": {"appletoken": {"name": "AppleToken", "capabilities": list(PROVIDED)}},
                 "points": {"available": False, "reason": "本機模式不使用點數", "enabled": False,
                            "provider": "appletoken"}}

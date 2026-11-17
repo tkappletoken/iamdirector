@@ -1,11 +1,15 @@
 'use strict';
 const MODES = ['local', 'cloud'];
 
-function decide({ saved, envUrl, hasCloudSession }) {
-  if (MODES.includes(saved)) return saved;
-  if (envUrl) return 'cloud';
-  if (hasCloudSession) return 'cloud';
+function decide({ envUrl, packaged } = {}) {
+  if (!packaged && envUrl) return 'cloud';
   return 'local';
 }
 
-module.exports = { decide, MODES };
+function moveNotice({ saved, hasCloudSession, noticed } = {}) {
+  if (noticed) return false;
+  if (saved === 'cloud') return true;
+  return !MODES.includes(saved) && !!hasCloudSession;
+}
+
+module.exports = { decide, moveNotice, MODES };

@@ -7647,6 +7647,10 @@ document.addEventListener('keydown', e => {
       '.cv-fab button:hover{background:rgba(140,148,159,.16);color:var(--paper)}',
       '.cv-fab hr{grid-column:1/-1;width:calc(100% - 8px);border:0;border-top:1px solid rgba(140,148,159,.25);margin:2px 4px}',
       '.cv-fab button[aria-pressed="true"]{color:var(--grease,#E8A33D)}',
+      '.cv-fab-tg{display:none}',
+      '.cv-fab.mini .cv-fab-tg{display:block;grid-column:1/-1;text-align:center;color:var(--paper)}',
+      '.cv-fab.mini:not(.open){opacity:1}',
+      '.cv-fab.mini:not(.open)>*:not(.cv-fab-tg){display:none}',
       '.cv-menu{position:absolute;z-index:7;min-width:132px;padding:4px;border-radius:10px;',
         'background:rgba(27,31,38,.86);border:1px solid rgba(140,148,159,.22);',
         'backdrop-filter:blur(14px) saturate(1.3);',
@@ -8314,6 +8318,18 @@ document.addEventListener('keydown', e => {
     fab.className = 'cv-fab';
     top.append(fab);
     bar.hidden = true;
+    const fabTg = document.createElement('button');
+    fabTg.type = 'button'; fabTg.className = 'cv-fab-tg'; fabTg.textContent = '工具 ▾';
+    fabTg.setAttribute('aria-expanded', 'false');
+    const fabOpen = o => { fab.classList.toggle('open', o); fabTg.setAttribute('aria-expanded', String(o)); fabTg.textContent = o ? '工具 ▴' : '工具 ▾'; };
+    fabTg.onclick = () => fabOpen(!fab.classList.contains('open'));
+    fab.append(fabTg);
+    fab.addEventListener('click', e => { if (fab.classList.contains('mini') && e.target !== fabTg && e.target.closest('button')) fabOpen(false); });
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => {
+      const mini = top.clientWidth > 0 && (top.clientWidth < 760 || top.clientHeight < 460);
+      fab.classList.toggle('mini', mini);
+      if (!mini) fabOpen(false);
+    }).observe(top);
 
     const mk = (t, fn, title) => {
       const b = document.createElement('button');
@@ -8568,6 +8584,7 @@ document.addEventListener('keydown', e => {
         menu.append(document.createElement('hr'));
       }
       [...fab.children].forEach(b => {
+        if (b.classList.contains('cv-fab-tg')) return;
         if (b.tagName === 'HR') { menu.append(document.createElement('hr')); return; }
         const it = document.createElement('button');
         it.type = 'button';
@@ -9969,6 +9986,21 @@ document.addEventListener('keydown', e => {
     window.__TL_CAND__ = {
       find: u => CLIPS.findIndex(c => c.uid === u || takesOf(c).some(t => t.uid === u)),
       picked: i => (CLIPS[i] && CLIPS[i].cand ? CLIPS[i].cand.picked : undefined),
+    };
+    window.__TL_ARRANGE__ = uids => {
+      const used = new Set(), out = [];
+      let added = 0;
+      (uids || []).forEach(u => {
+        if (!u) return;
+        const k = CLIPS.findIndex((c, i) => !used.has(i) && (c.uid === u || takesOf(c).some(t => t.uid === u)));
+        if (k >= 0) { used.add(k); out.push(CLIPS[k]); }
+        else if (jobByUid(u)) { out.push({ uid: u }); added++; }
+      });
+      const rest = CLIPS.filter((c, i) => !used.has(i));
+      const next = out.concat(rest);
+      const changed = added > 0 || next.some((c, i) => c !== CLIPS[i]);
+      if (changed) { CLIPS = next; selClip = -1; saveAll(); try { drawTL(); } catch (_) {} }
+      return { added, extra: rest.length, changed };
     };
     window.__TL_V1_UNSENT__ = chain => CLIPS.filter(c => c.unsent && c.unsent.chain === chain).map(c => ({ shot: c.unsent.shot, payload: c.unsent.payload }));
     window.__TL_AUDIO__ = {
@@ -12606,9 +12638,10 @@ document.addEventListener('keydown', e => {
 
   const pref = cap => { try { return localStorage.getItem(PREF + cap) || ''; } catch (e) { return ''; } };
   const cachePref = (cap, v) => { try { localStorage.setItem(PREF + cap, v); } catch (e) { } };
+  const ALL_CAPS = ['video', 'image', 'tts', 'music', 'lipsync'];
   const setPref = (cap, v) => {
     const before = effective(cap);
-    cachePref(cap, v);
+    ALL_CAPS.forEach(c => cachePref(c, v));
     prevFetch('/api/payer/choice', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ capability: cap, payer: v }) }).catch(() => { });
@@ -12744,9 +12777,8 @@ document.addEventListener('keydown', e => {
       const r = await prevFetch('/api/payer');
       if (r.ok) STATE = await r.json();
     } catch (e) { }
-    ((STATE && STATE.capabilities) || []).forEach(c => {
-      if (c.last_choice) cachePref(c.id, c.last_choice);
-    });
+    const one = STATE && STATE.payer_choice && STATE.payer_choice.value;
+    if (one) ALL_CAPS.forEach(c => cachePref(c, one));
     renderTickets();
     if (typeof window.__REPRICE_MODELS__ === 'function') window.__REPRICE_MODELS__();
   }
@@ -12812,6 +12844,7 @@ document.addEventListener('keydown', e => {
 
   let imgQuotePts = null;
   function renderTickets() {
+    if (window.__KEYBAR__) window.__KEYBAR__.paint();
     const go = byId('go');
     const roll = go && go.closest('.roll');
     if (roll) paint(ticketFor('video', roll.parentNode, roll), 'video');
@@ -12904,6 +12937,8 @@ document.addEventListener('keydown', e => {
     const esc = e => { if (e.key === 'Escape') close(); };
     document.addEventListener('keydown', esc);
     back.addEventListener('click', e => { if (e.target === back) close(); });
+    const LOCALM = !!(window.__STUDIO__ && window.__STUDIO__.local);
+    let editing = null;
 
     function draw() {
       box.innerHTML = '';
@@ -12911,9 +12946,9 @@ document.addEventListener('keydown', e => {
       head.className = 'payer-head';
       head.innerHTML = '<span class="eyebrow">BILLING · SOURCES</span>' +
         '<h3 id="payerTitle">付款與金鑰</h3>' +
-        (pointsOn()
-          ? '<p>每一項能力可以用本站點數，或接你自己的供應商金鑰。沒有設定的一律用本站點數（由 AppleToken 提供）。</p>'
-          : '<p>生成用的是你自己的 AppleToken 金鑰，費用從你的 AppleToken 額度扣。' + KEY_HOWTO_HTML + '</p>');
+        '<p>' + (pointsOn() && !LOCALM
+          ? '影片、圖片、配音、配樂都用同一個設定：你自己的 AppleToken 金鑰，或本站點數。'
+          : '生成用的是你自己的 AppleToken 金鑰，費用從你的 AppleToken 額度扣。') + KEY_HOWTO_HTML + '</p>';
       const x = document.createElement('button');
       x.type = 'button'; x.className = 'x'; x.textContent = '關閉';
       x.onclick = close;
@@ -12922,153 +12957,139 @@ document.addEventListener('keydown', e => {
 
       const rows = document.createElement('div');
       rows.className = 'payer-rows';
-      const caps = (STATE && STATE.capabilities) || [];
-      const LOCALM = !!(window.__STUDIO__ && window.__STUDIO__.local);
-      (LOCALM ? caps.filter(c => c.id === 'video').map(c => Object.assign({}, c, { localAll: true })) : caps)
-        .forEach(c => rows.append(row(c)));
+      if (pointsOn() && !LOCALM) rows.append(choiceRow());
+      ((STATE && STATE.sources) || []).forEach(s => rows.append(sourceRow(s)));
       box.append(rows);
 
       const foot = document.createElement('div');
       foot.className = 'payer-foot';
       foot.textContent = LOCALM
-        ? '金鑰只存在這台電腦的系統鑰匙圈，不會上傳；畫面只顯示末四碼。影片、圖片、配音、配樂共用這一把。'
-        : pointsOn()
-        ? '金鑰在伺服器端加密保存，畫面只顯示末四碼。自己的金鑰失效或額度不足時，' +
-          '那一件會直接失敗，不會改用本站點數替你付。'
-        : '金鑰在伺服器端加密保存，畫面只顯示末四碼。金鑰失效或額度不足時，那一件會直接失敗、不會扣到別人。';
+        ? '金鑰只存在這台電腦的系統鑰匙圈，不會上傳；畫面只顯示末四碼。'
+        : '金鑰在伺服器端加密保存，畫面只顯示末四碼。金鑰失效或額度不足時，那一件會直接失敗' +
+          (pointsOn() ? '，不會改用本站點數替你付。' : '、不會扣到別人。');
       if (pointsOn() && STATE && STATE.points && !STATE.points.available && STATE.points.reason) {
         foot.textContent += '　目前本站點數不可用：' + STATE.points.reason;
       }
       box.append(foot);
     }
 
-    function row(c) {
+    function choiceRow() {
       const r = document.createElement('div');
-      r.className = 'payer-row' + (c.open ? '' : ' closed');
-      r.innerHTML = c.localAll
-        ? '<div class="cap"><b>本機金鑰</b><span>影片・圖片・配音・配樂共用</span></div>'
-        : '<div class="cap"><b>' + c.label + '</b><span>' + c.id.toUpperCase() + '</span></div>';
-      if (!c.open) {
-        const s = document.createElement('span');
-        s.className = 'soon';
-        s.textContent = '尚未開放 · 之後可接其他供應商';
-        r.append(s);
-        return r;
-      }
-      let want = hasKey(c) ? effective(c.id) : (c.points ? 'points' : 'own_key');
-      if (row.editing === c.id) want = 'own_key';
+      r.className = 'payer-row';
+      r.innerHTML = '<div class="cap"><b>付款方式</b><span>全部種類</span></div>';
       const seg = document.createElement('span');
       seg.className = 'payer-seg';
+      const anyKey = ((STATE && STATE.sources) || []).some(s => s.has_key);
+      const pointsOk = !!(STATE && STATE.points && STATE.points.available);
+      const want = effective('video') || (pointsOk ? 'points' : 'own_key');
+      [['own_key', '我自己的金鑰'], ['points', '本站點數']].forEach(([v, label]) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = label;
+        b.setAttribute('aria-pressed', String(want === v));
+        if (v === 'points' && !pointsOk) { b.disabled = true; b.title = '本站點數目前不可用'; }
+        if (v === 'own_key' && !anyKey) { b.disabled = true; b.title = '先在下面存一把金鑰'; }
+        b.onclick = () => { setPref('video', v); if (STATE && STATE.payer_choice) STATE.payer_choice.mixed = false; draw(); };
+        seg.append(b);
+      });
+      r.append(seg);
+      if (STATE && STATE.payer_choice && STATE.payer_choice.mixed) {
+        const m = document.createElement('div');
+        m.className = 'payer-msg';
+        m.textContent = '以前各種類分開設定過；現在顯示的是影片那一種。儲存後全部種類會用同一個設定。';
+        r.append(m);
+      }
+      return r;
+    }
+
+    function sourceRow(s) {
+      const r = document.createElement('div');
+      r.className = 'payer-row payer-source';
+      r.dataset.source = s.id;
+      r.innerHTML = '<div class="cap"><b></b><span>影片・圖片・配音・配樂</span></div>';
+      r.querySelector('b').textContent = s.name || provName(s.id);
       const key = document.createElement('div');
       key.className = 'payer-key';
       const msg = document.createElement('div');
       msg.className = 'payer-msg';
-      [['points', '用點數（AppleToken）'], ['own_key', '我自己的金鑰']].forEach(([v, label]) => {
-        if (v === 'points' && !pointsOn()) return;
-        const b = document.createElement('button');
-        b.type = 'button'; b.textContent = label;
-        b.setAttribute('aria-pressed', String(want === v));
-        if (v === 'points' && !c.points) { b.disabled = true; b.title = '本站點數目前不可用'; }
-        if (v === 'own_key' && !c.own_key.available) { b.disabled = true; b.title = '這項能力還不能存自己的金鑰'; }
-        b.onclick = () => {
-          setPref(c.id, v);
-          row.editing = (v === 'own_key' && !hasKey(c)) ? c.id : null;
-          draw();
-        };
-        seg.append(b);
-      });
-      if (!c.localAll) r.append(seg);
-
-      if (want === 'own_key') {
-        if (hasKey(c) && row.editing !== c.id) {
-          key.innerHTML = '<span class="chip"><i>●</i>' + (c.localAll ? '本機金鑰' : provName(c.own_key.provider)) +
-            ' ··' + c.own_key.last4 + '</span>';
-          const swap = document.createElement('button');
-          swap.type = 'button'; swap.textContent = '更換';
-          swap.onclick = () => { row.editing = c.id; draw(); };
-          const del = document.createElement('button');
-          del.type = 'button'; del.textContent = '移除';
-          del.onclick = async () => {
-            if (c.localAll && del.dataset.armed !== '1') {
-              del.dataset.armed = '1'; del.textContent = '確定移除？再按一次';
-              msg.className = 'payer-msg'; msg.textContent = '移除後影片、圖片、配音、配樂都要重新貼金鑰才能生成。';
-              setTimeout(() => { if (del.isConnected && del.dataset.armed === '1') { del.dataset.armed = ''; del.textContent = '移除'; msg.textContent = ''; } }, 6000);
-              return;
-            }
-            del.disabled = true;
-            const resp = await prevFetch('/api/payer/key/delete', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ capability: c.id }) });
-            const d = await resp.json().catch(() => ({}));
-            if (resp.ok) { STATE = d; if (c.points) setPref(c.id, 'points'); draw(); }
-            else { msg.className = 'payer-msg bad'; msg.textContent = d.error || '移除失敗'; del.disabled = false; }
-          };
-          key.append(swap, del);
-        } else {
-          const sel = document.createElement('select');
-          sel.setAttribute('aria-label', c.label + '的供應商');
-          (c.providers || []).forEach(pid => {
-            const o = document.createElement('option'); o.value = pid; o.textContent = provName(pid); sel.append(o);
-          });
-          const inp = document.createElement('input');
-          inp.type = 'password'; inp.autocomplete = 'off'; inp.spellcheck = false;
-          inp.placeholder = '貼上 API 金鑰';
-          inp.setAttribute('aria-label', c.label + '的 API 金鑰');
-          const save = document.createElement('button');
-          save.type = 'button'; save.className = 'primary'; save.textContent = '驗證並儲存';
-          const run = async () => {
-            const k = inp.value.trim();
-            if (!k) { msg.className = 'payer-msg bad'; msg.textContent = '請先貼上金鑰'; return; }
-            save.disabled = true; msg.className = 'payer-msg'; msg.textContent = '正在向 ' + provName(sel.value) + ' 驗證…';
-            let resp, d;
-            try {
-              resp = await prevFetch('/api/payer/key', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ capability: c.id, provider: sel.value, key: k }) });
-              d = await resp.json().catch(() => ({}));
-            } catch (e) { resp = { ok: false }; d = { error: String(e) }; }
-            inp.value = '';
-            if (resp.ok) {
-              STATE = d; setPref(c.id, 'own_key'); row.editing = null; draw();
-              if (d.persist_note) say(d.persist_note, false);
-              if (window.__STUDIO__ && window.__STUDIO__.local && typeof window.loadModels === 'function') {
-                try { await window.loadModels(); } catch (e) { }
-              }
-              if (c.id === 'video' && typeof window.doEstimate === 'function') window.doEstimate();
-              return;
-            }
-            save.disabled = false;
-            msg.className = 'payer-msg bad';
-            msg.textContent = typeof d.error === 'string' ? d.error : '儲存失敗';
-          };
-          save.onclick = run;
-          inp.onkeydown = e => { if (e.key === 'Enter') run(); };
-          key.append(sel, inp, save);
-          if (hasKey(c)) {
-            const cancel = document.createElement('button');
-            cancel.type = 'button'; cancel.textContent = '取消';
-            cancel.onclick = () => { row.editing = null; draw(); };
-            key.append(cancel);
+      if (s.has_key && editing !== s.id) {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.innerHTML = '<i>●</i>';
+        chip.append(document.createTextNode('金鑰 ••••' + s.last4));
+        const swap = document.createElement('button');
+        swap.type = 'button'; swap.textContent = '更換';
+        swap.onclick = () => { editing = s.id; draw(); };
+        const del = document.createElement('button');
+        del.type = 'button'; del.textContent = '移除';
+        del.onclick = async () => {
+          if (del.dataset.armed !== '1') {
+            del.dataset.armed = '1'; del.textContent = '確定移除？再按一次';
+            msg.className = 'payer-msg'; msg.textContent = '移除後影片、圖片、配音、配樂都要重新貼金鑰才能用自己的金鑰生成。';
+            setTimeout(() => { if (del.isConnected && del.dataset.armed === '1') { del.dataset.armed = ''; del.textContent = '移除'; msg.textContent = ''; } }, 6000);
+            return;
           }
-          setTimeout(() => inp.focus(), 0);
+          del.disabled = true;
+          const resp = await prevFetch('/api/payer/key/delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: s.id }) });
+          const d = await resp.json().catch(() => ({}));
+          if (resp.ok) { STATE = d; if (pointsOn() && !LOCALM) setPref('video', 'points'); draw(); }
+          else { msg.className = 'payer-msg bad'; msg.textContent = d.error || '移除失敗'; del.disabled = false; }
+        };
+        key.append(chip, swap, del);
+      } else if (s.available === false) {
+        msg.textContent = '這個站還不能存自己的金鑰。';
+      } else {
+        const inp = document.createElement('input');
+        inp.type = 'password'; inp.autocomplete = 'off'; inp.spellcheck = false;
+        inp.placeholder = '貼上 API 金鑰';
+        inp.setAttribute('aria-label', (s.name || s.id) + ' 的 API 金鑰');
+        const save = document.createElement('button');
+        save.type = 'button'; save.className = 'primary'; save.textContent = '驗證並儲存';
+        const run = async () => {
+          const k = inp.value.trim();
+          if (!k) { msg.className = 'payer-msg bad'; msg.textContent = '請先貼上金鑰'; return; }
+          save.disabled = true; msg.className = 'payer-msg'; msg.textContent = '正在向 ' + (s.name || s.id) + ' 驗證…';
+          let resp, d;
+          try {
+            resp = await prevFetch('/api/payer/key', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ provider: s.id, key: k }) });
+            d = await resp.json().catch(() => ({}));
+          } catch (e) { resp = { ok: false }; d = { error: String(e) }; }
+          inp.value = '';
+          if (resp.ok) {
+            STATE = d; setPref('video', 'own_key'); editing = null; draw();
+            if (d.persist_note) say(d.persist_note, false);
+            if (LOCALM && typeof window.loadModels === 'function') {
+              try { await window.loadModels(); } catch (e) { }
+            }
+            if (typeof window.doEstimate === 'function') window.doEstimate();
+            return;
+          }
+          save.disabled = false;
+          msg.className = 'payer-msg bad';
+          msg.textContent = typeof d.error === 'string' ? d.error : '儲存失敗';
+        };
+        save.onclick = run;
+        inp.onkeydown = e => { if (e.key === 'Enter') run(); };
+        key.append(inp, save);
+        if (s.has_key) {
+          const cancel = document.createElement('button');
+          cancel.type = 'button'; cancel.textContent = '取消';
+          cancel.onclick = () => { editing = null; draw(); };
+          key.append(cancel);
         }
-        r.append(key);
-        if (hasKey(c) && pref(c.id) !== 'points' && c.points) {
-          msg.textContent = '這項能力的每一件預設用你的金鑰；送出鈕旁可以臨時改用點數。';
-        }
-      } else if (hasKey(c)) {
-        msg.textContent = '已存一把 ' + provName(c.own_key.provider) + ' 金鑰（··' + c.own_key.last4 +
-          '），目前預設用點數。';
       }
-      r.append(msg);
+      r.append(key, msg);
       return r;
     }
 
     draw();
     document.body.append(back);
-    const first = box.querySelector('.payer-row button:not(:disabled)');
-    if (first && !box.querySelector('input')) first.focus();
-    else setTimeout(() => { const i = box.querySelector('.payer-key input'); if (i) i.focus(); }, 0);
+    const i = box.querySelector('.payer-key input');
+    if (i) setTimeout(() => i.focus(), 0);
+    else { const first = box.querySelector('.payer-row button:not(:disabled)'); if (first) first.focus(); }
   }
 
   function mountMenu() {
@@ -13108,7 +13129,7 @@ document.addEventListener('keydown', e => {
       try {
         resp = await prevFetch('/api/payer/key', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ capability: cap, provider: 'appletoken', key: k }) });
+          body: JSON.stringify({ provider: 'appletoken', key: k }) });
         d = await resp.json().catch(() => ({}));
       } catch (e) { resp = { ok: false }; d = { error: String(e) }; }
       inp.value = '';
@@ -13153,9 +13174,257 @@ document.addEventListener('keydown', e => {
     return p;
   };
 
-  window.__STUDIO_PAYER__ = { open: () => load().then(openSheet), effective, reload: load, keyForm };
+  window.__STUDIO_PAYER__ = { open: () => load().then(openSheet), effective, reload: load, state: () => STATE, keyForm };
   mountMenu();
   stateReady = load();
+})();
+(function studioKeyBar() {
+  const S = window.__STUDIO__;
+  if (!S) return;
+  const desk = window.iamdirectorDesktop || null;
+  const LOCAL = !!S.local;
+  if (!LOCAL && !desk) return;
+  document.body.classList.add('kb-desk');
+  const CLOUD = LOCAL && !!(desk && desk.cloud);
+
+  const css = document.createElement('style');
+  css.textContent = [
+    'body.kb-desk #studioWhoBtn,body.kb-desk .sm-who{display:none}',
+    '.kb-group{display:inline-flex;gap:8px;flex:none;flex-wrap:wrap}',
+    '.kb{position:relative;flex:none;display:inline-flex}',
+    '.kb-btn{width:auto;display:inline-flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border-radius:999px;',
+    'border:1px solid var(--edge2);background:var(--riser);color:var(--paper);font-size:var(--fs-s);white-space:nowrap;cursor:pointer}',
+    '.kb-btn:hover{border-color:var(--pencil)}',
+    '.kb-btn:focus-visible{outline:2px solid var(--rolling);outline-offset:2px}',
+    '.kb-dot{width:8px;height:8px;border-radius:50%;background:var(--good);flex:none}',
+    '.kb-dot.off{background:var(--faint)}',
+    '.kb-mode{color:var(--pencil)}',
+    '.kb-key{font-family:var(--mono)}',
+    '.kb-pay{color:var(--pencil);border-left:1px solid var(--edge2);padding-left:8px}',
+    '.kb-warn .kb-btn{border-color:var(--grease);background:rgba(232,163,61,.14);color:var(--grease);font-weight:600}',
+    '.kb-warn .kb-dot{background:var(--grease);animation:kbPulse 1.6s ease-in-out infinite}',
+    '@keyframes kbPulse{50%{box-shadow:0 0 0 5px rgba(232,163,61,.25)}}',
+    '@media (prefers-reduced-motion: reduce){.kb-warn .kb-dot{animation:none}}',
+    '.kb-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:45;min-width:280px;max-width:calc(100vw - 16px);padding:7px 0;',
+    'background:var(--riser);color:var(--paper);border:1px solid var(--edge2);border-radius:9px;box-shadow:0 8px 26px rgba(0,0,0,.45);',
+    'display:flex;flex-direction:column;gap:1px}',
+    '.kb-menu[hidden]{display:none}',
+    '.kb-menu .kb-head{padding:4px 14px 8px;margin-bottom:4px;border-bottom:1px solid var(--edge);font-size:var(--fs-s);color:var(--pencil);line-height:1.5}',
+    '.kb-menu .kb-head b{display:block;color:var(--paper);font-size:var(--fs-m);word-break:break-all}',
+    '.kb-menu button{width:100%;text-align:left;border:0;border-radius:0;background:none;color:var(--paper);padding:8px 14px;font-size:var(--fs-m);cursor:pointer}',
+    '.kb-menu button:hover:not(:disabled),.kb-menu button:focus-visible{background:var(--rise2);outline:none}',
+    '.kb-menu button:disabled{color:var(--faint);cursor:not-allowed}',
+    '.kb-menu button small{display:block;color:var(--faint);font-size:var(--fs-s);line-height:1.45;white-space:normal}',
+    '.kb-menu button.kb-danger{color:var(--ng)}',
+    '.kb-menu hr{border:0;border-top:1px solid var(--edge);margin:4px 0}',
+    '.slatebar.who-open{z-index:62}',
+    '.sm-top.kb-open{z-index:3}',
+    '@media (max-width:720px){.kb-mode,.kb-pay,.kb-sync{display:none}}',
+  ].join('');
+  document.head.append(css);
+
+  const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+  const P = () => window.__STUDIO_PAYER__ || null;
+  const C = () => window.__CLOUD__ || null;
+  function keyInfo() {
+    const st = P() && P().state();
+    const src = ((st && st.sources) || []).find(x => x.id === 'appletoken');
+    return { known: !!st, has: !!(src && src.has_key), last4: (src && src.last4) || '' };
+  }
+  const PAY = { own_key: '用我的 AppleToken 金鑰', points: '用本站點數' };
+  const payerNow = () => (P() && PAY[P().effective('video')]) || '';
+  let cloud = { known: false, linked: false };
+
+  const pills = new Set();
+  let openOne = null;
+
+  function onePill(kind) {
+    const box = h('div', 'kb');
+    box.dataset.kb = kind;
+    const btn = h('button', 'kb-btn');
+    btn.type = 'button'; btn.setAttribute('aria-haspopup', 'menu'); btn.setAttribute('aria-expanded', 'false');
+    const menu = h('div', 'kb-menu'); menu.hidden = true; menu.setAttribute('role', 'menu');
+    box.append(btn, menu);
+    box._kb = { btn, menu, kind };
+    btn.onclick = e => {
+      if (kind === 'cloud' && !cloud.linked) { closeMenu(); if (C()) C().link(); return; }
+      if (menu.hidden) openMenu(box, e.detail === 0); else closeMenu(true);
+    };
+    menu.addEventListener('keydown', e => {
+      const list = [...menu.querySelectorAll('button')].filter(b => !b.disabled);
+      const i = list.indexOf(document.activeElement);
+      if (e.key === 'Escape') { e.preventDefault(); closeMenu(true); }
+      else if (e.key === 'ArrowDown' && list.length) { e.preventDefault(); list[(i + 1) % list.length].focus(); }
+      else if (e.key === 'ArrowUp' && list.length) { e.preventDefault(); list[(i - 1 + list.length) % list.length].focus(); }
+    });
+    pills.add(box);
+    paintOne(box);
+    return box;
+  }
+  function pill() {
+    const g = h('div', 'kb-group');
+    if (LOCAL) { g.append(onePill('key')); if (CLOUD) g.append(onePill('cloud')); }
+    else g.append(onePill('account'));
+    return g;
+  }
+
+  function paintOne(box) {
+    const { btn, kind } = box._kb;
+    btn.innerHTML = '';
+    const dot = h('span', 'kb-dot');
+    btn.append(dot);
+    box.classList.remove('kb-warn');
+    if (kind === 'key') {
+      const k = keyInfo();
+      const warn = k.known && !k.has;
+      box.classList.toggle('kb-warn', warn);
+      btn.append(h('span', 'kb-mode', '本機・'));
+      if (!k.known) btn.append(h('span', null, 'AppleToken 金鑰…'));
+      else if (k.has) btn.append(h('span', null, 'AppleToken 金鑰 '), h('span', 'kb-key', '••••' + k.last4));
+      else btn.append(h('span', null, '尚未設定金鑰'));
+      btn.title = warn ? '還沒有設定 AppleToken 金鑰，生成前要先設定。點這裡設定' : '金鑰只存在這台電腦';
+    } else if (kind === 'cloud') {
+      if (!cloud.linked) {
+        dot.classList.add('off');
+        btn.append(h('span', null, cloud.offline ? '雲端連不上' : '登入以同步到雲端'));
+        btn.title = '登入 iamdirector 帳號，把作品同步到雲端（換電腦也拿得到）';
+      } else {
+        btn.append(h('span', null, cloud.email || '已登入'), h('span', 'kb-pay kb-sync', cloud.syncText || '雲端同步'));
+        btn.title = '雲端同步';
+      }
+    } else {
+      btn.append(h('span', null, S.email || '我的帳號'));
+      const pay = payerNow();
+      if (pay) btn.append(h('span', 'kb-pay', pay));
+      btn.title = '帳號';
+    }
+    if (kind !== 'cloud' || cloud.linked) {
+      btn.append(h('span', 'kb-caret', '▾'));
+      btn.lastChild.setAttribute('aria-hidden', 'true');
+    }
+    btn.setAttribute('aria-label', btn.textContent.replace('▾', '').trim());
+  }
+  function paint() {
+    pills.forEach(b => { if (b.isConnected) paintOne(b); else pills.delete(b); });
+  }
+
+  function item(menu, label, sub, fn, cls) {
+    const b = h('button', cls || null);
+    b.type = 'button'; b.setAttribute('role', 'menuitem');
+    b.append(document.createTextNode(label));
+    if (sub) b.append(h('small', null, sub));
+    b.onclick = e => fn(b, e);
+    menu.append(b);
+    return b;
+  }
+
+  function fillMenu(menu, kind) {
+    menu.innerHTML = '';
+    const head = h('div', 'kb-head');
+    if (kind === 'key') {
+      const k = keyInfo();
+      head.append(h('b', null, '本機・AppleToken'),
+        document.createTextNode(k.has ? '金鑰 ••••' + k.last4 + '，只存在這台電腦的系統鑰匙圈' : '尚未設定 AppleToken 金鑰，生成前要先設定'));
+      menu.append(head);
+      item(menu, k.has ? '更換金鑰…' : '設定金鑰…', '貼上你自己的 AppleToken 金鑰', () => { closeMenu(); openKey(); });
+      if (k.has) {
+        item(menu, '移除金鑰', '從這台電腦刪掉金鑰', b => {
+          if (b.dataset.armed !== '1') {
+            b.dataset.armed = '1'; b.firstChild.textContent = '確定移除？再按一次';
+            setTimeout(() => { if (b.isConnected && b.dataset.armed === '1') { b.dataset.armed = ''; b.firstChild.textContent = '移除金鑰'; } }, 6000);
+            return;
+          }
+          closeMenu(); removeKey();
+        }, 'kb-danger');
+      }
+    } else if (kind === 'cloud') {
+      head.append(h('b', null, cloud.email || '已登入'), document.createTextNode('作品同步到雲端；上架與平台點數在網頁版'));
+      menu.append(head);
+      const cur = C() && C().current();
+      const s = item(menu, '同步這部作品', cur ? '「' + (cur.name || '') + '」上傳到雲端；兩邊都改過時會問你留哪一份' : '先打開一部作品',
+        () => { closeMenu(); C().sync(cur).finally(refreshCloud); });
+      s.disabled = !cur;
+      item(menu, '從雲端下載作品…', '把雲端的作品下載到這台電腦', () => { closeMenu(); if (C()) C().list(); });
+      item(menu, '在瀏覽器開啟雲端版', '上架、平台點數在網頁版', () => { closeMenu(); desk.cloud.openWeb(); });
+      menu.append(h('hr'));
+      item(menu, '登出', '只登出雲端帳號；這台電腦的作品和金鑰不受影響', async () => {
+        closeMenu();
+        try { await desk.cloud.logout(); say('已登出雲端帳號', true); } catch (e) { say('登出沒有完成：' + (e && e.message || e)); }
+        refreshCloud();
+      });
+    } else {
+      head.append(h('b', null, S.email || '我的帳號'));
+      const pay = payerNow();
+      head.append(document.createTextNode(pay ? '目前付款方式：' + pay : '雲端模式（開發用）'));
+      menu.append(head);
+      item(menu, '帳號設定…', '顯示名稱、密碼、付款與金鑰', () => {
+        closeMenu();
+        if (window.__SIMPLE__ && window.__SIMPLE__.mode === 'simple') window.__SIMPLE__.setMode('advanced');
+        setTimeout(() => { const w = document.getElementById('studioWhoBtn'); if (w) w.click(); }, 0);
+      });
+      item(menu, '登出', null, () => { closeMenu(); const o = document.getElementById('signOut'); if (o) o.click(); });
+    }
+  }
+
+  function openMenu(box, byKey) {
+    closeMenu();
+    const { btn, menu, kind } = box._kb;
+    fillMenu(menu, kind);
+    menu.hidden = false; btn.setAttribute('aria-expanded', 'true');
+    const bar = box.closest('.slatebar'); if (bar) bar.classList.add('who-open');
+    const top = box.closest('.sm-top'); if (top) top.classList.add('kb-open');
+    openOne = box;
+    if (byKey) { const f = menu.querySelector('button:not(:disabled)'); if (f) f.focus(); }
+  }
+  function closeMenu(back) {
+    if (!openOne) return;
+    const { btn, menu } = openOne._kb;
+    menu.hidden = true; btn.setAttribute('aria-expanded', 'false');
+    const bar = openOne.closest('.slatebar'); if (bar) bar.classList.remove('who-open');
+    const top = openOne.closest('.sm-top'); if (top) top.classList.remove('kb-open');
+    openOne = null;
+    if (back) btn.focus();
+  }
+  document.addEventListener('click', e => { if (openOne && !openOne.contains(e.target)) closeMenu(); }, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && openOne) closeMenu(true); });
+
+  function openKey() { if (P()) P().open(); }
+  async function removeKey() {
+    try {
+      const r = await fetch('/api/payer/key/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify({ provider: 'appletoken' }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { say(d.error || '移除失敗'); return; }
+      say('金鑰已從這台電腦移除', true);
+    } catch (e) { say('移除失敗：' + (e && e.message || e)); }
+    if (P()) await P().reload();
+  }
+  async function refreshCloud() {
+    if (!CLOUD) return;
+    try {
+      const st = await desk.cloud.status();
+      cloud = { known: true, linked: !!st.linked, email: st.email || '', offline: !!st.offline,
+                syncText: st.unavailable ? '雲端未開通' : '雲端同步' };
+    } catch (_) { cloud = { known: true, linked: false, offline: true }; }
+    paint();
+  }
+
+  window.__KEYBAR__ = { pill, paint, refreshCloud };
+
+  const who = document.getElementById('whoami');
+  if (who) who.after(pill());
+
+  if (desk && LOCAL) {
+    if (typeof desk.onOpenKey === 'function') desk.onOpenKey(openKey);
+    if (CLOUD && typeof desk.cloud.onLinked === 'function') desk.cloud.onLinked(refreshCloud);
+    refreshCloud();
+    if (typeof desk.takeStartAction === 'function') {
+      desk.takeStartAction().then(a => {
+        if (a === 'key') openKey();
+        else if (a === 'cloud-list' && C()) C().list();
+      }).catch(() => {});
+    }
+  }
 })();
 (function studioR2() {
   if (!window.__STUDIO__) return;
@@ -15675,7 +15944,10 @@ document.addEventListener('keydown', e => {
             const n = h('b', okv ? 'hi' : 'lo', String(v.overall)); n.append(h('small', null, '/10'));
             q.append(h('span', 'k', '驗片'), n,
               h('span', 'd', [v.subjects_ok ? '角色對' : '角色不對', v.colors_ok === false ? '顏色不對' : '', v.defects ? '瑕疵：' + v.defects : '沒有瑕疵'].filter(Boolean).join(' · ')));
-          } else q.append(h('span', 'k', '驗片'), h('span', 'd', j.qc.skip ? (j.qc.why || '沒驗') : '驗片中…'));
+          } else {
+            const why = j.qc.why && typeof j.qc.why === 'object' ? (j.qc.why.message || j.qc.why.code || '') : j.qc.why;
+            q.append(h('span', 'k', '驗片'), h('span', 'd', j.qc.skip ? (why ? String(why) : '沒驗') : '驗片中…'));
+          }
           tile.append(q);
         } else if (j && j.src && g.cand && window.__QC__ && window.__QC__.busy && window.__QC__.busy(j.uid)) {
           const q = h('div', 'qcl'); q.append(h('span', 'k', '驗片'), h('span', 'd', '驗片中…')); tile.append(q);
@@ -16628,6 +16900,59 @@ document.addEventListener('keydown', e => {
       return true;
     } finally { busy = false; paintSound(); }
   }
+  async function soundAll(list, mo) {
+    if (busy) return { ok: false, busy: true };
+    busy = true;
+    try {
+      const quoted = [], bad = [];
+      for (const it of (list || [])) {
+        const r = await post('/api/audio/speech', ttsBody(it.say || it.text, voiceOf(it.who)));
+        if (r.ok && r.d.quote_id) quoted.push({ it, q: r.d }); else bad.push('#' + it.n + '：' + errText(r.d));
+      }
+      let mq = null, mbody = null;
+      if (mo) {
+        mbody = { model: audioRef(mo.model) || musicModels()[0][0], lyrics: '[Instrumental]' };
+        if (mo.prompt && mo.prompt.trim()) mbody.prompt = mo.prompt.trim();
+        const r = await post('/api/audio/music', mbody);
+        if (r.ok && r.d.quote_id) mq = r.d; else bad.push('配樂：' + errText(r.d));
+      }
+      if (!quoted.length && !mq) { say('報價失敗：' + (bad[0] || '沒有可以報價的台詞或配樂')); return { ok: false, error: bad[0] || '' }; }
+      const all = quoted.map(x => x.q).concat(mq ? [mq] : []);
+      const sum = sheetTotal(all);
+      const rows = quoted.map(x => ({ v: '#' + x.it.n, m: (x.it.who ? x.it.who.name : '旁白') + '：' + x.it.text,
+                                      sub: voiceOf(x.it.who).model + (voiceOf(x.it.who).voice ? ' · ' + voiceOf(x.it.who).voice : '') + ' · ' + x.q.characters + ' 字', p: ptsLabel(x.q) }));
+      if (mq) rows.push({ v: '♫', m: '配樂：' + (mbody.prompt || '純配樂'), sub: mbody.model + ' · 無人聲', p: ptsLabel(mq) });
+      const ok = await confirmSheet({
+        kicker: '聲音', title: [quoted.length ? quoted.length + ' 句台詞配音' : '', mq ? '一段配樂' : ''].filter(Boolean).join('＋'),
+        rows, total: sum.total, short: sum.short,
+        note: [noQuoteNote(all), sum.note, bad.length ? '報價失敗、這次不送：' + bad.join('；') : '',
+               '確認之後才扣點；上游失敗會全額放回。配音對齊同一鏡的字幕，配樂放低音量墊在台詞底下。'].filter(Boolean).join(' '),
+        go: '確認並生成',
+      });
+      if (!ok) {
+        quoted.forEach(x => post('/api/audio/speech', { quote_id: x.q.quote_id, confirm: false }));
+        if (mq) post('/api/audio/music', { quote_id: mq.quote_id, confirm: false });
+        say('已取消，沒有扣點');
+        return { ok: false, cancelled: true };
+      }
+      let n = 0, music = false;
+      for (const x of quoted) {
+        const r = await post('/api/audio/speech', { quote_id: x.q.quote_id, confirm: true });
+        if (!r.ok || !r.d.audio) { say('第 ' + x.it.n + ' 鏡配音失敗：' + errText(r.d) + (r.d && r.d.released_points ? '（' + r.d.released_points + ' 點已放回）' : '')); continue; }
+        await placeTts(x.it, r.d.audio);
+        n++;
+      }
+      if (mq) {
+        const meta = { prompt: mbody.prompt || '', model: mbody.model, gain: mo.gain };
+        const c = await post('/api/audio/music', { quote_id: mq.quote_id, confirm: true });
+        if (!c.ok || !c.d.id) say('配樂送件失敗：' + errText(c.d) + (c.d && c.d.released_points ? '（' + c.d.released_points + ' 點已放回）' : ''));
+        else if (c.d.audio) { await placeMusic(Object.assign({ id: c.d.id }, meta), c.d.audio); music = true; }
+        else { PENDING.push(Object.assign({ id: c.d.id, t: Date.now() }, meta)); savePending(); watch(); music = 'pending'; }
+      }
+      say(['配好 ' + n + ' 句台詞', music === true ? '配樂好了' : music ? '配樂生成中，好了自動放上 A2' : ''].filter(Boolean).join('，'), true);
+      return { ok: true, tts: n, music };
+    } finally { busy = false; paintSound(); }
+  }
   let watching = null;
   function watch() {
     if (watching || !PENDING.length) return;
@@ -16675,6 +17000,7 @@ document.addEventListener('keydown', e => {
       }
     }
     tl.add({ lane: 'A2', at: 0, trimIn: 0, dur: Math.round(len * 100) / 100, full, src: got.src, inline: got.inline || undefined,
+             gain: p.gain != null ? p.gain : undefined,
              name: '配樂 · ' + (p.prompt || '純配樂'), music: { id: p.id, model: p.model || '', prompt: p.prompt || '', ref: audio.ref || '' } });
     return gone;
   }
@@ -17379,7 +17705,7 @@ document.addEventListener('keydown', e => {
   })();
 
   window.__R6__ = { lines, speakerOf, voiceOf, voiceKey, voiceNote, sayOf, applySay, sayTable, setSayTable, alignAt, staleOf, similar, diffMarks, proof, fixCue,
-                    speakLines, placeTts, makeMusic, tick, placeMusic, openSound, paintSound, openTurn, turnPrompt, turnBody,
+                    speakLines, placeTts, makeMusic, soundAll, tick, placeMusic, openSound, paintSound, openTurn, turnPrompt, turnBody,
                     openPuppet, puppetPayload, attachPuppets, PUPPET_PROMPT, ANG, loadCaps,
                     setMeasure: f => { measureAudio = f; }, get pending() { return PENDING; }, get caps() { return CAPS; },
                     get models() { return { tts: ttsModels(), music: musicModels() }; } };
@@ -17438,6 +17764,7 @@ document.addEventListener('keydown', e => {
       const n = i + 1, base = { lane: c.lane === 'A2' ? 'A2' : 'A1', at: r3(c.at || 0), in: r3(c.trimIn || 0), dur: r3(Math.max(0.05, Number(c.dur) || 1)) };
       if (c.loop) base.loop = true;
       if (c.fade) base.fade = Math.min(1, Number(c.fade) || 0);
+      if (c.gain != null && isFinite(Number(c.gain)) && Number(c.gain) !== 1) base.gain = r3(Math.min(2, Math.max(0, Number(c.gain))));
       const model = audioModel(c);
       if (model) base.model = model;
       const uj = c.upl ? null : byUidF(c.uid);
@@ -17747,6 +18074,7 @@ document.addEventListener('keydown', e => {
           el = document.createElement(c.src ? 'audio' : 'video'); el.preload = 'auto'; el.src = src; el.playsInline = true;
           sound.set(i, el);
         }
+        el.volume = Math.min(1, Math.max(0, c.gain != null && isFinite(+c.gain) ? +c.gain : 1));
         let want = (c.trimIn || 0) + (t - (c.at || 0));
         if (c.loop && el.duration > (c.trimIn || 0) + 0.1) want = (c.trimIn || 0) + (t - (c.at || 0)) % (el.duration - (c.trimIn || 0));
         if (Math.abs((el.currentTime || 0) - want) > 0.35) { try { el.currentTime = want; } catch (e) {} }
@@ -18039,7 +18367,7 @@ document.addEventListener('keydown', e => {
       dl.onclick = () => download(x0, 'url');
       acts.append(dl);
       if (x0.srt) { const ds = h('button', 'r7-dl ghost', 'SRT'); ds.type = 'button'; ds.onclick = () => download(x0, 'srt_url'); acts.append(ds); }
-      if (window.__YT__) acts.append(window.__YT__.rowButton(x0));
+      if (window.__YT__) { const yb = window.__YT__.rowButton(x0); if (yb) acts.append(yb); }
       if (window.__PITCH__) acts.append(window.__PITCH__.rowButton(x0));
       r.append(acts);
       if (window.__STUDIO__ && window.__STUDIO__.local && x0.path) {
@@ -18272,7 +18600,7 @@ document.addEventListener('keydown', e => {
     loadCfg();
   })();
 
-  window.__R7__ = { snapshot, rightsWarnings, modelsGuess, timing, frameSize, cardLines, v1At, fmtTC, open, close, current,
+  window.__R7__ = { snapshot, rightsWarnings, modelsGuess, timing, frameSize, cardLines, v1At, fmtTC, open, close, current, download,
                     get cfg() { return CFG; }, get hist() { return HIST; } };
 })();
 (function studioYT() {
@@ -18364,30 +18692,29 @@ document.addEventListener('keydown', e => {
     if (back) paint();
   }
   const LOCAL = !!(window.__STUDIO__ && window.__STUDIO__.local);
-  const LOCK_LABEL = '🔒 登入帳號後可上架';
   function localGate() {
     const old = document.getElementById('localGate'); if (old) old.remove();
     const back = h('div'); back.id = 'localGate';
     back.style.cssText = 'position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
     const box = h('section'); box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-labelledby', 'localGateT');
     box.style.cssText = 'background:var(--slate);color:var(--paper);border:1px solid var(--edge2);border-radius:12px;padding:22px 24px;max-width:460px;width:100%;line-height:1.6';
-    const t = h('h3', null, '登入帳號後可上架'); t.id = 'localGateT'; t.style.cssText = 'margin:0 0 8px;font-size:var(--fs-xl)';
-    const p = h('p', null, '現在是本機模式：作品只存在這台電腦，用你自己的 API 金鑰生成。登入 iamdirector 帳號之後會多出：');
+    const t = h('h3', null, '上架在網頁版'); t.id = 'localGateT'; t.style.cssText = 'margin:0 0 8px;font-size:var(--fs-xl)';
+    const p = h('p', null, '桌面版是本機工具：作品存在這台電腦，用你自己的 AppleToken 金鑰生成。上架與平台點數在 iamdirector 網頁版：');
     p.style.margin = '0 0 8px';
     const ul = h('ul'); ul.style.cssText = 'margin:0 0 10px;padding-left:1.2em';
-    ['綁定 YouTube 與短劇平台的頻道，一鍵上架', '雲端資產庫：作品與素材同步到帳號，換電腦也找得到', '付款可以選用平台點數']
+    ['登入後把作品同步到雲端（作品卡的「上傳到雲端」）', '在瀏覽器打開網頁版，綁定頻道、上架']
       .forEach(x => ul.append(h('li', null, x)));
-    const note = h('p', null, '不登入也可以在第 6 步「剪輯字幕」匯出 mp4，自己上傳。');
+    const note = h('p', null, '也可以在第 6 步「剪輯字幕」匯出 mp4，自己上傳。');
     note.style.cssText = 'margin:0 0 16px;color:var(--pencil)';
     const row = h('div'); row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap';
     const later = h('button', null, '先不要'); later.type = 'button'; later.style.width = 'auto';
     later.onclick = () => back.remove();
     row.append(later);
     const desk = window.iamdirectorDesktop;
-    if (desk && typeof desk.switchToCloud === 'function') {
-      const go = h('button', null, '登入以同步與上架'); go.type = 'button'; go.style.width = 'auto';
+    if (desk && desk.cloud && typeof desk.cloud.openWeb === 'function') {
+      const go = h('button', null, '在瀏覽器開啟網頁版'); go.type = 'button'; go.style.width = 'auto';
       go.style.cssText += ';background:var(--grease);color:var(--ink);border-color:var(--grease);font-weight:700';
-      go.onclick = () => { back.remove(); desk.switchToCloud(); };
+      go.onclick = () => { back.remove(); desk.cloud.openWeb(); };
       row.append(go);
     }
     box.append(t, p, ul, note, row);
@@ -18563,22 +18890,29 @@ document.addEventListener('keydown', e => {
     return f;
   }
 
-  async function submitOne(go) {
-    if (!F.src) return tell('先選一支要上架的片');
-    if (!F.title.trim()) return tell('標題不能空白');
+  function bodyOf(F) {
+    if (!F.src) return { error: '先選一支要上架的片' };
+    if (!String(F.title || '').trim()) return { error: '標題不能空白' };
     const [kind, ...rest] = F.src.split(':');
-    const body = { source: { kind, ref: rest.join(':') }, title: F.title.trim(), description: F.desc,
-                   tags: F.tags.split(/[,，]/).map(s => s.trim()).filter(Boolean), privacy: F.privacy,
-                   synthetic: F.synthetic, made_for_kids: F.kids };
+    const body = { source: { kind, ref: rest.join(':') }, title: F.title.trim(), description: F.desc || '',
+                   tags: String(F.tags || '').split(/[,，]/).map(s => s.trim()).filter(Boolean), privacy: F.privacy,
+                   synthetic: !!F.synthetic, made_for_kids: !!F.kids };
     if (F.privacy === 'scheduled') {
-      if (!F.when) return tell('排程要選公開時間');
+      if (!F.when) return { error: '排程要選公開時間' };
+      if (!(new Date(F.when).getTime() > Date.now())) return { error: '排程時間要在現在之後' };
       body.publish_at = new Date(F.when).toISOString();
     }
-    if ((F.privacy === 'public' || F.privacy === 'scheduled') && !F.ack) return tell('公開或排程要先勾「我確認」');
-    if (bytes(F.desc) > 5000) return tell('說明超過 YouTube 的 5000 bytes 上限');
-    if (!F.rules) return tell('先勾「我確認這支片符合 YouTube 社群規範」');
+    if ((F.privacy === 'public' || F.privacy === 'scheduled') && !F.ack) return { error: '公開或排程要先勾「我確認」' };
+    if (bytes(F.desc) > 5000) return { error: '說明超過 YouTube 的 5000 bytes 上限' };
+    if (!F.rules) return { error: '先勾「我確認這支片符合 YouTube 社群規範」' };
     if (F.playlist) body.playlist_id = F.playlist;
     if (F.thumb) body.thumbnail_asset = F.thumb;
+    return { body };
+  }
+  async function submitOne(go) {
+    const got = bodyOf(F);
+    if (got.error) return tell(got.error);
+    const body = got.body;
     go.disabled = true; go.textContent = '送出中…';
     const r = await api('POST', '/api/youtube/uploads', body);
     go.disabled = false; go.textContent = '上傳到 YouTube';
@@ -18690,8 +19024,19 @@ document.addEventListener('keydown', e => {
 
   window.__YT__ = {
     open,
+    bodyOf, connect, RULES_URL, PRIV,
+    async status() { await loadStatus(); return Object.assign({}, ST, { target: target() }); },
+    async uploads() { await loadUploads(); return UPS.slice(); },
+    async submit(form) {
+      const got = bodyOf(form);
+      if (got.error) return { ok: false, error: got.error };
+      const r = await api('POST', '/api/youtube/uploads', got.body);
+      if (r.ok) loadUploads().catch(() => {});
+      return r.ok ? { ok: true, upload: r.d } : { ok: false, error: (r.d && r.d.error) || ('送不出去（' + r.status + '）') };
+    },
     rowButton(x0) {
-      const b = h('button', 'r7-dl ghost', LOCAL ? LOCK_LABEL : '上架 YouTube'); b.type = 'button';
+      if (LOCAL) return null;
+      const b = h('button', 'r7-dl ghost', '上架 YouTube'); b.type = 'button';
       b.onclick = () => open('export:' + x0.id); return b;
     },
     withProject(body) {
@@ -18787,8 +19132,8 @@ document.addEventListener('keydown', e => {
   const st = document.createElement('style'); st.textContent = CSS; document.head.append(st);
 
   const bar = document.querySelector('.slatebar');
-  if (bar) {
-    const b = h('button', 'yt-entry', LOCAL ? LOCK_LABEL : '上架 YouTube'); b.type = 'button'; b.id = 'ytOpen';
+  if (bar && !LOCAL) {
+    const b = h('button', 'yt-entry', '上架 YouTube'); b.type = 'button'; b.id = 'ytOpen';
     b.title = LOCAL ? '本機模式：登入 iamdirector 帳號後才能綁頻道上架' : '把匯出成品或成片上傳到你的 YouTube 頻道；專案可以開自動上架';
     if (LOCAL) b.style.opacity = '.75';
     b.onclick = () => open();
@@ -18799,8 +19144,15 @@ document.addEventListener('keydown', e => {
   if (qs.has('youtube')) {
     const ok = qs.get('youtube') === 'connected';
     qs.delete('youtube');
-    history.replaceState(null, '', location.pathname + (qs.toString() ? '?' + qs : '') + location.hash);
-    setTimeout(() => { tell(ok ? 'YouTube 已連結' : 'YouTube 連結沒有完成，請再試一次', ok); open(); }, 300);
+    let back2 = null;
+    try { back2 = sessionStorage.getItem('sm-yt-return'); sessionStorage.removeItem('sm-yt-return'); } catch (_) {}
+    if (back2 && /^\/w\/[0-9a-f-]{36}$/.test(back2)) {
+      history.replaceState(null, '', back2);
+      setTimeout(() => { if (typeof say === 'function') say(ok ? 'YouTube 已連結，可以上架了' : 'YouTube 連結沒有完成，請再試一次', ok); }, 300);
+    } else {
+      history.replaceState(null, '', location.pathname + (qs.toString() ? '?' + qs : '') + location.hash);
+      setTimeout(() => { tell(ok ? 'YouTube 已連結' : 'YouTube 連結沒有完成，請再試一次', ok); open(); }, 300);
+    }
   }
   loadStatus().then(() => ST.connected && loadUploads()).catch(() => {});
 })();
@@ -20198,7 +20550,8 @@ document.addEventListener('keydown', e => {
       for (const r of [0.15, 0.5, 0.9]) frames.push(await grabFrame(j.src, r, 512));
       const res = await api('POST', '/api/qc', { job: j.id, frames, expect: expectFor(j.prompt || (j.payload && j.payload.prompt), castNow()) });
       if (!res.ok) {
-        j.qc = { skip: true, why: (res.d && res.d.error) || ('驗片失敗（' + res.status + '）'), at: Date.now() };
+        const er = res.d && res.d.error;
+        j.qc = { skip: true, why: (typeof er === 'string' ? er : er && (er.message || er.code)) || ('驗片失敗（' + res.status + '）'), at: Date.now() };
       } else {
         j.qc = { verdict: res.d.verdict, rating: res.d.rating || null, model: res.d.model, at: Date.now() };
         if (QCFG.rate && res.d.rating) await rateJob(j, res.d.rating, 'auto');
@@ -20733,7 +21086,10 @@ document.addEventListener('keydown', e => {
 
 (function simpleMode() {
   if (!window.__STUDIO__ || window.__SIMPLE__) return;
-  const STEPS = ['故事', '角色', '分鏡', '生成', '聲音', '剪輯字幕', '上架'];
+  const LOCALM = !!window.__STUDIO__.local;
+  const PUB = (web, local) => (LOCALM ? local : web);
+  const NO_PUB = LOCALM;
+  const STEPS = ['故事', '角色', '分鏡', '生成', '聲音', '剪輯字幕', PUB('上架', '')].slice(0, NO_PUB ? 6 : 7);
   const ASPECTS = [['9:16', '手機直的', '適合 Shorts、Reels、抖音'], ['16:9', '電視橫的', '適合 YouTube、電腦看']];
   const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const btn = (cls, text, fn) => { const b = h('button', cls, text); b.type = 'button'; if (fn) b.onclick = fn; return b; };
@@ -20761,6 +21117,7 @@ document.addEventListener('keydown', e => {
       'font-size:var(--fs-m);cursor:pointer;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.sm-who:hover{border-color:var(--edge2)}',
     '.slatebar .sm-seg button{min-height:36px;padding:0 12px}',
+    '.sm-back{width:auto;flex:none;min-height:36px;padding:0 14px;border:1px solid var(--edge2);border-radius:8px;background:none;color:var(--paper);font-weight:600}.sm-back[hidden]{display:none}',
     '.sm-rail{position:sticky;top:68px;z-index:2;display:flex;gap:6px;padding:12px 28px;background:var(--ink);',
       'border-bottom:1px solid var(--edge);overflow-x:auto;scrollbar-width:none}',
     '.sm-rail::-webkit-scrollbar{display:none}',
@@ -20890,7 +21247,7 @@ document.addEventListener('keydown', e => {
       'border:1px solid var(--edge2);color:var(--pencil);white-space:nowrap;flex:none}',
     '.sm-chip.c{color:var(--rolling);border-color:#2f5b63}.sm-chip.g{color:var(--good);border-color:#3f5f39}',
     '.sm-chip.w{color:var(--grease);border-color:#6b5228}',
-    '.sm-segs{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin:2px 0}',
+    '.sm-segs{display:grid;grid-template-columns:repeat(' + STEPS.length + ',1fr);gap:4px;margin:2px 0}',
     '.sm-segs i{height:6px;border-radius:3px;background:var(--edge2)}',
     '.sm-segs i.d{background:var(--good)}.sm-segs i.c{background:var(--rolling)}',
     '.sm-card .foot{display:flex;align-items:center;gap:8px;margin-top:auto;padding-top:6px}',
@@ -21030,10 +21387,20 @@ document.addEventListener('keydown', e => {
     const w = WORKS[pid];
     if (w.v !== 2) { w.step = OLD_STEP[w.step] || 1; w.v = 2; }
     if (!w.done || typeof w.done !== 'object') w.done = {};
+    if (w.step > STEPS.length && w.step <= 7) w.step = STEPS.length;
     if (!(w.step >= 1 && w.step <= STEPS.length)) w.step = 1;
     return w;
   }
 
+  const ADV_ON = (() => {
+    let q = null;
+    try { q = new URLSearchParams(location.search).get('advanced'); } catch (_) { }
+    try {
+      if (q === '1') localStorage.setItem('studio.advanced', '1');
+      if (q === '0') localStorage.removeItem('studio.advanced');
+      return q === '1' || (q !== '0' && localStorage.getItem('studio.advanced') === '1');
+    } catch (_) { return q === '1'; }
+  })();
   async function decideMode() {
     let vals = {};
     try {
@@ -21042,7 +21409,7 @@ document.addEventListener('keydown', e => {
       vals = (d && d.values) || {};
     } catch (_) { }
     WORKS = (vals.simple_works && typeof vals.simple_works === 'object') ? vals.simple_works : {};
-    if (vals.ui_mode === 'simple' || vals.ui_mode === 'advanced') return vals.ui_mode;
+    if (vals.ui_mode === 'simple' || vals.ui_mode === 'advanced') return ADV_ON ? vals.ui_mode : 'simple';
     try { await loadProjects(); } catch (_) { }
     const nonEmpty = v => Array.isArray(v) ? v.length > 0 : (v && typeof v === 'object') ? Object.keys(v).length > 0 : !!v;
     const old = PROJ.length > 0 || Object.keys(ITEMS || {}).length > 0
@@ -21050,7 +21417,7 @@ document.addEventListener('keydown', e => {
     const m = old ? 'advanced' : 'simple';
     storeSet('ui_mode', m);
     FIRST = !old;
-    return m;
+    return ADV_ON ? m : 'simple';
   }
   function setMode(m, save) {
     MODE = m;
@@ -21058,6 +21425,7 @@ document.addEventListener('keydown', e => {
     if (save) storeSet('ui_mode', m);
     document.body.classList.toggle('sm-on', m === 'simple');
     document.querySelectorAll('.sm-seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.m === m)));
+    document.querySelectorAll('.sm-back').forEach(b => { b.hidden = m === 'simple'; });
     root.hidden = m !== 'simple';
     if (m === 'simple') {
       route();
@@ -21065,11 +21433,16 @@ document.addEventListener('keydown', e => {
     }
   }
   function seg() {
+    if (!ADV_ON) {
+      const back = btn('sm-back', '← 回主線', () => setMode('simple', true));
+      back.title = '回到七步主線'; back.hidden = MODE === 'simple';
+      return back;
+    }
     const g = h('div', 'sm-seg'); g.setAttribute('role', 'group'); g.setAttribute('aria-label', '畫面模式');
     [['simple', '主線'], ['advanced', '進階工作台']].forEach(([m, t]) => {
       const b = btn('', t, () => { if (MODE !== m) setMode(m, true); });
       b.dataset.m = m; b.setAttribute('aria-pressed', String(MODE === m));
-      b.title = m === 'simple' ? '七步主線：故事、角色、分鏡、生成、聲音、剪輯字幕、上架' : '完整工作台：所有參數與工具';
+      b.title = m === 'simple' ? '七步主線：' + STEPS.join('、') : '完整工作台：所有參數與工具';
       g.append(b);
     });
     return g;
@@ -21154,7 +21527,8 @@ document.addEventListener('keydown', e => {
       const b = document.getElementById('studioWhoBtn'); if (b) { setMode('advanced', true); setTimeout(() => b.click(), 0); }
     });
     who.title = '帳號設定在進階工作台的右上角';
-    t.append(brand, home, h('span', 'sp'), ...(pointsOn() ? [pts] : []), seg(), who);
+    const kb = window.__KEYBAR__ ? [window.__KEYBAR__.pill()] : [];
+    t.append(brand, home, h('span', 'sp'), ...(pointsOn() ? [pts] : []), seg(), who, ...kb);
     return t;
   }
   function stepBar(w, pid) {
@@ -21191,9 +21565,9 @@ document.addEventListener('keydown', e => {
       case 2: return w.done.cast ? 'AI 照分鏡描述' : '角色一致';
       case 3: return sm.n ? sm.n + ' 鏡・' + sm.sec + ' 秒' : '拆成鏡頭';
       case 4: return (w.jobs || []).length ? sm.gen + ' / ' + sm.n + ' 鏡' : sm.n ? sm.n + ' 鏡影片' : '每鏡一支';
-      case 5: return w.done.sound ? '影片原聲' : '配音＋配樂';
+      case 5: return !w.done.sound ? '配音＋配樂' : sndMode(w) === 'orig' ? '影片原聲' : '已配音配樂';
       case 6: return w.exported ? '已匯出成片' : '接片＋字幕';
-      case 7: return w.done.pub ? '已上架' : 'YouTube';
+      case 7: return w.done.pub ? PUB('已上架', '已完成') : PUB('YouTube', '收尾');
     }
     return '';
   }
@@ -21231,7 +21605,7 @@ document.addEventListener('keydown', e => {
     const all = !!w && STEPS.every((_, k) => doneOf(w, k + 1, p.id));
     const row = h('div', 'row');
     const nm = h('div', 'nm', p.name); nm.title = p.name;
-    row.append(nm, h('span', 'sm-chip ' + (w && w.done.pub ? 'g' : 'c'), w && w.done.pub ? '已上架' : '第 ' + step + ' 步・' + STEPS[step - 1]));
+    row.append(nm, h('span', 'sm-chip ' + (w && w.done.pub ? 'g' : 'c'), w && w.done.pub ? PUB('已上架', '已完成') : '第 ' + step + ' 步・' + STEPS[step - 1]));
     const segs = h('div', 'sm-segs'); segs.setAttribute('role', 'img');
     segs.setAttribute('aria-label', '主線進度：' + STEPS.map((s, k) => s + (w && doneOf(w, k + 1, p.id) ? '做完' : k + 1 === step ? '做到這裡' : '還沒做')).join('、'));
     STEPS.forEach((s, k) => { const x = h('i', w && doneOf(w, k + 1, p.id) ? 'd' : k + 1 === step ? 'c' : ''); x.title = s; segs.append(x); });
@@ -21257,6 +21631,7 @@ document.addEventListener('keydown', e => {
   async function cloudSyncWork(p, b) {
     const desk = window.iamdirectorDesktop;
     if (!desk || !desk.cloud) return;
+    b = b || { textContent: '', disabled: false };
     const old = b.textContent;
     b.disabled = true; b.textContent = '檢查中…';
     try {
@@ -21332,7 +21707,7 @@ document.addEventListener('keydown', e => {
     box.style.cssText = 'background:var(--slate);color:var(--paper);border:1px solid var(--edge2);border-radius:12px;padding:22px 24px;max-width:460px;width:100%;line-height:1.6';
     const t = h('h3', null, '連結 iamdirector 帳號'); t.style.cssText = 'margin:0 0 8px;font-size:var(--fs-xl)';
     const msg = h('p', null, st && st.offline ? '現在連不上雲端（' + (st.host || '') + '），請確認網路後再試。'
-      : '連結之後就能把作品一部一部上傳到雲端資產庫，換電腦也拿得到；也能一鍵上架、用平台點數。用哪個帳號登入？');
+      : '連結之後就能把作品一部一部同步到雲端，換電腦也拿得到；要上架在網頁版，平台點數也在那裡。用哪個帳號登入？');
     msg.style.margin = '0 0 14px';
     const row = h('div'); row.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap';
     [['google', 'Google'], ['github', 'GitHub'], ['line', 'LINE']].forEach(([id, label]) => {
@@ -21360,7 +21735,8 @@ document.addEventListener('keydown', e => {
     const c = h('article', 'sm-card sm-new' + (wide ? ' wide' : ''));
     const main = h('div', 'mn');
     main.append(h('h2', null, wide ? '一句話，拍成一部片' : '開一部新片'),
-      h('p', 'help', wide ? '寫下你想拍的畫面，AI 會拆成分鏡，接著一步一步帶你做到上架。每一步都可以交給 AI，也可以自己展開來調。' : '一句話就能開始，剩下的每一步都可以交給 AI。'));
+      h('p', 'help', wide ? PUB('寫下你想拍的畫面，AI 會拆成分鏡，接著一步一步帶你做到上架。每一步都可以交給 AI，也可以自己展開來調。',
+                 '寫下你想拍的畫面，AI 會拆成分鏡，接著一步一步帶你做到成片。每一步都可以交給 AI，也可以自己展開來調。') : '一句話就能開始，剩下的每一步都可以交給 AI。'));
     const lab = h('label', 'f', '你想拍什麼？'); lab.htmlFor = 'smOneLine'; lab.style.cssText = 'position:absolute;left:-9999px';
     const ta = h('textarea', 'in'); ta.id = 'smOneLine'; ta.maxLength = 400;
     ta.placeholder = '例：深夜末班車上，一隻橘貓陪一個失戀的女孩坐到終點站…';
@@ -21685,13 +22061,13 @@ document.addEventListener('keydown', e => {
     4: ['展開進階：拍攝紀錄、時間軸、挑版', () => openXP(4)],
     5: ['展開：配音與配樂', () => { const r6 = window.__R6__; if (r6 && typeof r6.openSound === 'function') r6.openSound(); else toBench('jobs'); }],
     6: ['展開：完整匯出設定', function () { const r7 = window.__R7__; if (r7 && typeof r7.open === 'function') r7.open(); else toBench('jobs'); }],
-    7: ['展開：YouTube 上架面板', () => { const yt = window.__YT__; if (yt && typeof yt.open === 'function') yt.open(); else toBench('jobs'); }]
   };
+  if (!NO_PUB) EXPAND[7] = [PUB('展開：YouTube 上架面板', ''), () => { const yt = window.__YT__; if (yt && typeof yt.open === 'function') yt.open(); else toBench('jobs'); }];
   function toBench(tab) {
     setMode('advanced', false);
     const b = document.querySelector('.tabs button[data-tab="' + tab + '"]');
     if (b && !b.hidden) b.click();
-    say('這是進階工作台（作品、拍攝紀錄、角色庫跟主線共用）；按頂端的「主線」回到原本那一步', true);
+    say('這是進階工作台（作品、拍攝紀錄、角色庫跟主線共用）；按頂端的「' + (ADV_ON ? '主線' : '← 回主線') + '」回到原本那一步', true);
   }
   SM_PAGES[1] = function storyPage(host, w, pid) {
     const cols = h('div', 'sm-cols');
@@ -22316,22 +22692,250 @@ document.addEventListener('keydown', e => {
     return idxs.filter(i => got[i] && String(got[i].prompt || '').trim()).map(i => ({ i, before: L[i].prompt || '', after: String(got[i].prompt).trim() }));
   }
 
+  function openKeys(done) {
+    const P = window.__STUDIO_PAYER__;
+    if (!P || typeof P.open !== 'function') { say('金鑰設定還沒載入，請重新整理'); return; }
+    Promise.resolve(P.open()).catch(() => {});
+    if (typeof done !== 'function') return;
+    let seen = false; const t0 = Date.now();
+    const t = setInterval(() => {
+      if (document.querySelector('.payer-sheet')) { seen = true; return; }
+      if (!seen && Date.now() - t0 < 5000) return;
+      clearInterval(t);
+      (P.reload ? P.reload().catch(() => {}) : Promise.resolve()).then(done);
+    }, 800);
+  }
+  const sndMode = w => (w.sound && w.sound.mode) || (w.done.sound === 'ai' || w.done.sound === 'orig' ? 'orig' : w.done.sound ? 'voice' : null);
+  const MOODS = [['warm', '溫暖', '溫暖的鋼琴與弦樂，中慢板，柔和明亮'], ['light', '輕快', '輕快的木吉他與手拍，明亮活潑，中快板'],
+                 ['tense', '懸疑', '低沉的合成器與緊張的弦樂脈動，慢慢堆疊'], ['epic', '熱血', '激昂的鼓與管弦，節奏一路推進，高潮有力'],
+                 ['sad', '感傷', '安靜的鋼琴與大提琴，慢板，留白多'], ['tech', '科技感', '乾淨的電子節拍與合成器琶音，現代俐落']];
+  const BGM_UNDER_VOICE = 0.35, BGM_ALONE = 0.8;
+  const AMB_UNDER_VOICE = 0.2;
+  const r2 = x => Math.round(x * 100) / 100;
+  const st3 = document.createElement('style');
+  st3.textContent = [
+    '.sm-lines{background:var(--riser);border:1px solid var(--edge);border-radius:12px;padding:6px 18px}',
+    '.sm-line{display:grid;grid-template-columns:34px minmax(120px,210px) minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--edge)}',
+    '.sm-line:last-child{border-bottom:0}',
+    '.sm-line .no{font:var(--fs-s) var(--mono);color:var(--faint)}',
+    '.sm-line .who{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.sm-line .who small{display:block;font-weight:400;font-size:var(--fs-s);color:var(--pencil)}',
+    '.sm-line .tx{min-width:0}',
+    '.sm-line .end{display:flex;align-items:center;gap:8px}',
+    '.sm-play{width:36px;height:36px;min-height:0;padding:0;border:1px solid var(--edge2);border-radius:50%;background:none;color:var(--paper);cursor:pointer}',
+    '.sm-play:hover{border-color:var(--rolling);color:var(--rolling)}',
+    '.sm-amb{display:inline-flex;align-items:center;gap:6px;margin-top:4px;font-size:var(--fs-s);color:var(--pencil);cursor:pointer}',
+    '.sm-amb input{width:16px;height:16px;margin:0;accent-color:var(--rolling)}',
+    '.sm-pub{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.4fr) minmax(0,1fr);gap:16px;align-items:start}',
+    '.sm-pubv video{width:100%;max-height:420px;border-radius:8px;background:#000;display:block;margin-bottom:8px}',
+    '.sm-pubf{display:flex;flex-direction:column;gap:12px}',
+    '.sm-fld{display:flex;flex-direction:column;gap:6px}.sm-fld .sm-lbl{margin:0}',
+    '.sm-fld input,.sm-fld textarea{width:100%;box-sizing:border-box}',
+    '.sm-pubf .sm-amb{align-items:flex-start}.sm-pubf .sm-amb input{margin-top:3px;flex:none}.sm-pubf .sm-amb a{margin-left:4px;color:var(--rolling);white-space:nowrap}',
+    '.sm-pubside{display:flex;flex-direction:column;gap:12px}.sm-pubside .sm-lbl{margin:0 0 8px}',
+    '.sm-prow{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0}',
+    '.sm-chk{display:grid;grid-template-columns:20px minmax(0,1fr);column-gap:8px;padding:5px 0;font-size:var(--fs-s)}',
+    '.sm-chk i{font-style:normal;font-weight:700}.sm-chk.ok i{color:var(--good)}.sm-chk.bad i{color:var(--ng)}.sm-chk.warn i{color:var(--grease)}',
+    '.sm-chk small{grid-column:2;color:var(--pencil)}',
+    '.sm-done.bad{border-color:#6b3a30;background:rgba(224,112,92,.07)}',
+    '@media (max-width:980px){.sm-pub{grid-template-columns:1fr}}',
+    '.sm-cloudtip{margin-top:10px}.sm-cloudtip .sm-link{margin-left:6px;padding:0;color:var(--rolling)}',
+    '.sm-music{background:var(--riser);border:1px solid var(--edge);border-radius:12px;padding:18px 20px}',
+    '.sm-music textarea{width:100%;min-height:64px;margin-top:10px;box-sizing:border-box}',
+    '.sm-cut{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}',
+    '.sm-cut .sm-card .sm-thumb{height:110px}',
+    '.sm-cut .nm{display:flex;align-items:center;gap:8px}',
+    '.sm-cut .nm b{font:var(--fs-s) var(--mono);color:var(--faint)}',
+    '.sm-cut .help{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:6px 0 0}',
+    '.sm-done .sp{flex:1}',
+    '.sm-done .sm-path{flex:1 0 100%;min-width:0;overflow-wrap:anywhere}',
+    '.sm-done{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin-top:18px;padding:14px 18px;border:1px solid #3f5f39;border-radius:12px;background:rgba(121,190,107,.07)}',
+    '@media (max-width:720px){.sm-line{grid-template-columns:28px minmax(0,1fr);row-gap:4px}.sm-line .who{grid-column:2}.sm-line .tx{grid-column:2}.sm-line .end{grid-column:2}}',
+  ].join('\n');
+  document.head.append(st3);
+
+  function cueSplit(text, t0, t1) {
+    const parts = [];
+    String(text || '').split(/(?<=[。！？!?；;，,、])/).map(x => x.trim()).filter(Boolean).forEach(p => {
+      const last = parts[parts.length - 1];
+      if (last && [...last].length + [...p].length <= 18) parts[parts.length - 1] = last + p; else parts.push(p);
+    });
+    if (!parts.length) return [];
+    const total = parts.reduce((a, p) => a + [...p].length, 0) || 1;
+    let t = t0;
+    return parts.map(p => { const d = (t1 - t0) * [...p].length / total; const q = { start: r2(t), end: r2(t + d), text: p.replace(/[，,、；;]$/, '') }; t += d; return q; });
+  }
+  function arrangeTL(w, pid) {
+    const L = board(pid) || [], A = window.__TL_ARRANGE__, TLA = window.__TL_AUDIO__, R6 = window.__R6__;
+    if (typeof A !== 'function' || !TLA || typeof window.__TL_V1__ !== 'function') return null;
+    const picks = L.map((sh, i) => ({ sh, i, j: curTake(w, sh).cur })).filter(x => x.j && x.j.status === 'completed' && x.j.src);
+    const r = A(picks.map(x => x.j.uid));
+    const v1 = window.__TL_V1__();
+    let acc = 0;
+    const span = {};
+    v1.forEach((c, k) => { if (k < picks.length) span[picks[k].sh.sid] = { at: acc, dur: c.dur, in: c.in || 0, out: c.out, uid: c.uid }; acc += c.dur; });
+    const list = TLA.list();
+    for (let i = list.length - 1; i >= 0; i--) if (list[i] && list[i].sm === 'orig') list.splice(i, 1);
+    const voice = sndMode(w) === 'voice';
+    const lines = (R6 && typeof R6.lines === 'function') ? R6.lines() : [];
+    let orig = 0, moved = 0, cues = 0;
+    picks.forEach(x => {
+      const sp = span[x.sh.sid];
+      if (!sp) return;
+      const tts = list.filter(c => c.tts && c.tts.sid === x.sh.sid);
+      tts.forEach(c => { if (!((c.at || 0) >= sp.at - 0.01 && (c.at || 0) < sp.at + sp.dur)) { c.at = r2(sp.at + Math.min(0.3, sp.dur / 4)); moved++; } });
+      const own = list.some(c => !c.src && !c.sm && c.uid === sp.uid);
+      const amb = voice && tts.length && !!(w.sound && w.sound.amb && w.sound.amb[x.sh.sid]);
+      if (!own && (!(voice && tts.length) || amb)) {
+        list.push(Object.assign({ lane: 'A1', uid: sp.uid, at: r2(sp.at), trimIn: sp.in, dur: r2(sp.dur), sm: 'orig',
+                                  name: (amb ? '環境音 · 第 ' : '原聲 · 第 ') + (x.i + 1) + ' 鏡' }, amb ? { gain: AMB_UNDER_VOICE } : {}));
+        orig++;
+      }
+      const ln = lines.find(l => l.sid === x.sh.sid);
+      const j = (typeof jobByUid === 'function' && jobByUid(sp.uid)) || x.j;
+      const mine = j && typeof capCues === 'function' && capCues(j).length && capCues(j).every(q => q && q.sm);
+      if (ln && j && typeof capCues === 'function' && (!capCues(j).length || mine)) {
+        const t0 = tts[0] ? sp.in + Math.max(0, (tts[0].at || 0) - sp.at) : sp.in + Math.min(0.3, sp.dur / 4);
+        const t1 = tts[0] ? Math.min(sp.out, t0 + (Number(tts[0].dur) || 1)) : Math.max(t0 + 0.8, sp.out - 0.15);
+        const qs = cueSplit(ln.text, t0, t1).map(q => Object.assign(q, { sm: 1 }));
+        j.captions = qs; cues += qs.length;
+      }
+    });
+    list.filter(c => c && c.lane === 'A2' && c.music && !(c.at > 0)).forEach(c => {
+      const full = Number(c.full) || Number(c.dur) || acc;
+      c.dur = r2(acc || c.dur); c.loop = full < acc - 0.05 || undefined;
+      if (c.trimIn) c.trimIn = 0;
+    });
+    if (cues) { try { save(); } catch (_) {} }
+    TLA.changed();
+    w.cut = { at: Date.now(), shots: picks.length, missing: L.length - picks.length, extra: r.extra, orig, moved, cues };
+    saveWorks(true);
+    return w.cut;
+  }
+
   SM_PAGES[5] = function soundPage(host, w, pid) {
     clearInterval(pollT);
-    host.append(h('h2', null, '聲音'), h('p', 'lead', '台詞、配音、配樂都在這一步。這一版的預設是直接用影片生成時自帶的聲音；要逐句換聲線、加配樂，按「展開」。'));
-    const ph = h('div', 'sm-ph');
-    const a = h('div', 'sm-card2'); const ah = h('h3'); ah.append(h('span', 'sm-chip c', 'AI 預設'), document.createTextNode('影片原聲'));
-    const al = h('ul'); ['每一鏡用生成時自帶的環境音與聲音。', '不另外配音、配樂，所以' + PT('不花點數。', '不花錢。'), '剪輯字幕那一步會照分鏡順序接起來。']
-      .forEach(t => al.append(h('li', null, t)));
-    a.append(ah, al);
-    const b = h('div', 'sm-card2'); const bh = h('h3'); bh.append(h('span', 'sm-chip', '展開'), document.createTextNode('配音與配樂'));
-    const bl = h('ul'); ['逐句選聲線，聲線跟著角色走。', '依情緒挑配樂，有人說話時自動壓低。', '上傳自己錄的音檔。']
-      .forEach(t => bl.append(h('li', null, t)));
-    b.append(bh, bl);
-    ph.append(a, b); host.append(ph);
-    const why = h('span', 'why', w.done.sound ? '這一步交給 AI 了；之後隨時可以回來改。' : '');
-    const ai = btn('sm-ai', 'AI 幫我做：用影片原聲', () => { w.done.sound = 'ai'; goStep(w, 6); });
+    const gate = boardGate(host, pid); if (gate) return gate;
+    const L = board(pid);
+    const R6 = window.__R6__, TLA = window.__TL_AUDIO__;
+    w.sound = w.sound || {};
+    const mode = sndMode(w) || 'voice';
+    const lines = R6 && typeof R6.lines === 'function' ? R6.lines() : [];
+    const ready = L.filter(sh => shotDone(w, sh)).length;
+    const aclips = TLA ? TLA.list() : [];
+    host.append(h('h2', null, '聲音'),
+      h('p', 'lead', '台詞依角色配音，再墊一段配樂；有人說話時配樂自動放低。也可以只用每一鏡生成時自帶的聲音。'));
+    const ch = h('div', 'sm-choices');
+    [['voice', '配音＋配樂', lines.length ? lines.length + ' 句台詞依角色配音，再墊一段配樂' : '這部片沒有台詞：墊一段配樂，每鏡原聲照留'],
+     ['orig', '只用影片原聲', '每一鏡用生成時自帶的聲音，' + PT('不花點數', '不花錢')]].forEach(([k, t, sub]) => {
+      const b = btn('sm-choice', null, () => { w.sound.mode = k; saveWorks(true); render(true); });
+      b.setAttribute('aria-pressed', String(mode === k));
+      b.append(h('b', null, t), h('small', null, sub));
+      ch.append(b);
+    });
+    host.append(ch);
+    const closed = k => !!(R6 && R6.caps && R6.caps[k] && R6.caps[k].open === false);
+    const clipOf = it => aclips.find(c => c && c.tts && c.tts.sid === it.sid) || null;
+    const todo = lines.filter(it => { const c = clipOf(it); return !c || (R6.staleOf && R6.staleOf(c)); });
+    const mclip = aclips.find(c => c && c.lane === 'A2' && c.music) || null;
+    const pend = R6 && R6.pending ? R6.pending.length : 0;
+    const mood = MOODS.find(m => m[0] === w.sound.mood) || MOODS[0];
+    const prompt = (typeof w.sound.prompt === 'string' && w.sound.prompt.trim()) ? w.sound.prompt : mood[2];
+    if (mode === 'voice') {
+      host.append(h('div', 'sm-lbl', lines.length ? '台詞（' + lines.length + ' 句）' : '台詞'));
+      if (!lines.length) {
+        host.append(h('p', 'help', '分鏡裡沒有台詞。台詞要用「」括起來寫在分鏡裡，例如：@小美 笑著說「今天也辛苦了」。'));
+      } else {
+        const box = h('div', 'sm-lines');
+        lines.forEach(it => {
+          const c = clipOf(it), stale = c && R6.staleOf ? R6.staleOf(c) : '';
+          const row = h('div', 'sm-line');
+          const v = R6.voiceOf(it.who);
+          const mname = ((R6.models && R6.models.tts) || []).find(m => m[0] === v.model);
+          const who = h('div', 'who', it.who ? it.who.name : '旁白');
+          who.append(h('small', null, (mname ? mname[1] : v.model) + (v.voice ? ' · ' + v.voice : '')));
+          const tx = h('div', 'tx', '「' + it.text + '」');
+          if (stale) tx.append(h('div', 'help', stale));
+          const end = h('div', 'end');
+          if (c && c.src && !stale) {
+            const pb = btn('sm-play', '▶', () => { try { new Audio(c.src).play().catch(() => {}); } catch (_) {} });
+            pb.setAttribute('aria-label', '聽第 ' + it.n + ' 鏡的配音'); end.append(pb);
+          }
+          end.append(h('span', 'sm-pill ' + (!c ? 'new' : stale ? 'go' : 'ok'), !c ? '還沒配' : stale ? '要重生' : '已配好'));
+          const amb = h('label', 'sm-amb'); const cb = h('input'); cb.type = 'checkbox';
+          cb.checked = !!(w.sound.amb && w.sound.amb[it.sid]);
+          cb.onchange = () => { w.sound.amb = Object.assign({}, w.sound.amb, { [it.sid]: cb.checked }); if (!cb.checked) delete w.sound.amb[it.sid];
+                                saveWorks(true); if (w.cut) arrangeTL(w, pid); };
+          amb.append(cb, document.createTextNode('保留環境音（壓低音量）'));
+          tx.append(amb);
+          row.append(h('span', 'no', '#' + it.n), who, tx, end);
+          box.append(row);
+        });
+        host.append(box);
+        host.append(h('p', 'help', '聲線跟著角色走：要換聲線、語速或念法，按下方「展開」。'));
+      }
+      host.append(h('div', 'sm-lbl', '配樂'));
+      const mu = h('div', 'sm-music');
+      const tags = h('div', 'sm-tags');
+      MOODS.forEach(m => {
+        const b = btn('sm-tog', m[1], () => { w.sound.mood = m[0]; w.sound.prompt = m[2]; saveWorks(true); render(true); });
+        b.setAttribute('aria-pressed', String(mood[0] === m[0] && prompt === m[2]));
+        tags.append(b);
+      });
+      const ta = h('textarea'); ta.value = prompt; ta.maxLength = 300; ta.setAttribute('aria-label', '配樂風格');
+      ta.oninput = () => { w.sound.prompt = ta.value; saveWorks(); };
+      ta.onchange = () => render(true);
+      mu.append(tags, ta);
+      const ms = h('p', 'help');
+      ms.textContent = pend ? '配樂生成中，好了會自動放上去。'
+        : mclip ? '已經有配樂：「' + String((mclip.music && mclip.music.prompt) || mclip.name || '').slice(0, 40) + '」。改了風格再按 AI 幫我做會換一段新的。'
+        : '純配樂、不帶人聲，鋪滿整支片（比片短就循環）。' + (lines.length ? '有台詞，所以音量放低到 35%。' : '');
+      mu.append(ms);
+      host.append(mu);
+      if (closed('tts') || closed('music')) host.append(h('p', 'sm-err', (closed('tts') ? '配音' : '配樂') + '現在還沒開放，這一步只會做開放的那一半。'));
+    }
+    const why = h('span', 'why');
     const next = btn('sm-main', '下一步：剪輯字幕 →', () => goStep(w, 6));
+    if (mode === 'orig') {
+      why.textContent = w.done.sound ? '用影片原聲；剪輯字幕那一步會把原聲接好。' : '不花' + PT('點數', '錢') + '。';
+      const ai = btn('sm-ai', 'AI 幫我做：用影片原聲', () => { w.sound.mode = 'orig'; w.done.sound = 'orig'; goStep(w, 6); });
+      return [why, ai, next];
+    }
+    const wantMusic = !closed('music') && !pend && (!mclip || ((mclip.music && mclip.music.prompt) || '') !== prompt.trim());
+    const doLines = closed('tts') ? [] : todo;
+    const what = [doLines.length ? '配 ' + doLines.length + ' 句台詞' : '', wantMusic ? (mclip ? '換配樂' : '配樂') : ''].filter(Boolean);
+    if (!ready) why.textContent = '先到第 4 步生成影片，配音才對得上畫面。';
+    else if (!what.length) why.textContent = '台詞和配樂都好了；之後改了台詞，這裡會標「要重生」。';
+    else why.textContent = '會先報價，確認之後才扣' + PT('點', '費') + '。';
+    if (!what.length) { if (ready && !w.done.sound) { w.done.sound = 'voice'; saveWorks(true); } return [why, next]; }
+    const ai = btn('sm-ai', 'AI 幫我做：' + what.join('＋'), async function () {
+      if (!R6 || typeof R6.soundAll !== 'function') { window.__ERR_AT__(this, '聲音功能還沒載入，請重新整理。', '做不了'); return; }
+      const b = this; b.disabled = true; const t0 = b.textContent; b.textContent = '報價中…';
+      try {
+        w.sound.mode = 'voice';
+        arrangeTL(w, pid);
+        const res = await R6.soundAll(doLines, wantMusic ? { prompt: prompt.trim(), gain: lines.length ? BGM_UNDER_VOICE : BGM_ALONE } : null);
+        if (res && res.ok) { w.done.sound = 'voice'; arrangeTL(w, pid); }
+        else if (res && res.error) window.__ERR_AT__(b, res.error, '報價失敗');
+      } catch (e) { window.__ERR_AT__(b, e.message || String(e), '做不了'); }
+      finally { b.disabled = false; b.textContent = t0; saveWorks(true); render(true); }
+    });
+    ai.disabled = !ready;
+    const P = window.__STUDIO_PAYER__;
+    const need = [doLines.length ? 'tts' : '', wantMusic ? 'music' : ''].filter(Boolean);
+    if (ready && need.length && P && typeof P.effective === 'function') {
+      const slot = h('div'); host.append(slot);
+      (P.reload ? P.reload().catch(() => {}) : Promise.resolve()).then(() => {
+        const miss = need.find(k => !P.effective(k));
+        if (!miss || !slot.isConnected) return;
+        ai.disabled = true;
+        why.textContent = '先接上金鑰，按確認之前不會花錢。';
+        const box = h('div', 'sm-card2');
+        box.append(h('p', null, (miss === 'tts' ? '配音' : '配樂') + '還沒有付款方式：接上你的 AppleToken 金鑰就能報價，確認之前不會花錢。'),
+          btn('sm-btn', '開啟金鑰設定', () => openKeys(() => { if (MODE === 'simple' && w.step === 5) render(true); })));
+        slot.append(box);
+      });
+    }
     return [why, ai, next];
   };
 
@@ -22339,70 +22943,226 @@ document.addEventListener('keydown', e => {
     clearInterval(pollT);
     const gate = boardGate(host, pid); if (gate) return gate;
     const L = board(pid);
-    const ready = L.map((sh, i) => [sh, i, curTake(w, sh).cur]).filter(([, , j]) => j && j.status === 'completed');
+    const V1 = typeof window.__TL_V1__ === 'function' ? window.__TL_V1__() : [];
+    const rows = L.map((sh, i) => { const t = curTake(w, sh); const j = t.cur; const cell = t.idx >= 0 ? V1[t.idx] : null;
+      return { sh, i, j, idx: t.idx, ok: !!(j && j.status === 'completed' && j.src), cand: !!(cell && cell.cand === 'pending') }; });
+    const ready = rows.filter(r => r.ok);
     if (!ready.length) {
       host.append(h('h2', null, '剪輯字幕'), h('p', 'lead', '還沒有生成好的鏡頭可以接。先到第 4 步生成，好了之後這裡會照分鏡順序排好。'));
       return [h('span', 'why'), btn('sm-main', '← 去生成', () => goStep(w, 4))];
     }
     host.append(h('h2', null, '剪輯字幕：接起來、上字幕'),
-      h('p', 'lead', '這幾個鏡頭已經依序排好。按「AI 幫我做」，只要回答兩件事：要不要字幕、片尾寫什麼，再按「匯出 mp4」就好。'));
-    const grid = h('div', 'sm-grid');
-    ready.forEach(([sh, i, j]) => {
+      h('p', 'lead', 'AI 會照分鏡順序把每一鏡排上時間軸、接好聲音、用分鏡裡的台詞上字幕（不另外辨識，不花錢），再打開匯出：先看預覽，確認才匯出 mp4。'));
+    const grid = h('div', 'sm-cut');
+    rows.forEach(r => {
       const c = h('article', 'sm-card'); const th = h('div', 'sm-thumb');
-      if (j && j.src) { const v = h('video'); v.src = j.src; v.controls = true; v.preload = 'metadata'; th.append(v); }
-      const bd = h('div', 'bd'); bd.append(h('div', 'nm', '鏡頭 ' + (i + 1)), h('div', 'help', sh.prompt || ''));
+      if (r.ok) { const v = h('video'); v.src = r.j.src + (String(r.j.src).includes('#') ? '' : '#t=0.1'); v.muted = true; v.preload = 'metadata'; v.playsInline = true; th.append(v);
+        th.onmouseenter = () => v.play().catch(() => {}); th.onmouseleave = () => { v.pause(); }; }
+      const bd = h('div', 'bd');
+      const nm = h('div', 'nm'); nm.append(h('b', null, String(r.i + 1).padStart(2, '0')),
+        h('span', 'sm-pill ' + (r.cand ? 'go' : r.ok ? 'ok' : 'new'), r.cand ? '候選還沒挑' : r.ok ? '拍好了' : '還沒拍'));
+      bd.append(nm, h('div', 'help', String(r.sh.prompt || '').replace(/。?鏡頭：.*$/, '')));
+      if (r.cand && typeof window.__TAKES_OPEN__ === 'function') bd.append(btn('sm-link', '挑一支', () => window.__TAKES_OPEN__(r.idx)));
       c.append(th, bd); grid.append(c);
     });
     host.append(grid);
+    const miss = rows.length - ready.length, cand = rows.filter(r => r.cand).length;
+    if (w.cut) {
+      const s = w.cut, d = h('p', 'sm-saved');
+      d.textContent = '時間軸已照分鏡排好：' + [s.shots + ' 鏡', s.orig ? '原聲 ' + s.orig + ' 段' : '', s.cues ? '字幕 ' + s.cues + ' 句' : '',
+        s.extra ? '另有 ' + s.extra + ' 段不在分鏡裡（接在最後，可在展開後拿掉）' : ''].filter(Boolean).join('・');
+      host.append(d);
+    }
     const r7 = window.__R7__;
     const cfg = (r7 && r7.cfg) || {};
+    const x = w.exportId && r7 && (r7.hist || []).find(e => e.id === w.exportId);
+    if (x) {
+      const d = h('div', 'sm-done');
+      if (x.state === 'done') {
+        d.append(h('span', 'sm-pill ok', '成片匯出好了'), h('span', null, x.title || ''), h('span', 'sp'));
+        const desk = window.iamdirectorDesktop;
+        if (NO_PUB && x.path) {
+          if (desk && typeof desk.revealPath === 'function') d.append(btn('sm-btn', desk.platform === 'darwin' ? '在 Finder 中顯示' : '在資料夾中顯示', () => desk.revealPath(x.path)));
+          d.append(h('span', 'help sm-path', '已存到：' + x.path));
+        } else if (typeof r7.download === 'function') d.append(btn('sm-btn', '下載 mp4', () => r7.download(x, 'url')));
+      } else if (x.state === 'failed') d.append(h('span', 'sm-pill go', '上一次匯出失敗'), h('span', 'help', String(x.error || '')));
+      else {
+        d.append(h('span', 'sm-pill new', '匯出中…'), h('span', 'help', '好了這裡會出現下載按鈕'));
+        const was = x.state;
+        pollT = setInterval(() => { if (x.state !== was) render(true); }, 2000);
+      }
+      host.append(d);
+    }
     const note = h('p', 'help'); note.style.marginTop = '16px';
     note.textContent = cfg.enabled === false ? ('匯出服務現在還沒開：' + (cfg.reason || '請稍後再試')) :
-      (Number(cfg.price_points) > 0 ? '匯出要 ' + cfg.price_points + ' 點，會在匯出畫面再確認一次。' : PT('匯出不再花點數。', '匯出不用另外付費。'));
+      (Number(cfg.price_points) > 0 ? '匯出要 ' + cfg.price_points + ' 點，會在匯出畫面再確認一次。' : PT('匯出不花點數。', '匯出不用另外付費。'));
     host.append(note);
-    if (w.exported) host.append(h('p', 'sm-saved', '這部作品已經匯出過了，可以再匯出一次。'));
-    const why = h('span', 'why');
-    const go = btn('sm-ai', 'AI 幫我做：接起來並上字幕', function () {
+    const why = h('span', 'why', miss ? '還有 ' + miss + ' 鏡沒拍好，這幾鏡不會進成片。' : cand ? '有 ' + cand + ' 鏡的候選還沒挑，挑好才匯出得了。' : '');
+    const ai = btn('sm-ai', w.exported ? 'AI 幫我做：重新整理並匯出' : 'AI 幫我做：接起來、上字幕、匯出', function () {
       if (!r7 || typeof r7.open !== 'function') { window.__ERR_AT__(this, '這個環境沒有開匯出功能。', '打不開'); return; }
       const ar = document.getElementById('aspect_ratio');
       if (ar && ar.value !== w.aspect) { ar.value = w.aspect; ar.dispatchEvent(new Event('change', { bubbles: true })); }
-      const seen = new Set((r7.hist || []).map(x => x.id));
+      if (!arrangeTL(w, pid)) { window.__ERR_AT__(this, '時間軸還沒載入，稍等一下再試。', '排不了'); return; }
+      const seen = new Set((r7.hist || []).map(e => e.id));
       try { r7.open({ simple: true }); } catch (e) { window.__ERR_AT__(this, e.message || String(e), '打不開'); return; }
       const t0 = Date.now();
       const chk = setInterval(() => {
-        const fresh = (r7.hist || []).find(x => !seen.has(x.id));
+        const fresh = (r7.hist || []).find(e => !seen.has(e.id));
         if (fresh) { w.exported = true; w.exportId = fresh.id; saveWorks(true); }
         if (!document.querySelector('.r7-back') && (fresh || Date.now() - t0 > 600000)) { clearInterval(chk); render(true); }
       }, 1500);
     });
-    const next = btn('sm-main', '下一步：上架 →', () => goStep(w, 7));
-    return [why, go, next];
+    if (NO_PUB) {
+      if (x && x.state === 'done') {
+        const desk = window.iamdirectorDesktop;
+        const tip = h('p', 'help sm-cloudtip'); tip.append(document.createTextNode('想直接上架到你的頻道？'));
+        if (desk && desk.cloud && typeof desk.cloud.openWeb === 'function') tip.append(btn('sm-link', '登入雲端版', () => desk.cloud.openWeb()));
+        else tip.append(document.createTextNode('登入雲端版（網頁版）'));
+        host.append(tip);
+      }
+      return [why, ai, btn('sm-main', '回我的作品', () => go('/projects'))];
+    }
+    const next = btn('sm-main', PUB('下一步：上架 →', ''), () => goStep(w, 7));
+    return [why, ai, next];
   };
 
-  SM_PAGES[7] = function publishPage(host, w, pid) {
+  const fmtLocal = d => { const z = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + 'T' + z(d.getHours()) + ':' + z(d.getMinutes()); };
+  function pubForm(w, p) {
+    if (w.pub && w.pub.title != null) return w.pub;
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(19, 0, 0, 0);
+    let story = String(w.story || '').trim();
+    if (/^【[^】]*】/.test(story)) story = story.split('\n')[0].replace(/^【[^】]*】/, '').replace(/。$/, '').split('；')
+      .map(x => x.split('：').slice(1).join('：').trim()).filter(Boolean).slice(0, 2).join('｜');
+    const vertical = w.aspect === '9:16';
+    const desc = [story.slice(0, 300), '', '本片使用 AI 生成工具製作。', vertical ? '#Shorts' : ''].filter((x, i) => x || i === 1).join('\n').trim();
+    const tags = [w.tpl && w.tpl.name && w.tpl.name.split('・')[0], 'AI 短片', vertical ? 'Shorts' : ''].filter(Boolean).join(', ');
+    w.pub = { title: String((p && p.name) || '').slice(0, 100), desc, tags, privacy: 'scheduled', when: fmtLocal(tomorrow),
+              synthetic: true, kids: false, ack: false, rules: false };
+    return w.pub;
+  }
+  let pubBusy = false;
+  if (!NO_PUB) SM_PAGES[7] = function publishPage(host, w, pid) {
     clearInterval(pollT);
-    host.append(h('h2', null, '上架'), h('p', 'lead', '影片上傳到你自己的頻道，版權和收益都歸你。第一次要先連結頻道，之後就不用再設定。'));
-    const yt = window.__YT__;
-    const ph = h('div', 'sm-ph');
-    const a = h('div', 'sm-card2'); const ah = h('h3'); ah.append(h('span', 'sm-chip c', 'YouTube'), document.createTextNode('上傳到你的頻道'));
-    const al = h('ul');
-    [w.exported ? '用第 6 步匯出的成片。' : '還沒匯出成片：可以在上架面板裡改選單支鏡頭，或先回第 6 步。',
-     '標題、說明、標籤、隱私與排程都在上架面板裡填。', '公開或排程前會再請你確認一次。'].forEach(t => al.append(h('li', null, t)));
-    a.append(ah, al);
-    const b = h('div', 'sm-card2'); const bh = h('h3'); bh.append(h('span', 'sm-chip', '即將開放'), document.createTextNode('其他平台'));
-    const bl = h('ul'); ['TikTok、Instagram、短劇平台還沒開放上傳。', '要先拿成片的話：展開第 6 步的匯出設定下載 mp4。'].forEach(t => bl.append(h('li', null, t)));
-    b.append(bh, bl);
-    ph.append(a, b); host.append(ph);
-    if (w.done.pub) host.append(h('p', 'sm-saved', '這部作品標成已上架了。'));
-    const why = h('span', 'why', yt ? '' : '這個環境沒有開 YouTube 上架。');
-    const ai = btn('sm-ai', (window.__STUDIO__ && window.__STUDIO__.local) ? '🔒 登入帳號後可上架' : 'AI 幫我做：上架到 YouTube', function () {
-      if (!yt || typeof yt.open !== 'function') { window.__ERR_AT__(this, '這個環境沒有開 YouTube 上架。', '打不開'); return; }
-      try { yt.open(w.exportId ? 'export:' + w.exportId : undefined); } catch (e) { window.__ERR_AT__(this, e.message || String(e), '打不開'); }
-    });
-    ai.disabled = !yt;
-    const mark = btn('sm-btn', w.done.pub ? '改回還沒上架' : '我上架好了', () => { if (w.done.pub) delete w.done.pub; else w.done.pub = 'manual'; saveWorks(true); render(true); });
+    const yt = window.__YT__, r7 = window.__R7__;
+    const p = PROJ.find(x => x.id === pid);
+    host.append(h('h2', null, '上架：傳到你自己的頻道'),
+      h('p', 'lead', '版權和收益都歸你。標題、說明和時段先幫你填好了，可以直接改；公開或排程前會請你確認。'));
     const home = btn('sm-main', '回我的作品', () => go('/projects'));
-    return [why, mark, ai, home];
+    if (!yt || typeof yt.submit !== 'function') { host.append(h('p', 'sm-err', '這個環境沒有開 YouTube 上架。')); return [h('span', 'why'), home]; }
+    const ex = w.exportId && r7 && (r7.hist || []).find(e => e.id === w.exportId);
+    const ready = !!(ex && ex.state === 'done');
+    const F = pubForm(w, p);
+    const save = () => saveWorks();
+    const grid = h('div', 'sm-pub');
+
+    const c1 = h('div', 'sm-card2 sm-pubv');
+    if (ready) {
+      const v = h('video'); v.controls = true; v.playsInline = true; v.preload = 'metadata'; c1.append(v);
+      fetch('/api/export/download?id=' + encodeURIComponent(ex.id)).then(r => r.json()).then(d => { if (d && d.url) v.src = d.url; }).catch(() => {});
+      c1.append(h('div', 'help', (ex.title || '成片') + (ex.duration ? ' · ' + Math.round(ex.duration) + ' 秒' : '')));
+    } else {
+      c1.append(h('b', null, '還沒有匯出好的成片'),
+        h('p', 'help', ex ? '第 6 步的匯出還在跑，好了這裡就會出現。' : '上架用的是第 6 步匯出的那一支（剪好、有字幕與聲音）。'),
+        btn('sm-btn', '← 去剪輯字幕', () => goStep(w, 6)));
+    }
+
+    const c2 = h('div', 'sm-card2 sm-pubf');
+    const fld = (label, el, extra) => { const d = h('label', 'sm-fld'); d.append(h('span', 'sm-lbl', label), el); if (extra) d.append(extra); return d; };
+    const ti = h('input'); ti.type = 'text'; ti.maxLength = 100; ti.value = F.title; ti.oninput = () => { F.title = ti.value; save(); };
+    const de = h('textarea'); de.rows = 4; de.value = F.desc; de.oninput = () => { F.desc = de.value; save(); };
+    const tg = h('input'); tg.type = 'text'; tg.value = F.tags; tg.placeholder = '以逗號分隔'; tg.oninput = () => { F.tags = tg.value; save(); };
+    c2.append(fld('標題', ti), fld('說明', de), fld('標籤', tg));
+    const pv = h('div', 'sm-tags');
+    (yt.PRIV || []).forEach(([k, t]) => { const b = btn('sm-tog', t, () => { F.privacy = k; F.ack = false; saveWorks(true); render(true); }); b.setAttribute('aria-pressed', String(F.privacy === k)); pv.append(b); });
+    const pw = fld('隱私與時間', pv);
+    if (F.privacy === 'scheduled') {
+      const wh = h('input'); wh.type = 'datetime-local'; wh.value = F.when; wh.oninput = () => { F.when = wh.value; save(); };
+      pw.append(wh, h('span', 'help', '建議時段：晚上 7 點（多數人下班後看）。先私人上傳，到時間自動公開。'));
+    }
+    c2.append(pw);
+    const ck = (txt, key, link) => {
+      const l = h('label', 'sm-amb'); const c = h('input'); c.type = 'checkbox'; c.checked = !!F[key];
+      c.onchange = () => { F[key] = c.checked; saveWorks(true); render(true); };
+      const t = h('span', null, txt);
+      if (link) { const a = h('a', null, link[0]); a.href = link[1]; a.target = '_blank'; a.rel = 'noopener'; t.append(a); }
+      l.append(c, t);
+      return l;
+    };
+    if (F.privacy === 'public' || F.privacy === 'scheduled') c2.append(ck(F.privacy === 'public' ? '我確認：上傳後立即公開' : '我確認：到排定時間自動公開', 'ack'));
+    c2.append(ck('標示為 AI 生成內容（YouTube 的「經過修改或合成的內容」揭露）', 'synthetic'),
+              ck('我確認這支片符合 YouTube 社群規範，而且我有權上傳其中的影像、聲音與音樂。', 'rules', ['看規範', yt.RULES_URL]));
+
+    const c3 = h('div', 'sm-pubside');
+    const ch = h('div', 'sm-card2'); ch.append(h('div', 'sm-lbl', '上傳到'));
+    const chBody = h('div', null, '讀取頻道…'); ch.append(chBody);
+    const other = h('div', 'sm-card2'); other.append(h('div', 'sm-lbl', '其他平台'));
+    ['TikTok', 'Instagram Reels', '短劇平台'].forEach(n => { const r = h('div', 'sm-prow'); r.append(h('span', null, n), h('span', 'sm-chip', '即將開放')); other.append(r); });
+    const chk = h('div', 'sm-card2'); chk.append(h('div', 'sm-lbl', '上架前檢查'));
+    const row = (ok, t, sub) => { const r = h('div', 'sm-chk ' + (ok === true ? 'ok' : ok === false ? 'bad' : 'warn')); r.append(h('i', null, ok === true ? '✓' : ok === false ? '✕' : '!'), h('span', null, t)); if (sub) r.append(h('small', null, sub)); chk.append(r); };
+    const dur = ex && Number(ex.duration);
+    row(ready, ready ? '成片已匯出' : '還沒有匯出好的成片');
+    row(true, w.aspect === '9:16' ? '直式 9:16：會是 Shorts' : '橫式 ' + (w.aspect || '16:9') + '：一般影片');
+    if (dur) row(w.aspect !== '9:16' || dur <= 180, '長度 ' + Math.round(dur) + ' 秒', w.aspect === '9:16' && dur > 180 ? 'Shorts 最長 3 分鐘，超過會變一般影片' : '');
+    row(w.cut && w.cut.cues ? true : null, w.cut && w.cut.cues ? '有字幕（' + w.cut.cues + ' 句）' : '沒有字幕', w.cut && w.cut.cues ? '' : '可以上架；有台詞的片建議加字幕');
+    row(true, sndMode(w) === 'voice' ? '配樂是這部片自己生成的，不是現成歌曲' : '聲音用影片原聲');
+    row(F.synthetic ? true : null, F.synthetic ? '已標示 AI 生成' : '沒有標示 AI 生成', F.synthetic ? '' : '不標示可能違反 YouTube 的揭露政策');
+    const ntag = String(F.tags || '').split(/[,，]/).map(x => x.trim()).filter(Boolean).length;
+    row(ntag <= 15 ? true : null, '標籤 ' + ntag + ' 個', ntag > 15 ? '建議 15 個以內' : '');
+    c3.append(ch, chk, other);
+    grid.append(c1, c2, c3);
+    host.append(grid);
+
+    const st = h('div'); host.append(st);
+    const why = h('span', 'why');
+    const ai = btn('sm-ai', 'AI 幫我做：上傳到 YouTube', async function () {
+      const b = this;
+      if (pubBusy) return;
+      if (!ready) { window.__ERR_AT__(b, '先到第 6 步匯出成片。', '還不能上架'); return; }
+      const form = Object.assign({}, F, { src: 'export:' + ex.id });
+      const v = yt.bodyOf(form);
+      if (v.error) { window.__ERR_AT__(b, v.error, '還不能上架'); return; }
+      pubBusy = true; b.disabled = true; const t0 = b.textContent; b.textContent = '送出中…';
+      try {
+        const r = await yt.submit(form);
+        if (!r.ok) { window.__ERR_AT__(b, r.error, '沒有送出'); return; }
+        w.pubUpload = r.upload && r.upload.id; saveWorks(true);
+        say('已排入上傳：' + form.title, true);
+      } finally { pubBusy = false; b.disabled = false; b.textContent = t0; render(true); }
+    });
+    ai.disabled = !ready;
+    why.textContent = !ready ? '先到第 6 步匯出成片。' : '不花' + PT('點數', '錢') + '；' +
+      (F.privacy === 'scheduled' ? '先私人上傳，到時間自動公開。' : F.privacy === 'public' ? '上傳完就公開。' : F.privacy === 'unlisted' ? '有連結的人才看得到。' : '只有你看得到。') + '上傳中可以隨時取消。';
+
+    yt.status().then(S => {
+      if (!chBody.isConnected) return;
+      chBody.textContent = '';
+      if (!S.enabled) { chBody.append(h('p', 'help', S.reason || '這個站還沒開 YouTube 上架。')); ai.disabled = true; return; }
+      if (S.connected) {
+        const r = h('div', 'sm-prow'); r.append(h('span', null, 'YouTube'), h('span', 'sm-chip g', '已連結'));
+        chBody.append(r, h('p', 'help', '會傳到' + S.target + '。'));
+      } else {
+        ai.disabled = true; why.textContent = '先連結你的 YouTube 頻道（只要一次）。';
+        chBody.append(h('p', 'help', '還沒連結 YouTube。連結時會先請你看過授權範圍，再到 Google 選頻道；回來會停在這一頁。'),
+          btn('sm-btn', '連結 YouTube 頻道', () => { try { sessionStorage.setItem('sm-yt-return', location.pathname); } catch (_) {} yt.open(); }));
+      }
+    }).catch(() => { chBody.textContent = '讀不到頻道狀態'; });
+    yt.uploads().then(list => {
+      if (!st.isConnected) return;
+      const mine = list.filter(u => u.source && u.source.kind === 'export' && u.source.ref === w.exportId);
+      if (!mine.length) return;
+      const u = mine[0];
+      const S = { awaiting: '等匯出完成', queued: '排隊中', uploading: '上傳中', done: '已上架', failed: '失敗', cancelled: '已取消' };
+      const box = h('div', 'sm-done' + (u.state === 'failed' ? ' bad' : ''));
+      const pct = u.size_bytes ? Math.min(100, Math.round(100 * (u.bytes_sent || 0) / u.size_bytes)) : 0;
+      box.append(h('span', 'sm-pill ' + (u.state === 'done' ? 'ok' : u.state === 'failed' ? 'go' : 'new'), (S[u.state] || u.state) + (u.state === 'uploading' ? ' ' + pct + '%' : '')),
+        h('span', null, u.title + (u.publish_at ? ' · ' + new Date(u.publish_at).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' 公開' : '')), h('span', 'sp'));
+      if (u.url) { const a = h('a', 'sm-btn', '在 YouTube 開啟 ↗'); a.href = u.url; a.target = '_blank'; a.rel = 'noopener'; box.append(a); }
+      if (u.state === 'failed' && u.error) box.append(h('span', 'help', u.error));
+      st.append(box);
+      if (u.state === 'done' && !w.done.pub) { w.done.pub = 'yt'; saveWorks(true); }
+      if (['awaiting', 'queued', 'uploading'].includes(u.state)) { const was = u.state + pct; pollT = setInterval(() => { yt.uploads().then(l => { const x = l.find(y => y.id === u.id); if (x && x.state + (x.size_bytes ? Math.round(100 * (x.bytes_sent || 0) / x.size_bytes) : 0) !== was) render(true); }); }, 4000); }
+    }).catch(() => {});
+    return [why, ai, home];
   };
 
   function render(keepScroll) {
@@ -22461,13 +23221,17 @@ document.addEventListener('keydown', e => {
     render();
   }
 
+  window.__CLOUD__ = {
+    current: () => { const pid = curPid(); return pid ? (PROJ.find(x => x.id === pid) || null) : null; },
+    sync: p => cloudSyncWork(p), list: () => cloudListSheet(), link: () => cloudLinkSheet({}),
+  };
   window.__SIMPLE__ = { get mode() { return MODE; }, setMode: m => setMode(m, true), pages: SM_PAGES, work, saveWorks, render, go,
                         get works() { return WORKS; }, get projects() { return PROJ; } };
 
   (async function init() {
     const m = await decideMode();
     const who = document.getElementById('whoami');
-    if (who && !document.querySelector('.slatebar .sm-seg')) who.before(seg());
+    if (who && !document.querySelector('.slatebar .sm-seg, .slatebar .sm-back')) who.before(seg());
     MODE = m;
     if (m === 'simple') {
       try { await loadProjects(); } catch (e) { say('作品清單讀不到：' + e.message); }

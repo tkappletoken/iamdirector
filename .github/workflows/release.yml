@@ -1,0 +1,440 @@
+# Release: macOS (arm64/x64, signed + notarized), Linux (x64/arm64, AppImage + deb), Windows (x64/arm64, NSIS, unsigned).
+# Everything must succeed before the release is made public.
+#
+# Triggers: a pushed desktop-vX.Y.Z tag, or workflow_dispatch run on that tag (--ref desktop-vX.Y.Z).
+# Release notes are the annotated tag's message. Notes containing 「內部測試用，請勿下載」 make a prerelease,
+# which is never marked Latest (installed apps only update from /releases/latest).
+#
+# Secrets live only in the `production` environment and are read only by the macOS signing step.
+# Publishing uses this repo's GITHUB_TOKEN; only the publish job gets contents: write.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 'Publish as a prerelease (never Latest). The tag message must contain 「內部測試用，請勿下載」.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  precheck:
+    name: 預檢（版本、發佈說明、不覆蓋）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      prerelease: ${{ steps.notes.outputs.prerelease }}
+    steps:
+      - name: tag 格式
+        run: |
+          [[ "${GITHUB_REF}" == refs/tags/* ]] || { echo "::error::要在 tag 上執行（--ref desktop-vX.Y.Z），現在是 ${GITHUB_REF}"; exit 1; }
+          [[ "${TAG}" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag 格式要是 desktop-vX.Y.Z：${TAG}"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: tag 版本要跟 package.json 一致
+        run: |
+          want="${TAG#desktop-v}"
+          have="$(node -p "require('./package.json').version")"
+          [ "${want}" = "${have}" ] || { echo "::error::tag 是 ${TAG}，但 package.json 的 version 是 ${have}"; exit 1; }
+
+      - name: 發佈說明（annotated tag 的訊息）
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")"
+          [ "$(jq -r .object.type <<<"${ref}")" = tag ] || { echo "::error::${TAG} 要是 annotated tag（git tag -a），訊息就是發佈說明"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/git/tags/$(jq -r .object.sha <<<"${ref}")" --jq .message \
+            | sed '/^-----BEGIN PGP SIGNATURE-----/,$d' > notes.md
+          [ -n "$(tr -d '[:space:]' < notes.md)" ] || { echo "::error::${TAG} 的訊息是空的"; exit 1; }
+          pre=false
+          grep -q '內部測試用，請勿下載' notes.md && pre=true
+          if [ "${DISPATCH_PRERELEASE}" = true ] && [ "${pre}" != true ]; then
+            echo "::error::勾了 prerelease，但 tag 訊息沒有寫「內部測試用，請勿下載」"; exit 1
+          fi
+          echo "prerelease=${pre}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${pre}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 不能已經有這個版本（不覆蓋）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${TAG}" -R "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "::error::已經有 ${TAG} 的 Release（含草稿），不覆蓋"; exit 1
+          fi
+
+  ffmpeg:
+    name: LGPL ffmpeg
+    needs: precheck
+    uses: ./.github/workflows/ffmpeg-lgpl.yml
+    with:
+      ref: ${{ github.ref }}
+
+  mac:
+    name: Mac ${{ matrix.arch }}（簽章＋公證）
+    needs: [precheck, ffmpeg]
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: production
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [arm64, x64]
+    env:
+      EXPECT_TEAM_ID: Q5988V8U8D
+      MAC_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: 本機模式：Python 與本機伺服器
+        shell: bash
+        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
+      - name: 本機模式：LGPL ffmpeg
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-mac-${{ matrix.arch }}
+          path: vendor/ffmpeg-${{ matrix.arch }}
+      - name: 檢查本機模式的檔案齊全
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/check-vendor.sh "mac" "${ARCH}" true
+      - name: 打包、簽章、公證
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          REQUIRE_NOTARIZE: '1'
+        run: |
+          missing=()
+          for k in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_CONTENT APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            [ -n "${!k}" ] || missing+=("${k/_CONTENT/}")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error title=缺少簽章／公證 Secrets::production 環境沒有設定：${missing[*]}"
+            exit 1
+          fi
+          # The .p8 only exists in the runner temp dir for the duration of this step
+          umask 077
+          p8="${RUNNER_TEMP}/AuthKey.p8"
+          trap 'rm -f "${p8}"' EXIT
+          printf '%s\n' "${APPLE_API_KEY_CONTENT}" > "${p8}"
+          unset APPLE_API_KEY_CONTENT
+          grep -q 'BEGIN PRIVATE KEY' "${p8}" || { echo "::error::APPLE_API_KEY 不是 .p8 的內容"; exit 1; }
+          export APPLE_API_KEY="${p8}"
+          # Fail fast when the Apple developer agreement needs to be accepted again
+          if ! out="$(xcrun notarytool history --key "${APPLE_API_KEY}" --key-id "${APPLE_API_KEY_ID}" --issuer "${APPLE_API_ISSUER}" 2>&1)"; then
+            echo "${out}" | tail -5
+            if grep -qiE '403|agreement|forbidden' <<<"${out}"; then
+              echo "::error title=Apple 協議需要重新同意::請 Account Holder 登入 developer.apple.com/account 同意新協議後重跑。"
+            else
+              echo "::error::notarytool 預檢失敗（見上方輸出）"
+            fi
+            exit 1
+          fi
+          # hdiutil attach occasionally fails on hosted runners; retry
+          for attempt in 1 2 3; do
+            if node scripts/dist-mac.mjs 2>&1 | tee "${RUNNER_TEMP}/build.log"; then
+              exit 0
+            fi
+            if grep -qiE 'status code 403|agreement' "${RUNNER_TEMP}/build.log"; then
+              echo "::error title=Apple 協議需要重新同意::公證時回 403。"
+              exit 1
+            fi
+            echo "第 ${attempt} 次打包失敗，15 秒後重試"
+            sleep 15
+          done
+          exit 1
+      - name: 更新 zip 用 ditto 重包（保留 framework symlink）
+        run: node scripts/fix-mac-update-zip.mjs dist
+      - name: 驗證 .app：codesign、Team、hardened runtime、spctl、stapler
+        run: bash scripts/verify-mac.sh dist
+      - name: 驗證 .app 的架構與 dmg 裡的 .app
+        run: |
+          set -euo pipefail
+          want="$([ "${MAC_ARCH}" = x64 ] && echo x86_64 || echo arm64)"
+          app="$(find dist -maxdepth 2 -name '*.app' -type d -print -quit)"
+          exe="$(find "${app}/Contents/MacOS" -maxdepth 1 -type f -perm -u+x -print -quit)"
+          got="$(lipo -archs "${exe}")"
+          [ "${got}" = "${want}" ] || { echo "::error::主程式架構是 ${got}，應該是 ${want}"; exit 1; }
+          dmg="dist/iamdirector-${TAG#desktop-v}-mac-${MAC_ARCH}.dmg"
+          test -f "${dmg}" || { echo "::error::找不到 ${dmg}"; exit 1; }
+          mnt="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "${mnt}" "${dmg}" >/dev/null
+          trap 'hdiutil detach "${mnt}" -quiet || true' EXIT
+          app="$(find "${mnt}" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "${app}" || { echo "::error::dmg 裡沒有 .app"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "${app}"
+          spctl -a -vv -t exec "${app}"
+          xcrun stapler validate "${app}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*.dmg
+            dist/*.zip
+
+  linux:
+    name: Linux ${{ matrix.arch }}（AppImage＋deb）
+    needs: [precheck, ffmpeg]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: 本機模式：Python 與本機伺服器
+        shell: bash
+        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
+      - name: 本機模式：LGPL ffmpeg
+        if: matrix.arch == 'x64'
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-linux-${{ matrix.arch }}
+          path: vendor/ffmpeg-${{ matrix.arch }}
+      - name: 檢查本機模式的檔案齊全
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          WANT_FFMPEG: ${{ matrix.arch == 'x64' }}
+        run: bash scripts/check-vendor.sh "linux" "${ARCH}" "${WANT_FFMPEG}"
+      # electron-builder's bundled fpm is x86_64 only; arm64 uses the system fpm
+      - name: 安裝 fpm（arm64）
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+      - name: 打包
+        env:
+          USE_SYSTEM_FPM: ${{ matrix.arch == 'arm64' && 'true' || '' }}
+          ARCH: ${{ matrix.arch }}
+        run: npx electron-builder --linux AppImage deb "--${ARCH}" --publish never
+      - name: 驗證 AppImage 與 deb
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+          deb="$(ls dist/*.deb)"; app="$(ls dist/*.AppImage)"
+          dpkg-deb -I "${deb}" | sed -n '1,20p'
+          want_deb="$([ "${ARCH}" = x64 ] && echo amd64 || echo arm64)"
+          [ "$(dpkg-deb -f "${deb}" Architecture)" = "${want_deb}" ] || { echo "::error::deb 架構不對"; exit 1; }
+          file "${app}"
+          want_elf="$([ "${ARCH}" = x64 ] && echo x86-64 || echo aarch64)"
+          file "${app}" | grep -q "${want_elf}" || { echo "::error::AppImage 架構不對"; exit 1; }
+          chmod +x "${app}"
+          "${app}" --appimage-extract >/dev/null
+          test -x squashfs-root/iamdirector || { echo "::error::AppImage 裡沒有 iamdirector 主程式"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+
+  windows:
+    name: Windows ${{ matrix.arch }}（NSIS，未簽章）
+    needs: [precheck, ffmpeg]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: 本機模式：Python 與本機伺服器
+        shell: bash
+        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
+      - name: 本機模式：LGPL ffmpeg
+        if: matrix.arch == 'x64'
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win-${{ matrix.arch }}
+          path: vendor/ffmpeg-${{ matrix.arch }}
+      - name: 檢查本機模式的檔案齊全
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          WANT_FFMPEG: ${{ matrix.arch == 'x64' }}
+        run: bash scripts/check-vendor.sh "win" "${ARCH}" "${WANT_FFMPEG}"
+      - name: 打包（不簽章）
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          ARCH: ${{ matrix.arch }}
+        run: npx electron-builder --win nsis "--${ARCH}" --publish never
+      - name: 驗證安裝檔
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+          exe="dist/iamdirector-${TAG#desktop-v}-win-${ARCH}.exe"
+          test -s "${exe}" || { echo "::error::找不到 ${exe}"; exit 1; }
+          [ "$(head -c 2 "${exe}")" = "MZ" ] || { echo "::error::${exe} 不是 Windows 執行檔"; exit 1; }
+          # PE machine: 0x8664 = x64, 0xAA64 = arm64
+          main="$(find dist -path '*unpacked*' -name 'iamdirector.exe' -print -quit)"
+          test -n "${main}" || { echo "::error::找不到 win-unpacked 裡的 iamdirector.exe"; exit 1; }
+          m="$(node -e "const b=require('fs').readFileSync(process.argv[1]);const o=b.readUInt32LE(0x3c);console.log(b.readUInt16LE(o+4).toString(16))" "${main}")"
+          want="$([ "${ARCH}" = x64 ] && echo 8664 || echo aa64)"
+          [ "${m}" = "${want}" ] || { echo "::error::主程式 PE machine 是 0x${m}，應該是 0x${want}"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          # electron-builder leaves the embedded uninstaller in dist; it is not a release asset
+          path: |
+            dist/*.exe
+            !dist/*__uninstaller*
+
+  publish:
+    name: 發佈（全部成功才公開）
+    needs: [precheck, mac, linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      PRERELEASE: ${{ needs.precheck.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/meta
+      # Installers only: the ffmpeg-* artifacts are intermediate build inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mac-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: win-*
+          path: dist
+          merge-multiple: true
+      - name: 發佈前檢查並產生 latest*.yml
+        run: |
+          set -euo pipefail
+          ls -la dist
+          node scripts/release-manifest.mjs dist "${TAG#desktop-v}" "${RUNNER_TEMP}/sha256.md"
+      - name: 發佈（先 draft，全部上傳核對後才公開）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          R="${GITHUB_REPOSITORY}"
+          v="${TAG#desktop-v}"
+          mapfile -t assets < <(find dist -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name 'latest*.yml' \) | sort)
+          [ "${#assets[@]}" -eq 14 ] || { echo "::error::應該有 14 個檔（10 個安裝檔＋4 份 yml），現在是 ${#assets[@]}"; exit 1; }
+          # Packaging takes a while; check again that nobody published this version meanwhile
+          if gh release view "${TAG}" -R "${R}" >/dev/null 2>&1; then
+            echo "::error::已經有 ${TAG}，不覆蓋"; exit 1
+          fi
+          title="我是導演 iamdirector ${v}"
+          [ "${PRERELEASE}" = true ] && title="${title}（內部測試用，請勿下載）"
+          notes="${RUNNER_TEMP}/notes.md"
+          { cat "${RUNNER_TEMP}/meta/notes.md"; echo; echo "---"; echo; echo "### SHA-256"; echo; cat "${RUNNER_TEMP}/sha256.md"; } > "${notes}"
+          gh release create "${TAG}" -R "${R}" --verify-tag --draft --title "${title}" --notes-file "${notes}"
+          gh release upload "${TAG}" -R "${R}" "${assets[@]}"
+          # Every file present with the same size before going public
+          got="$(gh release view "${TAG}" -R "${R}" --json assets --jq '.assets[] | "\(.name) \(.size)"' | sort)"
+          want="$(for f in "${assets[@]}"; do echo "$(basename "${f}") $(stat -c %s "${f}")"; done | sort)"
+          if [ "${got}" != "${want}" ]; then
+            echo "::error::上傳結果對不上，草稿保留不公開"; echo "got:"; echo "${got}"; echo "want:"; echo "${want}"; exit 1
+          fi
+          if [ "${PRERELEASE}" = true ]; then
+            gh release edit "${TAG}" -R "${R}" --draft=false --prerelease --latest=false
+          else
+            gh release edit "${TAG}" -R "${R}" --draft=false --latest
+          fi
+          gh release view "${TAG}" -R "${R}" --json url,isDraft,isPrerelease,assets --jq '{url, isDraft, isPrerelease, assets: [.assets[].name]}'
+          # Installed apps update from /releases/latest: a prerelease must never be it, a release must be it
+          pre="$(gh release view "${TAG}" -R "${R}" --json isPrerelease --jq .isPrerelease)"
+          latest="$(gh api "repos/${R}/releases/latest" --jq .tag_name)"
+          echo "Latest 是 ${latest}"
+          if [ "${PRERELEASE}" = true ]; then
+            [ "${pre}" = true ] || { echo "::error::${TAG} 應該是 prerelease"; exit 1; }
+            [ "${latest}" != "${TAG}" ] || { echo "::error::測試版 ${TAG} 變成了 Latest，一般使用者會收到"; exit 1; }
+          else
+            [ "${pre}" = false ] || { echo "::error::${TAG} 不該是 prerelease"; exit 1; }
+            [ "${latest}" = "${TAG}" ] || { echo "::error::Latest 是 ${latest}，不是 ${TAG}"; exit 1; }
+          fi

@@ -9,7 +9,17 @@ function canonical(v) {
   return JSON.stringify(v === undefined ? null : v);
 }
 
+const NOT_CONTENT = ['t', 'sum'];
+function contentOf(manifest) {
+  if (!manifest || typeof manifest !== 'object' || !manifest.work || typeof manifest.work !== 'object') return manifest;
+  const work = { ...manifest.work };
+  for (const k of NOT_CONTENT) delete work[k];
+  return { ...manifest, work };
+}
 function hashOf(manifest) {
+  return crypto.createHash('sha256').update(canonical(contentOf(manifest))).digest('hex');
+}
+function legacyHashOf(manifest) {
   return crypto.createHash('sha256').update(canonical(manifest)).digest('hex');
 }
 
@@ -52,7 +62,7 @@ async function syncWork({ pid, local, cloud, ask }) {
   const st = state[b.local_id] || null;
   const h = hashOf(b.manifest);
   const remote = (await cloud.works()).find((w) => w.local_id === b.local_id) || null;
-  const localChanged = !st || st.hash !== h;
+  const localChanged = !st || (st.hash !== h && st.hash !== legacyHashOf(b.manifest));
   const cloudChanged = !!remote && (!st || remote.rev !== st.rev);
   if (!localChanged && !cloudChanged) return { result: 'uptodate', rev: remote ? remote.rev : 0 };
   if (cloudChanged && !localChanged) return pull({ b, pid, local, cloud, state });

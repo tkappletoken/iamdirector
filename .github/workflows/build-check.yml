@@ -105,6 +105,6 @@ jobs:
           test -n "${f}" || { echo "::error::打包結果裡沒有 app-update.yml"; exit 1; }
           cat "${f}"
           grep -qx 'owner: tkappletoken' "${f}"
-          grep -qx 'repo: iamdirector-releases' "${f}"
+          grep -qx 'repo: iamdirector' "${f}"
           grep -qx 'provider: github' "${f}"
           ! grep -qi '^token:' "${f}" || { echo "::error::app-update.yml 帶了 token"; exit 1; }

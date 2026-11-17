@@ -1,0 +1,6 @@
+{
+  "name": "iamdirector-local-server-sync",
+  "private": true,
+  "description": "Sync local-server/ from the iamdirector web repo with comments removed. Usage: npm ci && node export-oss.mjs <web repo> <commit>",
+  "dependencies": { "acorn": "8.14.0" }
+}
