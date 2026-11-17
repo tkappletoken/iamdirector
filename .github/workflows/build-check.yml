@@ -45,6 +45,11 @@ jobs:
         run: |
           node scripts/prepare-local-server.mjs "${ARCH}"
           bash scripts/check-vendor.sh "${OS}" "${ARCH}" false
+      - name: 本機伺服器冒煙測試（GET / 要 200、manifest 要注入）
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: node scripts/smoke-local-server.mjs "${ARCH}"
       - name: 安裝 fpm（Linux arm64）
         if: matrix.os == 'linux' && matrix.arch == 'arm64'
         run: |
