@@ -8,7 +8,7 @@ const root = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const mac = pkg.build.mac;
 const WF = path.join(root, '.github', 'workflows', 'release.yml');
-const wf = fs.readFileSync(WF, 'utf8');
+const wf = fs.readFileSync(WF, 'utf8').replace(/\r\n/g, '\n');
 const REL = {};
 // Split a workflow into its top-level jobs: { name: text }
 function jobs(src) {
