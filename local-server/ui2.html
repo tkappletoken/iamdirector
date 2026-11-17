@@ -7043,7 +7043,7 @@ document.addEventListener('keydown', e => {
         b.onclick = ev => { ev.stopPropagation(); fxDialog(job); };
         bar.append(b);
       }
-      if (bar && window.__PITCH__ && !bar.querySelector('.pitch-go')) {
+      if (bar && window.__PITCH__ && !(window.__STUDIO__ && window.__STUDIO__.local) && !bar.querySelector('.pitch-go')) {
         const b = document.createElement('button');
         b.type = 'button'; b.className = 'pitch-go'; b.textContent = '投稿包';
         b.title = '把這支成片當作一集，打包成短劇平台的投稿包';
@@ -18368,7 +18368,7 @@ document.addEventListener('keydown', e => {
       acts.append(dl);
       if (x0.srt) { const ds = h('button', 'r7-dl ghost', 'SRT'); ds.type = 'button'; ds.onclick = () => download(x0, 'srt_url'); acts.append(ds); }
       if (window.__YT__) { const yb = window.__YT__.rowButton(x0); if (yb) acts.append(yb); }
-      if (window.__PITCH__) acts.append(window.__PITCH__.rowButton(x0));
+      if (window.__PITCH__) { const pb = window.__PITCH__.rowButton(x0); if (pb) acts.append(pb); }
       r.append(acts);
       if (window.__STUDIO__ && window.__STUDIO__.local && x0.path) {
         const where = h('div', 'r7-hint');
@@ -19469,9 +19469,9 @@ document.addEventListener('keydown', e => {
   window.__PITCH__ = {
     open,
     rowButton(x0) {
-      const LOCALP = !!(window.__STUDIO__ && window.__STUDIO__.local);
-      const b = h('button', 'r7-dl ghost', LOCALP ? '🔒 登入帳號後可投稿' : '投稿包'); b.type = 'button';
-      b.title = LOCALP ? '本機模式：登入 iamdirector 帳號後才能打包投稿' : '把這部當作一集，打包成短劇平台的投稿包';
+      if (window.__STUDIO__ && window.__STUDIO__.local) return null;
+      const b = h('button', 'r7-dl ghost', '投稿包'); b.type = 'button';
+      b.title = '把這部當作一集，打包成短劇平台的投稿包';
       b.onclick = () => open('export:' + x0.id); return b;
     },
   };
@@ -21089,6 +21089,7 @@ document.addEventListener('keydown', e => {
   const LOCALM = !!window.__STUDIO__.local;
   const PUB = (web, local) => (LOCALM ? local : web);
   const NO_PUB = LOCALM;
+  const SPINE = NO_PUB ? '主線' : '七步主線';
   const STEPS = ['故事', '角色', '分鏡', '生成', '聲音', '剪輯字幕', PUB('上架', '')].slice(0, NO_PUB ? 6 : 7);
   const ASPECTS = [['9:16', '手機直的', '適合 Shorts、Reels、抖音'], ['16:9', '電視橫的', '適合 YouTube、電腦看']];
   const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -21435,14 +21436,14 @@ document.addEventListener('keydown', e => {
   function seg() {
     if (!ADV_ON) {
       const back = btn('sm-back', '← 回主線', () => setMode('simple', true));
-      back.title = '回到七步主線'; back.hidden = MODE === 'simple';
+      back.title = '回到' + SPINE; back.hidden = MODE === 'simple';
       return back;
     }
     const g = h('div', 'sm-seg'); g.setAttribute('role', 'group'); g.setAttribute('aria-label', '畫面模式');
     [['simple', '主線'], ['advanced', '進階工作台']].forEach(([m, t]) => {
       const b = btn('', t, () => { if (MODE !== m) setMode(m, true); });
       b.dataset.m = m; b.setAttribute('aria-pressed', String(MODE === m));
-      b.title = m === 'simple' ? '七步主線：' + STEPS.join('、') : '完整工作台：所有參數與工具';
+      b.title = m === 'simple' ? SPINE + '：' + STEPS.join('、') : '完整工作台：所有參數與工具';
       g.append(b);
     });
     return g;
@@ -21532,7 +21533,7 @@ document.addEventListener('keydown', e => {
     return t;
   }
   function stepBar(w, pid) {
-    const bar = h('nav', 'sm-rail'); bar.setAttribute('aria-label', '七步主線');
+    const bar = h('nav', 'sm-rail'); bar.setAttribute('aria-label', SPINE);
     STEPS.forEach((name, i) => {
       const n = i + 1, ok = doneOf(w, n, pid);
       const b = btn('sm-st ' + (n === w.step ? 'cur' : ok ? 'done' : 'todo'), null, () => { if (w.step !== n) { w.step = n; saveWorks(); render(); } });
@@ -21773,7 +21774,7 @@ document.addEventListener('keydown', e => {
   function homePage(host) {
     const hero = h('div', 'sm-hero');
     const tx = h('div');
-    tx.append(h('h1', null, '我的作品'), h('p', 'lead', '每張卡片底下那排進度，就是七步主線做到哪裡。按「繼續」直接回到那一步；做到一半可以隨時離開。'));
+    tx.append(h('h1', null, '我的作品'), h('p', 'lead', '每張卡片底下那排進度，就是' + SPINE + '做到哪裡。按「繼續」直接回到那一步；做到一半可以隨時離開。'));
     { const desk = window.iamdirectorDesktop;
       if (window.__STUDIO__ && window.__STUDIO__.local && desk && desk.cloud && desk.cloud.list) {
         const dl = btn('sm-link', '從雲端下載作品', () => cloudListSheet());
@@ -22551,7 +22552,7 @@ document.addEventListener('keydown', e => {
     root.classList.add('sm-x'); document.body.classList.add('sm-xon');
     const bar = h('div', 'sm-xbar');
     const back = btn('sm-btn', '⤡ 收合回卡片', closeXP);
-    const rail = h('nav', 'sm-xrail'); rail.setAttribute('aria-label', '七步主線');
+    const rail = h('nav', 'sm-xrail'); rail.setAttribute('aria-label', SPINE);
     STEPS.forEach((name, i) => {
       const n = i + 1, ok = doneOf(w, n, pid);
       const b = btn('sm-st ' + (n === w.step ? 'cur' : ok ? 'done' : 'todo'), null, () => { XP = 0; document.body.classList.remove('sm-xon'); root.classList.remove('sm-x'); root.style.height = ''; w.step = n; saveWorks(); render(); });
