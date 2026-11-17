@@ -1,0 +1,169 @@
+{
+  "name": "iamdirector-desktop",
+  "productName": "我是導演",
+  "version": "0.2.1",
+  "description": "我是導演（iamdirector.app）導演台的桌面版",
+  "main": "src/main.js",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "The iamdirector Authors",
+  "scripts": {
+    "start": "electron .",
+    "dev": "IAMDIRECTOR_URL=http://127.0.0.1:7802 electron .",
+    "dev:debug": "IAMDIRECTOR_DEV_PORT=${IAMDIRECTOR_DEV_PORT:-9229} electron .",
+    "test": "node --test test/*.test.js",
+    "dist:mac": "node scripts/dist-mac.mjs",
+    "dist:win": "electron-builder --win nsis --x64 --publish never",
+    "verify:mac": "bash scripts/verify-mac.sh dist",
+    "fix:mac-zip": "node scripts/fix-mac-update-zip.mjs dist",
+    "prepare:local": "node scripts/prepare-local-server.mjs",
+    "dev:local": "electron .",
+    "build:ffmpeg": "bash scripts/build-ffmpeg-lgpl.sh"
+  },
+  "devDependencies": {
+    "electron": "45.3.2",
+    "electron-builder": "26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "build": {
+    "appId": "app.iamdirector.desktop",
+    "productName": "我是導演",
+    "copyright": "Copyright © The iamdirector Authors",
+    "artifactName": "iamdirector-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**",
+      "package.json"
+    ],
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "tkappletoken",
+        "repo": "iamdirector-releases",
+        "releaseType": "release"
+      }
+    ],
+    "protocols": [
+      {
+        "name": "我是導演登入",
+        "schemes": [
+          "iamdirector"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "notarize": false,
+      "minimumSystemVersion": "12.0",
+      "electronLanguages": [
+        "zh_TW",
+        "zh_CN",
+        "en"
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "我是導演不會錄音。macOS 可能在播放聲音時詢問麥克風權限，按「不允許」不影響使用。",
+        "NSCameraUsageDescription": "我是導演不會使用相機。按「不允許」不影響使用。",
+        "NSAudioCaptureUsageDescription": "我是導演不會擷取系統聲音。按「不允許」不影響使用。"
+      }
+    },
+    "dmg": {
+      "title": "我是導演 ${version}",
+      "sign": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "executableName": "iamdirector"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "我是導演"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "build/icon.png",
+      "category": "AudioVideo",
+      "executableName": "iamdirector",
+      "synopsis": "我是導演（iamdirector.app）導演台的桌面版"
+    },
+    "deb": {
+      "maintainer": "iamdirector <noreply@iamdirector.app>"
+    },
+    "extraResources": [
+      {
+        "from": "vendor/python-${arch}",
+        "to": "python",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/local-server",
+        "to": "local-server",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/ffmpeg-${arch}",
+        "to": "ffmpeg",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      }
+    ]
+  }
+}

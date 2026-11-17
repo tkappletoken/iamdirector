@@ -1,0 +1,26 @@
+# 公開 repo 的守門：內部文件與發版設定不准進來；任何 Secrets 都不用。
+name: Repo guard
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 不准出現的路徑
+        run: |
+          set -euo pipefail
+          bad=$(git ls-files | grep -E '(^|/)(\.agent-team|CLAUDE\.md|AGENTS\.md|release-notes)(/|$)|^\.github/workflows/release\.yml$' || true)
+          if [ -n "$bad" ]; then echo "::error::這些路徑不該在公開 repo：$bad"; exit 1; fi
+      - name: workflow 不准用 Secrets 或 pull_request_target
+        run: |
+          set -euo pipefail
+          if grep -rnE 'secrets\.|pull_request_target' .github/workflows/; then echo "::error::公開 repo 的 workflow 不用 Secrets"; exit 1; fi

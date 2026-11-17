@@ -1,0 +1,5 @@
+#!/bin/sh
+# 啟用：git config core.hooksPath .githooks
+# 推之前掃一次要推出去的內容，有疑似金鑰就停（需要先安裝 gitleaks）。
+command -v gitleaks >/dev/null 2>&1 || { echo "pre-push：沒有安裝 gitleaks，請先安裝再推" >&2; exit 1; }
+exec gitleaks git --redact --no-banner --log-level error .
