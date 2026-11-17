@@ -29,7 +29,7 @@ This repository only hosts installers; it contains no source code.
 
 ### Mac
 1. 打開 dmg，把「我是導演」拖進「應用程式」。
-2. 第一次開啟時 macOS 會提醒這是從網路下載的 App，按「打開」。App 已用 Apple Developer ID（NT IT co., ltd.）簽章並經 Apple 公證。
+2. 第一次開啟時 macOS 會提醒這是從網路下載的 App，按「打開」。App 已用 Apple Developer ID簽章並經 Apple 公證。
 3. 需要 macOS 12 以上。
 
 ### Windows
@@ -77,7 +77,7 @@ Not sure which Mac you have?  menu → **About This Mac**: if “Chip” starts 
 
 ### Mac
 1. Open the dmg and drag “我是導演” (iamdirector) into Applications.
-2. On first launch, macOS notes the app was downloaded from the internet. Click **Open**. The app is signed with an Apple Developer ID (NT IT co., ltd.) and notarized by Apple.
+2. On first launch, macOS notes the app was downloaded from the internet. Click **Open**. The app is signed with an Apple Developer ID and notarized by Apple.
 3. Requires macOS 12 or later.
 
 ### Windows
@@ -125,7 +125,7 @@ Mac の種類がわからない場合：  メニュー →「この Mac につ�
 
 ### Mac
 1. dmg を開き、「我是導演」を「アプリケーション」フォルダにドラッグします。
-2. 初回起動時、インターネットからダウンロードしたアプリである旨が表示されたら「開く」をクリックします。本アプリは Apple Developer ID（NT IT co., ltd.）で署名され、Apple の公証を受けています。
+2. 初回起動時、インターネットからダウンロードしたアプリである旨が表示されたら「開く」をクリックします。本アプリは Apple Developer IDで署名され、Apple の公証を受けています。
 3. macOS 12 以降が必要です。
 
 ### Windows
