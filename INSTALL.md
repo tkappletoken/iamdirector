@@ -2,7 +2,7 @@
 
 [繁體中文](#繁體中文) · [English](#english) · [日本語](#日本語)
 
-**下載最新版 / Download / ダウンロード：** [Releases › Latest](https://github.com/tkappletoken/iamdirector-releases/releases/latest)
+**下載最新版 / Download / ダウンロード：** [Releases › Latest](https://github.com/tkappletoken/iamdirector/releases/latest)
 
 這個 repo 只用來發佈安裝檔，不含原始碼。
 This repository only hosts installers; it contains no source code.

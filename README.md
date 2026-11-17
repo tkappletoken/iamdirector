@@ -2,6 +2,8 @@
 
 **繁體中文** ｜ [English](#english)
 
+**下載安裝檔 / Download：** [Releases › Latest](https://github.com/tkappletoken/iamdirector/releases/latest)　·　安裝說明 / Install guide：[INSTALL.md](INSTALL.md)
+
 「我是導演」桌面版：寫一段故事，一步一步拍成一支短片——分鏡、生成每一個鏡頭、配音配樂、剪接上字幕、匯出成片。
 
 不用註冊、不用登入就能用。**使用你自己的 AppleToken 金鑰**生成，作品、素材、成片都存在你自己的電腦上。
