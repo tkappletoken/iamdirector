@@ -66,7 +66,7 @@ function stripHtml(src) {
         return so + stripJs(js, /type="module"/.test(so) ? 'module' : 'script') + sc;
       }
       if (to !== undefined) return to + cut(css, [...css.matchAll(/\/\*[\s\S]*?\*\//g)].map((x) => [x.index, x.index + x[0].length])) + tc;
-      return '';
+      return /^<!--\s*[A-Z][A-Z0-9-]*\s*-->$/.test(m) ? m : '';   // keep template slots such as <!-- STUDIO-MANIFEST -->
     });
 }
 
