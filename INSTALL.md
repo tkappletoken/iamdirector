@@ -29,7 +29,7 @@ This repository only hosts installers; it contains no source code.
 
 ### Mac
 1. 打開 dmg，把「我是導演」拖進「應用程式」。
-2. 第一次開啟時 macOS 會提醒這是從網路下載的 App，按「打開」。App 已用 Apple Developer ID簽章並經 Apple 公證。
+2. 第一次開啟時 macOS 會提醒這是從網路下載的 App，按「打開」。App 已用 Apple Developer ID 簽章並經 Apple 公證。
 3. 需要 macOS 12 以上。
 
 ### Windows
