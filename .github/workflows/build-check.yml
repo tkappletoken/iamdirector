@@ -1,0 +1,110 @@
+name: Build check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: x64, runner: ubuntu-22.04 }
+          - { os: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { os: win, arch: x64, runner: windows-latest }
+          - { os: win, arch: arm64, runner: windows-11-arm }
+          - { os: mac, arch: x64, runner: macos-15 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: 本機模式：Python 與本機伺服器
+        shell: bash
+        env:
+          OS: ${{ matrix.os }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          node scripts/prepare-local-server.mjs "${ARCH}"
+          bash scripts/check-vendor.sh "${OS}" "${ARCH}" false
+      - name: 安裝 fpm（Linux arm64）
+        if: matrix.os == 'linux' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+      - name: 打包（不簽章）
+        shell: bash
+        env:
+          OS: ${{ matrix.os }}
+          ARCH: ${{ matrix.arch }}
+          USE_SYSTEM_FPM: ${{ matrix.os == 'linux' && matrix.arch == 'arm64' && 'true' || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          MAC_ARCH: ${{ matrix.arch }}
+          BUILD_CHECK_NO_FFMPEG: '1'
+        run: |
+          set -euo pipefail
+          case "${OS}" in
+            linux) npx electron-builder --linux AppImage deb "--${ARCH}" --publish never ;;
+            win)   npx electron-builder --win nsis "--${ARCH}" --publish never ;;
+            mac)   node scripts/dist-mac.mjs ;;
+          esac
+          ls -la dist
+      - name: 檢查產物架構
+        shell: bash
+        env:
+          OS: ${{ matrix.os }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "${OS}" in
+            linux)
+              want_deb="$([ "${ARCH}" = x64 ] && echo amd64 || echo arm64)"
+              [ "$(dpkg-deb -f dist/*.deb Architecture)" = "${want_deb}" ]
+              file dist/*.AppImage | grep -q "$([ "${ARCH}" = x64 ] && echo x86-64 || echo aarch64)"
+              W="$(mktemp -d)"; dpkg-deb -x dist/*.deb "${W}"
+              grep -h '^MimeType=' "${W}"/usr/share/applications/*.desktop | tee /dev/stderr | grep -q 'x-scheme-handler/iamdirector' ;;
+            win)
+              main="$(find dist -path '*unpacked*' -name 'iamdirector.exe' -print -quit)"
+              m="$(node -e "const b=require('fs').readFileSync(process.argv[1]);const o=b.readUInt32LE(0x3c);console.log(b.readUInt16LE(o+4).toString(16))" "${main}")"
+              [ "${m}" = "$([ "${ARCH}" = x64 ] && echo 8664 || echo aa64)" ] ;;
+            mac)
+              app="$(find dist -maxdepth 2 -name '*.app' -type d -print -quit)"
+              exe="$(find "${app}/Contents/MacOS" -maxdepth 1 -type f -perm -u+x -print -quit)"  # 名稱是中文，defaults read 會回跳脫碼
+              [ "$(lipo -archs "${exe}")" = x86_64 ]
+              /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "${app}/Contents/Info.plist" | grep -qx iamdirector ;;
+          esac
+          echo "架構正確：${OS} ${ARCH}"
+
+      - name: 檢查 app-update.yml（自動更新來源；不能帶 token）
+        shell: bash
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          if [ "${OS}" = linux ]; then W="$(mktemp -d)"; dpkg-deb -x dist/*.deb "${W}"; root="${W}"; else root=dist; fi
+          f="$(find "${root}" -name app-update.yml -path '*esources*' -print -quit)"
+          test -n "${f}" || { echo "::error::打包結果裡沒有 app-update.yml"; exit 1; }
+          cat "${f}"
+          grep -qx 'owner: tkappletoken' "${f}"
+          grep -qx 'repo: iamdirector-releases' "${f}"
+          grep -qx 'provider: github' "${f}"
+          ! grep -qi '^token:' "${f}" || { echo "::error::app-update.yml 帶了 token"; exit 1; }

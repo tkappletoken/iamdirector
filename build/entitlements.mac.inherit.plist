@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- 子程序（Helper、GPU、Renderer）用的那一份。跟主程式相同：V8 JIT 需要這兩項，其餘一律不開。
+       刻意不開 disable-library-validation／allow-dyld-environment-variables：整包都由同一張
+       Developer ID 簽，不需要載入別人簽的函式庫，開了只是讓注入變容易。 -->
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+</dict>
+</plist>

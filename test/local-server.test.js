@@ -1,0 +1,118 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const http = require('node:http');
+const os = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
+const ls = require('../src/local-server');
+
+const DIR = process.env.IAMDIRECTOR_LOCAL_SERVER_DIR;
+const GOOD = ['at', 'desk', crypto.randomBytes(10).toString('hex')].join('-');
+
+function fakeUpstream() {
+  return new Promise((ok) => {
+    const srv = http.createServer((req, res) => {
+      const auth = req.headers.authorization === 'Bearer ' + GOOD;
+      res.setHeader('Content-Type', 'application/json');
+      if (!auth) { res.statusCode = 401; res.end('{"error":{"code":"invalid_api_key"}}'); return; }
+      res.end(req.url === '/v2/me' ? '{"available":1}' : '{"data":[]}');
+    });
+    srv.listen(0, '127.0.0.1', () => ok(srv));
+  });
+}
+
+function memKeystore() {
+  const box = { saved: null, cleared: 0 };
+  return {
+    box,
+    load: () => box.saved,
+    save: (k) => { box.saved = k; return { persisted: true, last4: k.slice(-4) }; },
+    clear: () => { box.saved = null; box.cleared += 1; },
+  };
+}
+
+test('needsToken：只有本機伺服器自己的 origin', () => {
+  assert.ok(ls.needsToken('http://127.0.0.1:5000/api/x', 5000));
+  assert.ok(!ls.needsToken('http://127.0.0.1:5001/api/x', 5000));
+  assert.ok(!ls.needsToken('https://iamdirector.app/api/x', 5000));
+  assert.ok(!ls.needsToken('http://localhost:5000/api/x', 5000));
+});
+
+test('gatewayOverride：打包版只收 127.0.0.1 的 http，其他當作沒設', () => {
+  assert.equal(ls.gatewayOverride('http://127.0.0.1:18901/v2', true), 'http://127.0.0.1:18901/v2');
+  for (const bad of ['http://evil.example/v2', 'https://evil.example/v2', 'http://localhost:1/v2', 'http://127.0.0.1.evil.com:1/v2', 'http://127.0.0.1:1@evil.com/v2']) {
+    assert.equal(ls.gatewayOverride(bad, true), null, bad);
+  }
+  assert.equal(ls.gatewayOverride('https://staging.example/v2', false), 'https://staging.example/v2');
+  assert.equal(ls.gatewayOverride('', true), null);
+});
+
+test('resolveRuntime：打包版用附帶的 python；開發版沒設路徑就直接炸', () => {
+  const r = ls.resolveRuntime({ isPackaged: true, resourcesPath: '/R', env: {}, platform: 'darwin' });
+  assert.equal(r.python, path.join('/R', 'python', 'bin', 'python3'));
+  assert.equal(r.ffmpegDir, path.join('/R', 'ffmpeg'), '打包版用附帶的 LGPL ffmpeg');
+  assert.throws(() => ls.resolveRuntime({ isPackaged: false, env: {}, platform: 'darwin' }));
+});
+
+test('整條管道：權杖、金鑰交給 keystore、stdin 關掉就結束', { skip: !DIR && '沒設 IAMDIRECTOR_LOCAL_SERVER_DIR' }, async () => {
+  const up = await fakeUpstream();
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-'));
+  const ks = memKeystore();
+  let exited = false;
+  const srv = ls.start({
+    spawn, keystore: ks, dataDir: data,
+    runtime: ls.resolveRuntime({ isPackaged: false, env: { IAMDIRECTOR_LOCAL_SERVER_DIR: DIR }, platform: process.platform }),
+    gatewayBase: 'http://127.0.0.1:' + up.address().port + '/v2',
+    onExit: () => { exited = true; },
+  });
+  try {
+    const port = await srv.ready;
+    const base = 'http://127.0.0.1:' + port;
+    assert.equal((await fetch(base + '/api/payer')).status, 401, '沒權杖要擋');
+    const h = { [ls.TOKEN_HEADER]: srv.token, 'Content-Type': 'application/json' };
+    const r = await fetch(base + '/api/payer/key', { method: 'POST', headers: h, body: JSON.stringify({ capability: 'video', key: GOOD }) });
+    const d = await r.json();
+    assert.equal(r.status, 200);
+    assert.equal(d.persisted, true);
+    assert.equal(ks.box.saved, GOOD, '驗證過的金鑰交給 keystore');
+    assert.ok(!JSON.stringify(d).includes(GOOD), '回應只有末四碼');
+    const bad = fs.mkdtempSync(path.join(os.tmpdir(), 'oh-'));
+    fs.writeFileSync(path.join(bad, 'libopenh264.so.8'), 'not cisco');
+    assert.equal(await srv.setOpenH264(bad), false, '雜湊不對不收');
+    assert.equal(await srv.setOpenH264(null), true);
+    const del = await fetch(base + '/api/payer/key/delete', { method: 'POST', headers: h, body: '{}' });
+    assert.equal(del.status, 200);
+    assert.equal(ks.box.cleared, 1);
+    for (const f of fs.readdirSync(data, { recursive: true })) {
+      const p = path.join(data, f);
+      if (fs.statSync(p).isFile()) assert.ok(!fs.readFileSync(p).includes(GOOD), f);
+    }
+  } finally {
+    srv.stop();
+    await new Promise((ok) => { const t = setInterval(() => { if (exited) { clearInterval(t); ok(); } }, 50); });
+    up.close();
+  }
+});
+
+test('子程序一起來就結束：寫 stdin 的 EPIPE 不准變成未接住的錯誤', async () => {
+  const { spawn: realSpawn } = require('node:child_process');
+  let uncaught = null;
+  const onErr = (e) => { uncaught = e; };
+  process.on('uncaughtException', onErr);
+  let order = [];
+  const ks = { load: () => { order.push('load'); return null; }, save: () => ({}), clear: () => {} };
+  const srv = ls.start({
+    spawn: (...a) => { order.push('spawn'); return realSpawn(process.execPath, ['-e', 'process.exit(0)'], a[2]); },
+    keystore: ks, dataDir: os.tmpdir(), runtime: { python: process.execPath, server: '-e' },
+    onExit: () => {},
+  });
+  await srv.ready.catch(() => {});
+  srv.stop();
+  await new Promise((ok) => setTimeout(ok, 300));
+  process.off('uncaughtException', onErr);
+  assert.equal(uncaught, null, String(uncaught));
+  assert.deepEqual(order.slice(0, 2), ['load', 'spawn'], '先讀金鑰再起子程序');
+});

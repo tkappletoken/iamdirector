@@ -1,0 +1,109 @@
+name: ffmpeg-lgpl
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: '要編的 commit（release 傳 tag）'
+        type: string
+        required: false
+  push:
+    branches: [main]
+    paths:
+      - scripts/build-ffmpeg-lgpl.sh
+      - scripts/build-ffmpeg-lgpl-mingw.sh
+      - scripts/build-ffmpeg-lgpl-linux.sh
+      - scripts/openh264-stub.c
+      - .github/workflows/ffmpeg-lgpl.yml
+
+permissions:
+  contents: read
+
+jobs:
+  win-x64:
+    name: Windows x64（mingw 交叉編譯，MediaFoundation）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - name: 快取原始碼與成品
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/.cache
+            vendor/ffmpeg-win-x64
+          key: ffmpeg-win-x64-${{ hashFiles('scripts/build-ffmpeg-lgpl-mingw.sh') }}
+      - name: 工具
+        run: sudo apt-get update -q && sudo apt-get install -y -q mingw-w64 cmake ninja-build nasm pkg-config
+      - name: 編譯
+        run: |
+          if [ -f vendor/ffmpeg-win-x64/ffmpeg.exe ]; then echo "快取命中"; else bash scripts/build-ffmpeg-lgpl-mingw.sh; fi
+          ls -la vendor/ffmpeg-win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-win-x64
+          path: vendor/ffmpeg-win-x64
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-x64:
+    name: Linux x64（VP9／Opus，H.264 執行時向 Cisco 下載）
+    runs-on: ubuntu-22.04          # 用舊一點的 glibc 編，裝得進比較多發行版
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor/.cache
+            vendor/ffmpeg-linux-x64
+          key: ffmpeg-linux-x64-${{ hashFiles('scripts/build-ffmpeg-lgpl-linux.sh', 'scripts/openh264-stub.c') }}
+      - name: 工具
+        run: sudo apt-get update -q && sudo apt-get install -y -q build-essential cmake ninja-build nasm pkg-config patchelf
+      - name: 編譯
+        run: |
+          if [ -f vendor/ffmpeg-linux-x64/ffmpeg ]; then echo "快取命中"; else bash scripts/build-ffmpeg-lgpl-linux.sh; fi
+          ls -la vendor/ffmpeg-linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-linux-x64
+          path: vendor/ffmpeg-linux-x64
+          if-no-files-found: error
+          retention-days: 7
+
+  mac:
+    name: macOS ${{ matrix.arch }}（VideoToolbox）
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor/.cache
+            vendor/ffmpeg-${{ matrix.arch == 'x86_64' && 'x64' || 'arm64' }}
+          key: ffmpeg-mac-${{ matrix.arch }}-${{ hashFiles('scripts/build-ffmpeg-lgpl.sh') }}
+      - name: 工具
+        run: brew install nasm cmake ninja pkg-config
+      - name: 編譯
+        run: |
+          D=vendor/ffmpeg-${{ matrix.arch == 'x86_64' && 'x64' || 'arm64' }}
+          if [ -f "$D/ffmpeg" ]; then echo "快取命中"; else bash scripts/build-ffmpeg-lgpl.sh ${{ matrix.arch }}; fi
+          ls -la "$D"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-mac-${{ matrix.arch == 'x86_64' && 'x64' || 'arm64' }}
+          path: vendor/ffmpeg-${{ matrix.arch == 'x86_64' && 'x64' || 'arm64' }}
+          if-no-files-found: error
+          retention-days: 7
