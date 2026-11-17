@@ -43,7 +43,7 @@ jobs:
           [[ "${GITHUB_REF}" == refs/tags/* ]] || { echo "::error::要在 tag 上執行（--ref desktop-vX.Y.Z），現在是 ${GITHUB_REF}"; exit 1; }
           [[ "${TAG}" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag 格式要是 desktop-vX.Y.Z：${TAG}"; exit 1; }
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -109,7 +109,7 @@ jobs:
       EXPECT_TEAM_ID: Q5988V8U8D
       MAC_ARCH: ${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -225,7 +225,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -301,7 +301,7 @@ jobs:
           - arch: arm64
             runner: windows-11-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -368,7 +368,7 @@ jobs:
     env:
       PRERELEASE: ${{ needs.precheck.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/download-artifact@v4
