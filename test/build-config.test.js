@@ -8,8 +8,18 @@ const root = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const mac = pkg.build.mac;
 const WF = path.join(root, '.github', 'workflows', 'release.yml');
-const wf = fs.existsSync(WF) ? fs.readFileSync(WF, 'utf8') : null;
-const REL = { skip: !wf && '這個 repo 沒有 release.yml' };
+const wf = fs.readFileSync(WF, 'utf8');
+const REL = {};
+// Split a workflow into its top-level jobs: { name: text }
+function jobs(src) {
+  const body = src.slice(src.indexOf('\njobs:\n') + 7);
+  const out = {};
+  for (const m of body.split(/\n(?=  [A-Za-z0-9_-]+:\n)/)) {
+    const k = m.match(/^\s*([A-Za-z0-9_-]+):/);
+    if (k) out[k[1]] = m;
+  }
+  return out;
+}
 
 test('mac：hardened runtime、兩份 entitlements 都存在、有 zip（自動更新要用）', () => {
   assert.equal(mac.hardenedRuntime, true);
@@ -47,50 +57,57 @@ test('workflow：只引用 Secrets 名稱、不含任何值；正式版強制公
   for (const c of ['codesign --verify --deep --strict', 'spctl -a -vv', 'stapler validate', 'flags=.*runtime']) assert.ok(v.includes(c), c);
 });
 
-test('workflow 安全：只有 tag 與手動補發觸發、頂層權限全關、兩組 Secrets 各在自己那一步', REL, () => {
+test('workflow 安全：只有 tag 與手動觸發、預設唯讀、Secrets 只在宣告 production 環境的簽章那一步', REL, () => {
   const on = wf.slice(wf.indexOf('\non:'), wf.indexOf('\npermissions:'));
   assert.match(on, /tags:\s*\n\s*- 'desktop-v\*'/);
-  for (const t of ['pull_request', 'pull_request_target', 'workflow_run', 'issue_comment', 'repository_dispatch']) {
-    assert.ok(!new RegExp(`^\\s+${t}:`, 'm').test(on), `不准有 ${t} 觸發`);
-  }
-  assert.match(wf, /^permissions: \{\}$/m);
-  assert.ok(!/^\s+contents: write/m.test(wf), '發佈靠 RELEASES_TOKEN，本 repo 的 token 不需要寫入權');
+  assert.match(on, /workflow_dispatch:/);
+  assert.ok(!/^\s+(pull_request|pull_request_target|workflow_run|issue_comment|repository_dispatch|schedule):/m.test(on), '只准 tag 與手動觸發');
+  assert.ok(!/^\s+branches:/m.test(on), 'push 只准 tag');
+  assert.match(wf, /^permissions:\n  contents: read$/m);
   assert.ok(!/run:[^\n]*\$\{\{\s*inputs\./.test(wf), 'inputs 不准直接插進 run');
   assert.match(wf, /\^desktop-v\[0-9\]\+/);
-  const steps = wf.split(/\n      - /).filter((s) => s.includes('secrets.'));
-  assert.equal(steps.length, 2, 'Secrets 只准出現在「打包、簽章、公證」與「發佈」兩步');
+  assert.match(wf, /refs\/tags\/\*/, '手動觸發也要在 tag 上');
+  const J = jobs(wf);
+  for (const [name, text] of Object.entries(J)) {
+    const env = /^    environment: production$/m.test(text);
+    assert.equal(env, name === 'mac', `只有 mac job 宣告 environment: production（${name}）`);
+    assert.equal(/^      contents: write$/m.test(text), name === 'publish', `只有 publish job 有 contents: write（${name}）`);
+  }
+  const steps = wf.split(/\n      - /).filter((x) => x.includes('secrets.'));
+  assert.equal(steps.length, 1, 'Secrets 只准出現在「打包、簽章、公證」一步');
   assert.match(steps[0], /^name: 打包、簽章、公證/);
-  assert.ok(!steps[0].includes('RELEASES_TOKEN'), '打包那一步拿不到發佈權杖');
-  assert.match(steps[1], /^name: 發佈到公開 repo/);
-  assert.deepEqual(steps[1].match(/secrets\.[A-Z_]+/g), ['secrets.RELEASES_TOKEN'], '發佈那一步只拿得到 RELEASES_TOKEN');
+  assert.ok(!/RELEASES_TOKEN/.test(wf), '同一個 repo 發版，用 GITHUB_TOKEN');
 });
 
 test('發佈：不覆蓋已發佈的版本、三平台全成功才發、先 draft 全部上傳核對才公開、latest*.yml 一起發', REL, () => {
-  const pub = wf.slice(wf.indexOf('name: 發佈到公開 repo'));
-  assert.match(wf, /PUBLIC_REPO: tkappletoken\/iamdirector-releases/);
-  assert.ok(wf.indexOf('不能已經有這個版本') < wf.indexOf('npm ci'), '打包前先確認公開 repo 沒有這個版本');
+  const pub = jobs(wf).publish;
+  assert.match(pub, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.ok(wf.indexOf('不能已經有這個版本') < wf.indexOf('npm ci'), '打包前先確認沒有這個版本');
   assert.match(pub, /gh release view "\$\{TAG\}"[^\n]*\n\s*echo "::error::[^\n]*不覆蓋"; exit 1/);
   assert.ok(!/--clobber/.test(wf), '上傳不准覆蓋既有檔案');
   const c = pub.indexOf('--draft '), u = pub.indexOf('gh release upload'), e = pub.indexOf('--draft=false');
   assert.ok(c > 0 && c < u && u < e, '順序要是：建 draft → 上傳 → 核對 → 公開');
+  assert.match(pub, /--verify-tag/);
   assert.match(pub, /--latest/);
   assert.match(pub, /latest\*\.yml/);
-  assert.ok(wf.indexOf('release-manifest.mjs') > 0 && wf.indexOf('release-manifest.mjs') < wf.indexOf('gh release create'));
-  assert.match(wf, /needs: \[mac, linux, windows\]/);
+  assert.ok(pub.indexOf('release-manifest.mjs') > 0 && pub.indexOf('release-manifest.mjs') < pub.indexOf('gh release create'));
+  assert.match(pub, /needs: \[precheck, mac, linux, windows\]/);
 });
 
-test('自動更新：發佈來源是公開的 iamdirector-releases（只認正式 release），設定裡沒有 token', () => {
-  assert.deepEqual(pkg.build.publish, [{ provider: 'github', owner: 'tkappletoken', repo: 'iamdirector-releases', releaseType: 'release' }]);
+test('自動更新：發佈來源是公開的 iamdirector（原 iamdirector-releases）（只認正式 release），設定裡沒有 token', () => {
+  assert.deepEqual(pkg.build.publish, [{ provider: 'github', owner: 'tkappletoken', repo: 'iamdirector', releaseType: 'release' }]);
   for (const pub of pkg.build.publish) assert.ok(!Object.keys(pub).some((k) => /token/i.test(k)), 'publish 設定不能帶 token（會被打進 app-update.yml）');
 });
 
-test('測試版（prerelease）只能從 workflow_dispatch 勾選，發佈時不設 Latest，並讀回 /releases/latest 驗證', REL, () => {
-  assert.match(wf, /PRERELEASE: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.prerelease == true && 'true' \|\| 'false' \}\}/);
+test('測試版（prerelease）由 tag 訊息的「內部測試用，請勿下載」決定，不設 Latest，並讀回 /releases/latest 驗證', REL, () => {
+  const pc = jobs(wf).precheck;
+  assert.match(pc, /annotated tag/);
+  assert.match(pc, /grep -q '內部測試用，請勿下載' notes\.md && pre=true/);
+  assert.match(pc, /勾了 prerelease，但 tag 訊息沒有寫/);
   assert.ok(!/PRERELEASE:.*(ref_name|TAG|contains|startsWith)/.test(wf), 'prerelease 不能從 tag 名稱推出來');
+  assert.match(wf, /PRERELEASE: \$\{\{ needs\.precheck\.outputs\.prerelease \}\}/);
   assert.match(wf, /--prerelease --latest=false/);
   assert.match(wf, /releases\/latest/);
-  assert.match(wf, /內部測試用，請勿下載/);
-  assert.match(wf, /PRERELEASE}" != true \] && grep -q '內部測試用'/, '測試版推 tag 觸發時要在預檢擋下');
 });
 
 test('CI 打包一律 --publish never（上傳只由 release.yml 的發佈 job 做）', REL, () => {

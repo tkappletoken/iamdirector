@@ -88,6 +88,30 @@ test('兩邊都改：問使用者；留本機版＝覆蓋雲端，留雲端版�
   }
 });
 
+test('只開啟、沒修改：同步是「已是最新」，不多出雲端版本', async () => {
+  const { L, C, local, cloud } = world();
+  await syncWork({ pid: PID, local, cloud, ask: async () => null });
+  L.manifest.work.t = Date.now(); L.manifest.work.sum = { n: 1, filled: 1, gen: 0, sec: 5 };
+  let r = await syncWork({ pid: PID, local, cloud, ask: async () => assert.fail('不該問') });
+  assert.equal(r.result, 'uptodate');
+  assert.equal(C.works[LID].rev, 1, '只開啟就多了一個雲端版本');
+  L.manifest.work.step = 5;
+  r = await syncWork({ pid: PID, local, cloud, ask: async () => assert.fail() });
+  assert.deepEqual([r.result, r.rev], ['pushed', 2]);
+});
+
+test('這一版之前記下的雜湊（整份清單算的）也認得：升級後不會每部作品都多傳一版', async () => {
+  const { L, C, local, cloud } = world();
+  await syncWork({ pid: PID, local, cloud, ask: async () => null });
+  L.manifest.work.t = 123;
+  const crypto2 = require('node:crypto');
+  const { canonical } = require('../src/cloud-sync');
+  L.state[LID].hash = crypto2.createHash('sha256').update(canonical(L.manifest)).digest('hex');
+  const r = await syncWork({ pid: PID, local, cloud, ask: async () => assert.fail() });
+  assert.equal(r.result, 'uptodate');
+  assert.equal(C.works[LID].rev, 1);
+});
+
 test('雜湊與欄位順序無關', () => {
   assert.equal(hashOf({ a: 1, b: [2, { c: 3, d: 4 }] }), hashOf({ b: [2, { d: 4, c: 3 }], a: 1 }));
 });

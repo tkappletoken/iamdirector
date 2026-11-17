@@ -2,3 +2,7 @@ node_modules/
 dist/
 /vendor/
 .agent-team/
+.claude/
+/release-notes/
+CLAUDE.md
+AGENTS.md

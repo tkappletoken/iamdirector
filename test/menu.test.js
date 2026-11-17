@@ -67,3 +67,17 @@ test('全螢幕：mac 交給系統（不自己放，免得出現兩次），Wind
   assert.equal(fs(true).length, 0);
   assert.equal(fs(false).length, 1);
 });
+
+test('檔案選單：「AppleToken 金鑰…」是頁首狀態列的備用入口；沒有「切換模式」（桌面版一律本機）', () => {
+  const calls = [];
+  const acts = { openKey: () => calls.push('openKey') };
+  const file = m.buildTemplate({ ...base, isMac: true, mode: 'local', actions: new Proxy(acts, { get: (o, k) => o[k] || null }) })
+    .find((x) => x.label === '檔案');
+  const key = file.submenu.find((i) => i.label === 'AppleToken 金鑰…');
+  assert.ok(key, '沒有「AppleToken 金鑰…」');
+  key.click();
+  assert.deepEqual(calls, ['openKey']);
+  const all = walk(m.buildTemplate({ ...base, isMac: true, mode: 'local' }));
+  assert.ok(!all.some((i) => typeof i.label === 'string' && /切換模式|改用本機模式|登入 iamdirector 帳號（雲端）/.test(i.label)),
+    '桌面版一律本機模式，選單不該有切換模式');
+});

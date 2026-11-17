@@ -7,7 +7,8 @@ contextBridge.exposeInMainWorld('iamdirectorDesktop', Object.freeze({
   notify: (kind, text) => ipcRenderer.send('desktop:notify', {
     kind: String(kind), text: String(text == null ? '' : text).slice(0, 200),
   }),
-  switchToCloud: () => ipcRenderer.send('desktop:switch-mode'),
+  onOpenKey: (fn) => { ipcRenderer.on('desktop:open-key', () => { try { fn(); } catch (_) {} }); },
+  takeStartAction: () => ipcRenderer.invoke('desktop:take-start-action'),
   cloud: Object.freeze({
     status: () => ipcRenderer.invoke('desktop:cloud-status'),
     link: (provider) => ipcRenderer.invoke('desktop:cloud-link', String(provider || '')),
@@ -15,6 +16,8 @@ contextBridge.exposeInMainWorld('iamdirectorDesktop', Object.freeze({
     list: () => ipcRenderer.invoke('desktop:cloud-list'),
     pull: (localId) => ipcRenderer.invoke('desktop:cloud-pull', String(localId || '')),
     onLinked: (fn) => { ipcRenderer.on('desktop:cloud-linked', () => { try { fn(); } catch (_) {} }); },
+    logout: () => ipcRenderer.invoke('desktop:cloud-logout'),
+    openWeb: () => ipcRenderer.send('desktop:cloud-open-web'),
   }),
   h264: Object.freeze({ ensure: () => ipcRenderer.invoke('desktop:h264-ensure') }),
   revealPath: (p) => ipcRenderer.send('desktop:reveal', String(p || '').slice(0, 1024)),

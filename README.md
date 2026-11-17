@@ -18,7 +18,9 @@
 
 ## 登入是選用的
 
-登入 [iamdirector.app](https://iamdirector.app) 帳號之後，才多出這些：作品同步到雲端資產庫、一鍵上架到你的頻道、用平台點數付款。不登入也能把成片匯出成檔案，自己上傳。
+桌面版一律是本機工具。登入 [iamdirector.app](https://iamdirector.app) 帳號只多一件事：**把作品同步到雲端**（上傳、從雲端下載，兩邊都改過時會問你留哪一份），換電腦也拿得到。
+
+上架到你的頻道、用平台點數付款，在 [iamdirector.app](https://iamdirector.app) 網頁版。不登入也能把成片匯出成檔案，自己上傳。
 
 ## 在這台電腦匯出成片
 
@@ -67,7 +69,7 @@ No account needed. **Use your own AppleToken API key**; your works, assets and e
 
 - **Defaults to AppleToken** (`https://appletoken.app`). Create a key on [AppleToken's API credentials page](https://appletoken.app/portal/keys). **We recommend creating a separate key for this tool and restricting which models it can use.**
 - The key is kept only in your OS's encrypted storage (macOS Keychain, Windows DPAPI, Linux Secret Service), is shown only as its last four characters, and is sent only to the AppleToken API.
-- Signing in to an iamdirector.app account is optional; it adds the cloud asset library, one-click publishing and paying with platform points.
+- The desktop app is always a local tool. Signing in to an iamdirector.app account is optional and only adds syncing your works to the cloud (upload, download, and a prompt when both sides changed). Publishing to your channels and paying with platform points are on the iamdirector.app website.
 - On-device export uses a bundled LGPL build of FFmpeg: VideoToolbox on macOS, Media Foundation on Windows; on Linux x64, Cisco's OpenH264 is downloaded only with your consent (otherwise WebM). *OpenH264 Video Codec provided by Cisco Systems, Inc.*
 - Build: see the commands above.
 - License: Apache-2.0. The names "我是導演" / "iamdirector" and the logo are reserved and not covered by the license ([TRADEMARKS.md](TRADEMARKS.md)).

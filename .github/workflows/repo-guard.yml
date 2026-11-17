@@ -18,11 +18,24 @@ jobs:
       - name: 不准出現的路徑
         run: |
           set -euo pipefail
-          bad=$(git ls-files | grep -E '(^|/)(\.agent-team|CLAUDE\.md|AGENTS\.md|release-notes)(/|$)|^\.github/workflows/release\.yml$' || true)
+          bad=$(git ls-files | grep -E '(^|/)(\.agent-team|\.claude|CLAUDE\.md|AGENTS\.md|release-notes)(/|$)' || true)
           if [ -n "$bad" ]; then echo "::error::這些路徑不該在公開 repo：$bad"; exit 1; fi
-      - name: workflow 不准用 Secrets 或 PR target 觸發
+      - name: workflow 不准用 PR target 觸發；Secrets 只在 release.yml 宣告 production 環境的 job
         run: |
           set -euo pipefail
-          # 字樣拆開再拼，這個檔自己才不會被掃到（不靠 --exclude，連這個檔也照樣守）
+          # The patterns are assembled at runtime so this file does not match its own rule
           s='secret'; t='pull_request'
-          if grep -rnE "${s}s\.|${t}_target" .github/workflows/; then echo "::error::公開 repo 的 workflow 不用 Secrets"; exit 1; fi
+          if grep -rnE "${t}_target" .github/workflows/; then echo "::error::workflow 不准用 ${t}_target"; exit 1; fi
+          others=$(grep -rlE "${s}s\." .github/workflows/ | grep -vx '.github/workflows/release.yml' || true)
+          if [ -n "$others" ]; then echo "::error::只有 release.yml 可以讀 Secrets：$others"; exit 1; fi
+          # In release.yml, every job that reads a secret must declare environment: production
+          awk -v pat="${s}s\\." '
+            /^jobs:/ { injobs = 1; next }
+            injobs && /^  [A-Za-z0-9_-]+:/ { job = $1; sub(/:$/, "", job); next }
+            injobs && job != "" && /^    environment: production[[:space:]]*$/ { prod[job] = 1 }
+            injobs && job != "" && $0 ~ pat { use[job] = 1 }
+            END {
+              bad = 0
+              for (j in use) if (!(j in prod)) { print "::error::release.yml 的 job " j " 讀 Secrets 卻沒有 environment: production"; bad = 1 }
+              exit bad
+            }' .github/workflows/release.yml
