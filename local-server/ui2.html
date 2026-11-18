@@ -40,9 +40,7 @@ a { color:var(--rolling); }
   border-bottom:1px solid var(--edge);
 }
 .slatebar h1 { margin:0; font-size:var(--fs-l); font-weight:600; letter-spacing:-.01em; white-space:nowrap; }
-.slatebar .bars { display:flex; gap:2px; align-items:flex-end; height:13px; margin-right:2px; }
-.slatebar .bars i { width:3px; background:var(--paper); border-radius:1px; }
-.slatebar .bars i:nth-child(odd) { background:var(--ink); box-shadow:0 0 0 1px var(--edge2) inset; }
+.slatebar .mark { width:18px; height:18px; flex:none; color:var(--paper); margin-right:2px; }
 #baseinfo { color:var(--faint); }
 #conn { font:var(--printed); letter-spacing:0; padding:3px 9px; border:1px solid var(--edge);
         border-radius:99px; white-space:nowrap; }
@@ -706,7 +704,7 @@ pre.err { color:var(--ng); }
 
 
 <div class="slatebar">
-  <span class="bars" aria-hidden="true"><i style="height:13px"></i><i style="height:13px"></i><i style="height:13px"></i><i style="height:13px"></i><i style="height:13px"></i><i style="height:13px"></i></span>
+  <svg class="mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="10" width="18" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><g transform="rotate(-11 3.5 9.5)"><rect x="3" y="5" width="18" height="4.6" rx="1.2" fill="currentColor"/><path d="M7.5 5l3 4.6M12.5 5l3 4.6M17.5 5l3 4.6" style="stroke:var(--grease)" stroke-width="1.9"/></g></svg>
   <h1>我是導演</h1>
   <span id="conn">檢查連線中</span>
   <span class="filled" id="baseinfo"></span>
@@ -1219,16 +1217,36 @@ function vrefSeconds(p, hint) {
   return s;
 }
 
+function catalogRefCap(model) {
+  const cat = typeof CATALOG !== 'undefined' && CATALOG ? (CATALOG.video || []) : [];
+  const id = String(model || '');
+  if (!id || !cat.length) return null;
+  const it = cat.find(x => x && x.send === id) || (id.includes('/') ? null : cat.find(x => x && String(x.send || '').split('/').pop() === id));
+  const c = it && it.meta && it.meta.constraints;
+  if (!c || typeof c !== 'object') return null;
+  const n = c.references && typeof c.references === 'object' && c.references.image != null ? c.references.image : c.maxReferences;
+  return Number.isFinite(Number(n)) && n !== null && n !== '' ? Number(n) : null;
+}
+
+function fmtPts(x) {
+  const n = Number(x);
+  if (!isFinite(n)) return '—';
+  const s = n.toFixed(Math.abs(n) < 0.01 ? 6 : 4).replace(/0+$/, '');
+  const [i, d = ''] = s.split('.');
+  return i + '.' + (d.length < 2 ? d.padEnd(2, '0') : d);
+}
+
 function modelCaps(model) {
   const m = String(model || '').toLowerCase();
   const veo = m.includes('veo'), sora = m.includes('sora');
   const seed25 = m.includes('seedance-2.5') || m.includes('seedance-2.0');
+  const cap = typeof catalogRefCap === 'function' ? catalogRefCap(model) : null;
   return {
-    input_references: veo || seed25,
+    input_references: cap != null ? cap > 0 : veo || seed25,
     negative_prompt: veo || sora,
     generate_audio: veo || sora || m.includes('seedance-2.5'),
     last_frame: !sora,
-    known: veo || sora || m.includes('seedance')
+    known: cap != null || veo || sora || m.includes('seedance')
   };
 }
 
@@ -2223,6 +2241,7 @@ async function checkRefs() {
       body: JSON.stringify({ model: model, input_references: refs }) })
       .then(r => r.json());
     if (seq !== refSeq) return;
+    if (!d || !d.counts) { box.textContent = (d && typeof d.error === 'string') ? d.error : ''; return; }
     const lim = d.limits || {}, c = d.counts || {};
     if (!refs.length) { box.innerHTML = refCapacity(lim); return; }
     const cell = (n, max, label) =>
@@ -3238,7 +3257,7 @@ $('cmpClear').onclick = () => { jobs.forEach(j => { j.pick = false; }); save(); 
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x =>
     x.setAttribute('aria-selected', String(x === b)));
-  ['jobs', 'compare', 'cast', 'board', 'admin'].forEach(t => { $('p-' + t).hidden = t !== b.dataset.tab; });
+  ['jobs', 'compare', 'cast', 'board', 'admin'].forEach(t => { const p = $('p-' + t); if (!p.closest('.railpane')) p.hidden = t !== b.dataset.tab; });
   if (b.dataset.tab === 'admin') loadTenants();
 });
 
@@ -3685,12 +3704,15 @@ async function aiStoryboard(opts, onErr) {
   const own = q.d.payer === 'own_key';
   const pts = q.d.charge_points != null ? Number(q.d.charge_points) : null;
   const avail = q.d.points_available != null ? Number(q.d.points_available) : null;
+  const capAt = own && q.d.estimate && q.d.estimate.upstream_cost_max != null && isFinite(Number(q.d.estimate.upstream_cost_max))
+    ? Number(q.d.estimate.upstream_cost_max) : null;
   const sheet = window.__CONFIRM_SHEET__;
-  const rowP = own ? '自帶金鑰' : (pts != null ? '最多 ' + pts.toFixed(2) + ' 點' : '—');
+  const rowP = own ? (capAt != null ? '最多 ' + fmtPts(capAt) + ' AppleToken 點' : '自帶金鑰（照實際用量）') : (pts != null ? '最多 ' + pts.toFixed(2) + ' 點' : '—');
   const ok = typeof sheet === 'function' ? await sheet({
     kicker: 'AI 分鏡 · 先看價格', title: '用 AI 把故事拆成 ' + q.d.shots + ' 個鏡頭',
     rows: [{ v: q.d.shots + ' 鏡', m: String(opts.story).slice(0, 80) + (String(opts.story).length > 80 ? '…' : ''), sub: '文字模型 ' + q.d.model, p: rowP }],
-    total: own ? null : (pts != null ? pts.toFixed(2) : null),
+    total: own ? (capAt != null ? '最多 ' + fmtPts(capAt) : null) : (pts != null ? pts.toFixed(2) : null),
+    unit: own ? 'AppleToken 點' : undefined,
     short: !own && pts != null && avail != null && avail < pts,
     note: own ? '用你自己的 AppleToken 金鑰，扣你在 AppleToken 的額度，本站不扣點。'
               : '先依上限預扣，完成時照實際用量結算（通常少很多）；失敗全額退回。拆好的鏡頭會取代目前的分鏡（可以復原）。',
@@ -4198,9 +4220,13 @@ document.addEventListener('keydown', e => {
     const path = url.split('?')[0].replace(/^https?:\/\/[^/]+/, '');
     if (path === '/api/download' && missing[path] === undefined) {
       const id = decodeURIComponent((url.split('id=')[1] || '').split('&')[0]);
-      return Promise.resolve(new Response(
+      const res = new Response(
         JSON.stringify({ src: url, file: (id || 'video') + '.mp4' }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+      const bytes = () => realFetch(input, opts).then(r => { if (!r.ok) throw new Error('讀不到這一段的影片（HTTP ' + r.status + '）'); return r; });
+      res.blob = () => bytes().then(r => r.blob());
+      res.arrayBuffer = () => bytes().then(r => r.arrayBuffer());
+      return Promise.resolve(res);
     }
 
     const why = missing[path];
@@ -4527,7 +4553,7 @@ document.addEventListener('keydown', e => {
   [['castGen', '/api/image'],
    ['capAuto', '/api/transcribe'],
    ['mergeGo', '/api/concat'], ['saveRate', '/api/rates'],
-   ].forEach(([id, path]) => mute($$(id), missing[path]));
+   ].forEach(([id, path]) => { if (missing[path] !== undefined) mute($$(id), missing[path]); });
   $$('rateJson').readOnly = true;
 
   if ($$('sbTextModelPick')) {
@@ -6470,7 +6496,7 @@ document.addEventListener('keydown', e => {
       if (r.secBlock) blocks.push(n + '：' + r.secBlock);
       if (sh.payer === 'points' && sh.points_available != null) avail = Number(sh.points_available);
     });
-    total = Math.round(total * 100) / 100;
+    total = Math.round(total * 1e6) / 1e6;
     const short = avail != null && isFinite(avail) && need > avail ? Math.round((need - avail) * 100) / 100 : 0;
     if (short) blocks.push('本站點數不夠：你有 ' + avail.toFixed(2) + ' 點，這一批要 ' + need.toFixed(2) + ' 點，還差 ' + short.toFixed(2) + ' 點');
     const unit = rows.some(r => r.sheet && r.sheet.payer === 'points') ? ' 點' : ' AppleToken 點';
@@ -6612,7 +6638,7 @@ document.addEventListener('keydown', e => {
         const c1 = document.createElement('td'); c1.textContent = (i + 1) + '. ' + r.label; c1.style.cssText = 'padding:8px 6px 8px 0';
         const c2 = document.createElement('td'); c2.style.cssText = 'padding:8px 6px;white-space:nowrap;text-align:right;font-family:var(--mono)';
         const c3 = document.createElement('td'); c3.style.cssText = 'padding:8px 0 8px 6px;white-space:nowrap;text-align:right;font-family:var(--mono);font-weight:700';
-        if (r.sheet) { c2.textContent = (r.sec && r.sec.gotText) || '—'; const pts = sheetPts(r.sheet); c3.textContent = pts == null ? '—' : pts.toFixed(2) + (r.sheet.payer === 'points' ? ' 點' : ' AppleToken 點'); }
+        if (r.sheet) { c2.textContent = (r.sec && r.sec.gotText) || '—'; const pts = sheetPts(r.sheet); c3.textContent = pts == null ? '—' : fmtPts(pts) + (r.sheet.payer === 'points' ? ' 點' : ' AppleToken 點'); }
         else { c2.textContent = '—'; c3.textContent = '拿不到'; c3.style.color = '#B3412E'; }
         if (r.secBlock || r.error) tr.style.color = '#B3412E';
         tr.append(c1, c2, c3); tb.append(tr);
@@ -6620,7 +6646,7 @@ document.addEventListener('keydown', e => {
       const sum = document.createElement('div');
       sum.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px;border-radius:10px;background:rgba(232,163,61,.14);border-left:4px solid var(--grease)';
       const l = document.createElement('span'); l.textContent = '合計';
-      const v = document.createElement('b'); v.textContent = rv.total.toFixed(2) + rv.unit; v.style.cssText = 'font-size:var(--fs-xl);font-family:var(--mono)';
+      const v = document.createElement('b'); v.textContent = fmtPts(rv.total) + rv.unit; v.style.cssText = 'font-size:var(--fs-xl);font-family:var(--mono)';
       sum.append(l, v);
       const av = document.createElement('div'); av.style.cssText = 'margin:8px 2px 0;color:#3A4350';
       av.textContent = rv.avail == null ? '' : '你的本站點數：' + rv.avail.toFixed(2) + ' 點' + (rv.short ? '，還差 ' + rv.short.toFixed(2) + ' 點' : '');
@@ -6632,7 +6658,7 @@ document.addEventListener('keydown', e => {
       cancel.style.cssText = 'width:auto;min-height:48px;padding:0 20px'; cancel.dataset.agent = 'batch-cancel';
       const go = document.createElement('button'); go.type = 'button'; go.dataset.agent = 'batch-go';
       go.style.cssText = 'width:auto;min-height:48px;padding:0 24px;background:var(--grease);color:var(--ink);border:0;font-weight:700';
-      go.textContent = '確認全部 ' + rows.length + ' 個鏡頭，扣 ' + rv.total.toFixed(2) + rv.unit;
+      go.textContent = '確認全部 ' + rows.length + ' 個鏡頭，扣 ' + fmtPts(rv.total) + rv.unit;
       const done = val => { back.remove(); document.removeEventListener('keydown', onKey, true); resolve(val); };
       const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); done(false); } };
       document.addEventListener('keydown', onKey, true);
@@ -6705,16 +6731,17 @@ document.addEventListener('keydown', e => {
       document.querySelectorAll('.tabs button').forEach(x =>
         x.setAttribute('aria-selected', String(x === btn)));
       ['jobs', 'compare', 'cast', 'board', 'admin'].forEach(t => {
-        const el = $$('p-' + t); if (el) el.hidden = true;
+        const el = $$('p-' + t); if (el && !el.closest('.railpane')) el.hidden = true;
       });
       panel.hidden = false;
       fillImgModels();
     };
+    window.__IMG_FILL__ = () => fillImgModels();
     tabs.append(btn);
 
     tabs.addEventListener('click', ev => {
       const hit = ev.target.closest('button[data-tab]');
-      if (hit && hit !== btn) panel.hidden = true;
+      if (hit && hit !== btn && !panel.closest('.railpane')) panel.hidden = true;
     });
 
     anchorPanel.after(panel);
@@ -7740,7 +7767,7 @@ document.addEventListener('keydown', e => {
       document.querySelectorAll('.tabs button').forEach(x =>
         x.setAttribute('aria-selected', String(x === btn)));
       document.querySelectorAll('[id^="p-"]').forEach(el => {
-        if (/^p-(jobs|compare|cast|board|code|admin|image)$/.test(el.id)) el.hidden = true;
+        if (/^p-(jobs|compare|cast|board|code|admin|image)$/.test(el.id) && !el.closest('.railpane')) el.hidden = true;
       });
       panel.hidden = false;
       draw();
@@ -7820,6 +7847,8 @@ document.addEventListener('keydown', e => {
       }
     }
     loadCanvas();
+    window.__CANVAS_PROJ_CUR__ = () => projCur;
+    window.__CANVAS_PROJ_READY__ = () => restoreDone;
     window.__CANVAS_PROJ__ = function (filter) {
       const f = filter || 'all';
       if (f === projCur) return;
@@ -11658,7 +11687,7 @@ document.addEventListener('keydown', e => {
       const b = document.createElement('button');
       b.type = 'button';
       b.setAttribute('role', 'tab');
-      b.id = 'tab-' + k;
+      b.id = 'mode-' + k;
       b.dataset.pane = k;
       b.setAttribute('aria-selected', 'false');
       b.setAttribute('aria-controls', 'pane-' + k);
@@ -11674,7 +11703,7 @@ document.addEventListener('keydown', e => {
       p.className = 'railpane';
       p.id = 'pane-' + k;
       p.setAttribute('role', 'tabpanel');
-      p.setAttribute('aria-labelledby', 'tab-' + k);
+      p.setAttribute('aria-labelledby', 'mode-' + k);
       p.hidden = true;
       scroll.append(p);
       panes[k] = p;
@@ -11712,6 +11741,11 @@ document.addEventListener('keydown', e => {
     audioGo.title = '語音一律經由 AppleToken 供應；平台提供後這裡才會啟用';
     footOf.audio.append(audioGo);
 
+    function toRail(k) {
+      const b = document.querySelector('.tabs button[data-tab="' + k + '"]');
+      if (b) b.onclick = () => window.switchPane(k);
+    }
+
     const cast = $$('p-cast');
     if (cast) {
       const sec = cast.closest('details.cv-sec');
@@ -11720,6 +11754,7 @@ document.addEventListener('keydown', e => {
       panes.cast.append(cast);
       const bar = cast.querySelector('.castbar');
       if (bar) footOf.cast.append(bar);
+      toRail('cast');
     }
 
     const board = $$('p-board');
@@ -11742,6 +11777,7 @@ document.addEventListener('keydown', e => {
       const go = $$('imgGo') && $$('imgGo').parentElement;
       if (cost) footOf.image.append(cost);
       if (go) footOf.image.append(go);
+      toRail('image');
     }, 0);
 
     const menu = $$('studioWhoMenu');
@@ -11766,6 +11802,8 @@ document.addEventListener('keydown', e => {
       const has = !!footOf[mode];
       foot.hidden = video || !has;
       Object.keys(footOf).forEach(k => { footOf[k].hidden = k !== mode; });
+      ['p-cast', 'p-image'].forEach(id => { const e = $$(id); if (e && e.closest('.railpane')) e.hidden = false; });
+      if (mode === 'image' && typeof window.__IMG_FILL__ === 'function') { try { window.__IMG_FILL__(); } catch (e) {} }
     }
 
     window.switchPane = function (name) {
@@ -13298,15 +13336,22 @@ document.addEventListener('keydown', e => {
     if (c) {
       const src = kind === 'tts' || kind === 'music' || kind === 'asr'
         ? (c.audio || []).filter(it => audioKind(it) === kind) : (c[kind] || []);
+      const sig = it => { const m = it.meta || {}; return JSON.stringify([it.price || '', m.unit || '', m.unit_label || '', m.constraints || {}]); };
       const byFam = new Map();
       src.filter(it => it && it.send && !SKIP.test(it.send)).forEach(it => {
-        const f = famOf(it), cur = byFam.get(f);
+        const f = famOf(it), k = f + '\u0000' + sig(it), cur = byFam.get(k);
         if (!cur || rank(it.send) < rank(cur.send)) {
           const name = nameOf(it);
-          byFam.set(f, { send: it.send, name, fam: f, series: seriesOf(name), info: infoOf(it) });
+          byFam.set(k, { send: it.send, name, fam: f, series: seriesOf(name), info: infoOf(it) });
         }
       });
       list = [...byFam.values()];
+      const seen = new Map();
+      list.forEach(o => {
+        const n = (seen.get(o.fam) || 0) + 1;
+        seen.set(o.fam, n);
+        if (n > 1) o.name += '（' + (o.info ? o.info.split(' · ').slice(0, 2).join('，') : '另一版 ' + n) + '）';
+      });
       if (list.length || Object.keys(c).some(k => (c[k] || []).length)) return { list, fallback: false };
     }
     const M = (typeof MODELS !== 'undefined' && MODELS) || {};
@@ -18294,7 +18339,12 @@ document.addEventListener('keydown', e => {
     const sound = new Map();
     let t = 0, playing = false, last = 0, raf = 0, st = getState();
     const vidFor = src => {
-      if (!pool.has(src)) { const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.crossOrigin = 'anonymous'; v.src = src; pool.set(src, v); }
+      if (!pool.has(src)) {
+        const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.crossOrigin = 'anonymous';
+        const again = () => { if (playing || pool.get(src) !== v || v.__drawnAt === v.currentTime) return; v.__drawnAt = v.currentTime; draw(); };
+        v.addEventListener('loadeddata', again); v.addEventListener('seeked', again);
+        v.src = src; pool.set(src, v);
+      }
       return pool.get(src);
     };
     const srcOfJob = id => { const j = (typeof jobs !== 'undefined' ? jobs : []).find(x => x && x.id === id); return j && j.src; };
@@ -18739,7 +18789,9 @@ document.addEventListener('keydown', e => {
       }
     } catch (e) { r = { ok: false }; d = { error: '連不上伺服器' }; }
     if (!r.ok) { say('匯出沒有送出：' + ((d && d.error) || '伺服器拒絕')); paint(); return; }
-    HIST.unshift({ id: d.id, title: S.snap.body.title || ('第 ' + (HIST.length + 1) + ' 部'), created: Date.now(), state: d.state || 'staging' });
+    const cur = window.__CLOUD__ && typeof window.__CLOUD__.current === 'function' ? window.__CLOUD__.current() : null;
+    HIST.unshift(Object.assign({ id: d.id, title: S.snap.body.title || ('第 ' + (HIST.length + 1) + ' 部'), created: Date.now(), state: d.state || 'staging' },
+                               cur && cur.id ? { pid: cur.id } : {}));
     saveHist();
     say(window.__STUDIO__ && window.__STUDIO__.local ? '匯出已送出：素材準備好就開始合成' : '匯出已送出：素材放進 S3 之後就開始合成', true);
     if (d.youtube_auto && window.__YT__) window.__YT__.queued(d.youtube_auto);
@@ -18917,7 +18969,7 @@ document.addEventListener('keydown', e => {
     loadCfg();
   })();
 
-  window.__R7__ = { snapshot, rightsWarnings, modelsGuess, timing, frameSize, cardLines, v1At, fmtTC, open, close, current, download,
+  window.__R7__ = { snapshot, rightsWarnings, modelsGuess, timing, frameSize, cardLines, v1At, fmtTC, open, close, current, download, makePreview,
                     get cfg() { return CFG; }, get hist() { return HIST; } };
 })();
 (function studioYT() {
@@ -21422,7 +21474,7 @@ document.addEventListener('keydown', e => {
     '.sm-top{position:sticky;top:0;z-index:2;height:68px;display:flex;align-items:center;gap:14px;padding:0 28px;',
       'background:var(--ink);border-bottom:1px solid var(--edge)}',
     '.sm-brand{display:flex;align-items:center;gap:10px;font-size:var(--fs-l);font-weight:700;white-space:nowrap}',
-    '.sm-brand i{display:inline-flex;gap:3px}.sm-brand i b{width:4px;height:20px;background:var(--paper);color:var(--ink);border-radius:1px}',
+    '.sm-brand .mark{width:24px;height:24px;flex:none;color:var(--paper)}',
     '.sm-top .sp{flex:1}',
     '.sm-pts{width:auto;display:flex;align-items:center;gap:8px;min-height:44px;padding:0 14px;border:1px solid var(--edge2);',
       'border-radius:8px;background:none;color:var(--pencil);font-size:var(--fs-m);cursor:pointer;white-space:nowrap}',
@@ -21832,10 +21884,12 @@ document.addEventListener('keydown', e => {
     return /^[0-9a-fA-F-]{36}$/.test(seg) ? seg : null;
   }
 
+  const BRAND_MARK = '<svg class="mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="10" width="18" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><g transform="rotate(-11 3.5 9.5)"><rect x="3" y="5" width="18" height="4.6" rx="1.2" fill="currentColor"/><path d="M7.5 5l3 4.6M12.5 5l3 4.6M17.5 5l3 4.6" style="stroke:var(--grease)" stroke-width="1.9"/></g></svg>';
   function topBar() {
     const t = h('div', 'sm-top');
-    const brand = h('div', 'sm-brand'); const bars = h('i'); for (let i = 0; i < 4; i++) bars.append(h('b'));
-    brand.append(bars, h('span', 'full', '我是導演'));
+    const brand = h('div', 'sm-brand'); const mark = h('span'); mark.style.display = 'contents';
+    mark.innerHTML = BRAND_MARK;
+    brand.append(mark, h('span', 'full', '我是導演'));
     const home = btn('sm-btn', LOCALM ? '← 首頁' : '← 我的作品', () => { VIEW = null; go('/projects'); });
     home.hidden = !curPid() && VIEW !== 'tpl' && VIEW !== 'works';
     const pts = btn('sm-pts', null, () => { const q = document.getElementById('studioQuota'); if (q) q.click(); });
@@ -21866,27 +21920,36 @@ document.addEventListener('keydown', e => {
     return bar;
   }
   function doneOf(w, n, pid) {
-    const sm = (n === 3 || n === 4) ? sumOf(w, pid) : null;
+    const sm = (n >= 2 && n <= 4) ? sumOf(w, pid) : null;
     switch (n) {
       case 1: return !!String(w.story || '').trim();
-      case 2: return !!w.done.cast;
+      case 2: return !!w.done.cast || (sm.cast || 0) > 0;
       case 3: return sm.n > 0 && sm.filled === sm.n;
       case 4: return sm.n > 0 && sm.gen === sm.n;
       case 5: return !!w.done.sound;
-      case 6: return !!w.exported;
+      case 6: return !!w.exported || exportedHere(pid);
       case 7: return !!w.done.pub;
     }
     return false;
+  }
+  function castIn(L) {
+    const lib = (typeof cast !== 'undefined' && Array.isArray(cast)) ? cast : [];
+    const text = (L || []).map(x => String((x && x.prompt) || '')).join('\n');
+    return lib.filter(c => c && c.name && text.includes('@' + c.name)).length;
+  }
+  function exportedHere(pid) {
+    const r7 = window.__R7__;
+    return !!(pid && r7 && (r7.hist || []).some(e => e && e.pid === pid && e.state !== 'failed'));
   }
   function metaOf(w, n, pid) {
     const sm = sumOf(w, pid);
     switch (n) {
       case 1: return w.tpl ? '範本：' + w.tpl.short : String(w.story || '').trim() ? String(w.story).trim().length + ' 字' : '一句話開始';
-      case 2: return w.done.cast ? 'AI 照分鏡描述' : '角色一致';
+      case 2: return sm.cast ? sm.cast + ' 位角色' : w.done.cast ? 'AI 照分鏡描述' : '角色一致';
       case 3: return sm.n ? sm.n + ' 鏡・' + sm.sec + ' 秒' : '拆成鏡頭';
       case 4: return (w.jobs || []).length ? sm.gen + ' / ' + sm.n + ' 鏡' : sm.n ? sm.n + ' 鏡影片' : '每鏡一支';
       case 5: return !w.done.sound ? '配音＋配樂' : sndMode(w) === 'orig' ? '影片原聲' : '已配音配樂';
-      case 6: return w.exported ? '已匯出成片' : '接片＋字幕';
+      case 6: return w.exported || exportedHere(pid) ? '已匯出成片' : '接片＋字幕';
       case 7: return w.done.pub ? PUB('已上架', '已完成') : PUB('YouTube', '收尾');
     }
     return '';
@@ -22723,10 +22786,33 @@ document.addEventListener('keydown', e => {
     return { list, cur, idx };
   }
   const shotDone = (w, sh) => { const c = curTake(w, sh).cur; return !!(c && c.status === 'completed'); };
+  function looseTakes(w) {
+    const used = new Set((w.jobs || []).map(x => x.uid));
+    return (typeof jobs !== 'undefined' ? jobs : []).filter(j => j && j.uid && j.status === 'completed' && j.src &&
+      !used.has(j.uid) && !(j.applied && j.applied.sid) && !j.puppetFor).slice(0, 30);
+  }
+  function attachSel(w, sh) {
+    const list = looseTakes(w);
+    if (!list.length) return null;
+    const sel = h('select', 'sm-attach');
+    sel.setAttribute('aria-label', '用拍攝紀錄裡的片當這一鏡');
+    const o0 = h('option', null, '用拍攝紀錄裡的片（不重新生成）…'); o0.value = ''; sel.append(o0);
+    list.forEach(j => {
+      const p = j.payload || {}, sec = Number(p.seconds || j.seconds) || 0;
+      const o = h('option', null, String(p.prompt || j.model || j.id).slice(0, 36) + (sec ? '・' + sec + ' 秒' : ''));
+      o.value = j.uid; sel.append(o);
+    });
+    sel.onchange = () => {
+      if (!sel.value) return;
+      (w.jobs = w.jobs || []).push({ uid: sel.value, sid: sh.sid });
+      saveWorks(true); render(true);
+    };
+    return sel;
+  }
   function sumOf(w, pid) {
     const L = board(pid);
     if (!L) return w.sum || { n: 0, filled: 0, gen: 0, sec: 0 };
-    const s = { n: L.length, filled: L.filter(x => String(x.prompt || '').trim()).length, gen: L.filter(x => shotDone(w, x)).length, sec: totalSec(L) };
+    const s = { n: L.length, filled: L.filter(x => String(x.prompt || '').trim()).length, gen: L.filter(x => shotDone(w, x)).length, sec: totalSec(L), cast: castIn(L) };
     if (JSON.stringify(s) !== JSON.stringify(w.sum || null)) { w.sum = s; saveWorks(); }
     return s;
   }
@@ -22954,7 +23040,10 @@ document.addEventListener('keydown', e => {
       const ol = h('ol'); ol.style.cssText = 'margin:0;padding-left:24px;display:flex;flex-direction:column;gap:8px';
       L.forEach(x => {
         const li = h('li', null, x.prompt + '（' + secOf(x) + ' 秒）');
-        refCards(x).forEach(c => { li.append(document.createTextNode(' ')); li.append(h('span', 'sm-chip g', '參考圖：' + c.name)); });
+        const capOk = typeof modelCaps !== 'function' || modelCaps(curModel()).input_references;
+        refCards(x).forEach(c => { li.append(document.createTextNode(' ')); li.append(h('span', 'sm-chip ' + (capOk ? 'g' : 'w'), capOk ? '參考圖：' + c.name : '參考圖：' + c.name + '（這個模型不會用到角色參考圖，外觀描述會寫進提示詞）')); });
+        const pick = attachSel(w, x);
+        if (pick) { pick.style.cssText = 'display:block;margin-top:6px;max-width:100%'; li.append(pick); }
         ol.append(li);
       });
       card.append(ol);
@@ -22980,7 +23069,7 @@ document.addEventListener('keydown', e => {
       const quoteCost = () => quoteShots(L).then(q => {
         big.textContent = '';
         if (!q) { big.textContent = '還算不出' + PT('點數', '費用') + '（工作台還沒挑模型）。'; return; }
-        big.append(document.createTextNode('這次會花約 '), h('b', null, q.pts.toFixed(2) + ' ' + q.unit), document.createTextNode('，送出後不能取消。'));
+        big.append(document.createTextNode('這次會花約 '), h('b', null, fmtPts(q.pts) + ' ' + q.unit), document.createTextNode('，送出後不能取消。'));
         big.append(h('div', 'sm-spec', '用 ' + specOf(q) + ' 生成；要換模型到頁首的「付款與金鑰」，要換解析度到「展開進階」。'));
         if (q.avail != null && q.avail < q.pts) {
           why.textContent = '點數不夠：現在有 ' + q.avail.toFixed(2) + ' 點，還差 ' + (q.pts - q.avail).toFixed(2) + ' 點。';
@@ -23008,6 +23097,7 @@ document.addEventListener('keydown', e => {
       const pill = h('span', 'sm-pill ' + (cls === 'bad' ? 'go' : cls), cls === 'ok' && t.list.length > 1 ? '已挑好' : txt);
       if (cls === 'bad') { c.style.borderColor = 'var(--ng)'; pill.style.color = '#F2A595'; pill.style.background = 'rgba(224,112,92,.12)'; }
       bd.append(row, h('div', 'help', x.prompt), pill);
+      if (!j) { const pick = attachSel(w, x); if (pick) { pick.style.cssText = 'display:block;margin-top:6px;max-width:100%'; bd.append(pick); } }
       const tags = h('div', 'sm-tags');
       const doneN = t.list.filter(z => z.status === 'completed').length;
       if (doneN > 1) tags.append(h('span', 'sm-chip c', doneN + ' 支候選'));
@@ -23280,6 +23370,7 @@ document.addEventListener('keydown', e => {
   function arrangeTL(w, pid) {
     const L = board(pid) || [], A = window.__TL_ARRANGE__, TLA = window.__TL_AUDIO__, R6 = window.__R6__;
     if (typeof A !== 'function' || !TLA || typeof window.__TL_V1__ !== 'function') return null;
+    if (typeof window.__CANVAS_PROJ_CUR__ === 'function' && (window.__CANVAS_PROJ_CUR__() !== pid || !window.__CANVAS_PROJ_READY__())) return null;
     const picks = L.map((sh, i) => ({ sh, i, j: curTake(w, sh).cur })).filter(x => x.j && x.j.status === 'completed' && x.j.src);
     const r = A(picks.map(x => x.j.uid));
     const v1 = window.__TL_V1__();
@@ -23681,6 +23772,8 @@ document.addEventListener('keydown', e => {
     if (MODE !== 'simple') return;
     const y = root.scrollTop;
     const pid = curPid();
+    if (pid && WORKS[pid] && typeof window.__CANVAS_PROJ_CUR__ === 'function' && window.__CANVAS_PROJ_CUR__() !== pid &&
+        typeof window.__CANVAS_PROJ__ === 'function') { try { window.__CANVAS_PROJ__(pid); } catch (e) {} }
     root.textContent = '';
     savedEl = null;
     root.append(topBar());
