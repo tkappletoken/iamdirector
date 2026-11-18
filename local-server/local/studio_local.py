@@ -8,6 +8,7 @@ import re
 import sys
 import secrets
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -52,6 +53,16 @@ from upstream import ConsoleError, Cred, retry_field, with_hint
 DEFAULT_BASE = "https://appletoken.app/v2"
 TIMEOUT = 15
 GENERATE_TIMEOUT = 120
+IMAGE_TIMEOUT = 610
+IMAGE_TIMEOUTS_KEPT = 50
+CONCAT_MAX = 30
+CONCAT_NAME = re.compile(r"(?:^|/)download\?id=([A-Za-z0-9_-]{1,64})$")
+CAST_IMAGE_DEFAULT = "gpt-image-2"
+ASR_DEFAULT = "qwen3-asr-flash"
+ASR_MAX = 10 * 1024 * 1024
+IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF8", "image/gif"))
+JOB_SRC = re.compile(r"^/api/download\?id=([A-Za-z0-9_-]{1,64})$")
+SHA_SRC = re.compile(r"^/api/(?:audio/content|local/media)\?sha=([0-9a-f]{64})$")
 CONFIRM_BUDGET = 100
 MODELS_TTL = 60.0
 SB_QUOTE_TTL = 1800
@@ -85,6 +96,9 @@ LOCAL_API = (
     "/api/payer", "/api/payer/key", "/api/payer/key/delete", "/api/payer/choice",
     "/api/model-groups", "/api/estimate", "/api/generate", "/api/status", "/api/download",
     "/api/confirm-status", "/api/charges", "/api/image-generate",
+    "/api/image", "/api/transcribe",
+    "/api/check-refs",
+    "/api/concat",
     "/api/assets", "/api/assets/support", "/api/assets/content",
     "/api/storyboard/quote", "/api/storyboard", "/api/parse-shots", "/api/captions",
     "/api/store", "/api/projects", "/api/projects/create", "/api/projects/delete",
@@ -96,9 +110,8 @@ _LATER = "本機模式還沒有這一項（之後的版本會補上）"
 _LOGIN = "登入 iamdirector 帳號後才有這一項"
 MISSING = {
     "/api/upload": "本機素材改用下方的「素材」", "/api/uploads": "本機素材改用下方的「素材」",
-    "/api/image": _LATER, "/api/transcribe": _LATER, "/api/concat": _LATER,
     "/api/rates": "費率由 AppleToken 決定", "/api/timing": _LATER,
-    "/api/image-outpaint": _LATER, "/api/check-asset": _LATER, "/api/check-refs": _LATER,
+    "/api/image-outpaint": _LATER, "/api/check-asset": _LATER,
     "/api/post-process": _LATER, "/api/post-process-status": _LATER, "/api/post-process-content": _LATER,
     "/api/assets/delete": _LATER, "/api/assets/mirror": "本機模式只有你自己的金鑰，不需要複製素材",
     "/api/assets/uploads": _LATER, "/api/assets/uploads/complete": _LATER, "/api/assets/update": _LATER,
@@ -168,6 +181,8 @@ class State:
         self.exports_root = os.path.join(data_dir, "exports")
         self.exports = {}
         self.export_lock = threading.Lock()
+        self.media_lock = threading.Lock()
+        self.landing = {}
         self.ffmpeg = None
         self.ffmpeg_dir = None
         self.openh264_dir = None
@@ -490,11 +505,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(404, {"error": "找不到這個任務或素材"})
             try:
                 if path == "/api/status":
-                    return self._json(200, st.call("/videos/" + vid))
-                resp = st.call("/videos/%s/content" % vid, stream=True)
+                    s = st.call("/videos/" + vid)
+                    if isinstance(s, dict) and s.get("status") == "completed":
+                        self._land_later(vid)
+                    return self._json(200, s)
+                return self._local_file(self._cache_job(vid))
             except ConsoleError as e:
                 return self._err(e, with_hints=False)
-            return self._relay(resp, "video/mp4")
         if path == "/api/confirm-status":
             return self._json(404, {"error": "找不到這張報價"})
         if path == "/api/charges":
@@ -514,6 +531,18 @@ class Handler(BaseHTTPRequestHandler):
             aid = one("id")
             if not ASSET_ID.match(aid):
                 return self._json(400, {"error": "id 不合法"})
+            extra = {"Content-Security-Policy": "sandbox"}
+            if one("download") == "1":
+                extra["Content-Disposition"] = 'attachment; filename="%s"' % aid
+            local = os.path.join(st.originals, aid)
+            if os.path.exists(local):
+                try:
+                    with open(local + ".json", encoding="utf-8") as f:
+                        mime = json.load(f).get("mime") or ""
+                except (OSError, ValueError):
+                    mime = ""
+                mime = mime if ASSET_MIME.match(mime) else "application/octet-stream"
+                return self._send_file(local, mime, extra)
             try:
                 meta = {}
                 resp = st.call("/assets/%s/content" % aid, stream=True, meta=meta)
@@ -521,9 +550,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._err(e, with_hints=False)
             mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
             mime = mime if ASSET_MIME.match(mime) else "application/octet-stream"
-            extra = {"Content-Security-Policy": "sandbox"}
-            if one("download") == "1":
-                extra["Content-Disposition"] = 'attachment; filename="%s"' % aid
             return self._relay(resp, mime, extra)
         if path == "/api/store":
             return self._store_get(q)
@@ -588,6 +614,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._image_generate(body)
         if path == "/api/assets":
             return self._asset_upload(body)
+        if path == "/api/image":
+            return self._cast_image(body)
+        if path == "/api/concat":
+            return self._concat(body)
+        if path == "/api/check-refs":
+            refs = body.get("input_references")
+            return self._json(200, studio_tools.check_references(body.get("model"), refs if isinstance(refs, list) else []))
+        if path == "/api/transcribe":
+            return self._transcribe(body)
         if path == "/api/storyboard/quote":
             return self._storyboard_quote(body)
         if path == "/api/storyboard":
@@ -839,14 +874,196 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         body = dict(body)
         body.pop("payer", None)
+        started = int(time.time())
         try:
             send = self._inline(dict(body))
-            r = st.call("/images/generations", payload=send, timeout=GENERATE_TIMEOUT)
+            r = st.call("/images/generations", payload=send, timeout=IMAGE_TIMEOUT)
         except ConsoleError as e:
+            if e.timed_out or e.code == 504:
+                return self._image_lost(body, started)
             return self._err(e)
         out = dict(r) if isinstance(r, dict) else {"data": r}
         out["payer"] = "own_key"
         return self._json(200, out)
+
+    def _cast_image(self, body):
+        st = self.state
+        prompt = body.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return self._json(400, {"error": "先寫外觀描述，或寫要生什麼"})
+        n = body.get("n") if isinstance(body.get("n"), int) and 1 <= body.get("n") <= 4 else 1
+        model = body.get("model") if isinstance(body.get("model"), str) and body["model"].strip() else CAST_IMAGE_DEFAULT
+        name = str(body.get("name") or "ref").strip()[:60] or "ref"
+        send = {"model": model.strip(), "prompt": prompt.strip(), "n": n, "response_format": "b64_json"}
+        started = int(time.time())
+        try:
+            r = st.call("/images/generations", payload=send, timeout=IMAGE_TIMEOUT)
+        except ConsoleError as e:
+            if e.timed_out or e.code == 504:
+                return self._image_lost(send, started)
+            return self._err(e)
+        items = r.get("data") if isinstance(r, dict) else None
+        if not isinstance(items, list) or not items:
+            return self._json(502, {"error": "上游沒有回圖片"})
+        out = []
+        try:
+            for i, it in enumerate(items[:n]):
+                raw = None
+                if isinstance(it, dict) and isinstance(it.get("b64_json"), str):
+                    raw = base64.b64decode(it["b64_json"])
+                elif isinstance(r.get("id"), str) and ID.match(r["id"]):
+                    raw = st.call("/images/%s/content/%d" % (r["id"], i), raw=True, timeout=60)
+                if not raw or len(raw) > ORIGINAL_MAX:
+                    continue
+                mime = next((m for sig, m in IMAGE_MAGIC if raw.startswith(sig)),
+                            "image/webp" if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP" else "")
+                if not mime:
+                    continue
+                src = "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode())
+                a = st.call("/assets", payload={"source": src, "name": "%s-%d" % (name, i + 1)},
+                            timeout=GENERATE_TIMEOUT)
+                aid = a.get("id") if isinstance(a, dict) else None
+                if not (isinstance(aid, str) and ASSET_ID.match(aid)):
+                    continue
+                self._keep_original(aid, src)
+                out.append({"id": aid, "ref": a.get("reference") or "asset://" + aid,
+                            "src": "/api/assets/content?id=" + aid})
+        except (ConsoleError, ValueError) as e:
+            if out:
+                return self._json(200, {"images": out, "payer": "own_key", "partial": True})
+            return self._err(e) if isinstance(e, ConsoleError) else self._json(502, {"error": "上游回的圖片解不開"})
+        if not out:
+            return self._json(502, {"error": "上游回的不是看得懂的圖片"})
+        return self._json(200, {"images": out, "payer": "own_key"})
+
+    def _transcribe(self, body):
+        st = self.state
+        src = body.get("src") if isinstance(body.get("src"), str) else ""
+        m, ms = JOB_SRC.match(src), SHA_SRC.match(src)
+        if not (m or ms):
+            return self._json(400, {"error": "只能轉錄這台電腦裡的成片或音檔"})
+        if not st.ffmpeg:
+            return self._json(409, {"error": "轉錄要先把音軌抽出來，這台找不到 ffmpeg"})
+        model = body.get("model") if isinstance(body.get("model"), str) and body["model"].strip() else ASR_DEFAULT
+        try:
+            sha = self._cache_job(m.group(1)) if m else ms.group(1)
+        except ConsoleError as e:
+            return self._err(e, with_hints=False)
+        path = os.path.join(st.media, sha)
+        if not os.path.exists(path):
+            return self._json(404, {"error": "本機沒有這個檔案"})
+        work = tempfile.mkdtemp(prefix="asr-", dir=st.data_dir)
+        try:
+            wav = os.path.join(work, "a.wav")
+            p = subprocess.run([st.ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-i", path, "-vn", "-ac", "1",
+                                "-ar", "16000", "-c:a", "pcm_s16le", wav], capture_output=True, timeout=120)
+            if p.returncode != 0 or not os.path.exists(wav) or os.path.getsize(wav) <= 44:
+                return self._json(200, {"text": "", "note": "這支沒有音軌"})
+            if os.path.getsize(wav) > ASR_MAX:
+                return self._json(413, {"error": "音軌太長（超過上游 10MB 的上限，約 5 分鐘）"})
+            with open(wav, "rb") as f:
+                data = "data:audio/wav;base64," + base64.b64encode(f.read()).decode()
+        except (OSError, subprocess.SubprocessError):
+            return self._json(500, {"error": "抽音軌失敗"})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        try:
+            r = st.call("/audio/transcriptions", payload={"model": model.strip(), "file": data,
+                                                          "response_format": "json"}, timeout=GENERATE_TIMEOUT)
+        except ConsoleError as e:
+            return self._err(e)
+        text = r.get("text") if isinstance(r, dict) else None
+        return self._json(200, {"text": text if isinstance(text, str) else "", "payer": "own_key"})
+
+    def _concat(self, body):
+        st = self.state
+        files = body.get("files")
+        if not isinstance(files, list) or not 2 <= len(files) <= CONCAT_MAX:
+            return self._json(400, {"error": "要勾 2 到 %d 支" % CONCAT_MAX})
+        ids = []
+        for f in files:
+            m = CONCAT_NAME.search(f) if isinstance(f, str) else None
+            if not m:
+                return self._json(400, {"error": "只能合併這台電腦裡的成片"})
+            ids.append(m.group(1))
+        if not (st.ffmpeg and st.ffprobe):
+            return self._json(409, {"error": "這台找不到 ffmpeg，沒辦法合併"})
+        try:
+            paths = [os.path.join(st.media, self._cache_job(j)) for j in ids]
+        except ConsoleError as e:
+            return self._err(e, with_hints=False)
+        name = safe_filename(body.get("name") or "合併", 60) or "合併"
+        work = tempfile.mkdtemp(prefix="concat-", dir=st.data_dir)
+        env = st.openh264_env()
+        run = lambda args, t=600: subprocess.run(args, capture_output=True, timeout=t, env=env, stdin=subprocess.DEVNULL)
+        try:
+            out = os.path.join(work, "out.mp4")
+
+            def concat(parts):
+                lst = os.path.join(work, "list-%d.txt" % len(os.listdir(work)))
+                with open(lst, "w", encoding="utf-8") as f:
+                    for x in parts:
+                        f.write("file '%s'\n" % x.replace("'", "'\\''"))
+                return run([st.ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst,
+                            "-c", "copy", "-movflags", "+faststart", out]).returncode == 0
+
+            def streams(x):
+                r = run([st.ffprobe, "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,"
+                         "pix_fmt,sample_rate,channels", "-of", "json", x], 60)
+                try:
+                    return json.loads(r.stdout or b"{}").get("streams") or []
+                except ValueError:
+                    return []
+            info = [streams(x) for x in paths]
+            sig = lambda ss: json.dumps(sorted([sorted(d.items()) for d in ss]))
+            lossless = len({sig(x) for x in info}) == 1 and any(d.get("codec_type") == "video" for d in info[0])
+            if not (lossless and concat(paths)):
+                lossless = False
+                v0 = next((d for d in info[0] if d.get("codec_type") == "video"), {})
+                W, H = int(v0.get("width") or 1080), int(v0.get("height") or 1920)
+                W, H = W - W % 2, H - H % 2
+                vc = render.video_codec_args(render.ffmpeg_caps(st.ffmpeg), H)
+                norm = []
+                for i, (x, ss) in enumerate(zip(paths, info)):
+                    y = os.path.join(work, "n%02d.mp4" % i)
+                    has_a = any(d.get("codec_type") == "audio" for d in ss)
+                    args = [st.ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-i", x]
+                    if not has_a:
+                        args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+                    args += ["-map", "0:v:0", "-map", "0:a:0" if has_a else "1:a:0",
+                             "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,fps=24,"
+                             "format=yuv420p" % (W, H, W, H)] + vc + ["-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest", y]
+                    if run(args).returncode != 0:
+                        return self._json(500, {"error": "第 %d 支重新編碼失敗" % (i + 1)})
+                    norm.append(y)
+                if not concat(norm):
+                    return self._json(500, {"error": "合併失敗"})
+            with open(out, "rb") as f:
+                sha = self._store_blob(f.read(), "video/mp4")
+        except render.RenderError as e:
+            return self._json(409, {"error": str(e)})
+        except (OSError, subprocess.SubprocessError):
+            return self._json(500, {"error": "合併失敗（ffmpeg 沒跑完）"})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return self._json(200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": lossless})
+
+    def _image_lost(self, body, started):
+        model = str(body.get("model") or "")[:120]
+        rec = {"at": started, "model": model, "n": body.get("n") if isinstance(body.get("n"), int) else 1}
+        try:
+            with self.state.media_lock:
+                got = self.state.db.run(studio_store.kv_get, "image_timeouts")["value"]
+                lst = (got if isinstance(got, list) else []) + [rec]
+                self.state.db.run(studio_store.kv_put, "image_timeouts", lst[-IMAGE_TIMEOUTS_KEPT:])
+        except studio_store.StoreError:
+            pass
+        when = time.strftime("%H:%M", time.localtime(started))
+        return self._json(504, {
+            "error": ("等不到這張圖（%s 送出的 %s）。AppleToken 的生圖沒有可以回頭查的編號，圖拿不回來；"
+                      "額度可能已經扣了，請到 AppleToken 的用量紀錄對 %s 之後的圖片那一筆，扣了的話請聯絡 AppleToken。"
+                      % (when, model or "圖片", when)),
+            "maybe_billed": True, "submitted_at": started, "model": model})
 
     def _asset_upload(self, body):
         st = self.state
@@ -1337,17 +1554,54 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         if not ID.match(job_id or ""):
             raise ConsoleError(400, "成片 id 不合法")
-        known = self._job_media()
-        sha = known.get(job_id)
-        if sha and os.path.exists(os.path.join(st.media, sha)):
+        with st.lock:
+            gate = st.landing.setdefault(job_id, threading.Lock())
+        with gate:
+            sha = self._job_media().get(job_id)
+            if sha and os.path.exists(os.path.join(st.media, sha)):
+                return sha
+            resp = st.call("/videos/%s/content" % job_id, stream=True, timeout=180)
+            tmp = os.path.join(st.media, "job-%s.part-%s" % (job_id, secrets.token_hex(4)))
+            h, n = hashlib.sha256(), 0
+            try:
+                with open(tmp, "wb") as f:
+                    while True:
+                        block = resp.read(1024 * 1024)
+                        if not block:
+                            break
+                        n += len(block)
+                        if n > MEDIA_MAX:
+                            raise ConsoleError(502, "成片 %s 太大" % job_id)
+                        h.update(block)
+                        f.write(block)
+                if not n:
+                    raise ConsoleError(502, "成片 %s 取不回來" % job_id)
+                sha = h.hexdigest()
+                dest = os.path.join(st.media, sha)
+                if not os.path.exists(dest):
+                    with open(dest + ".json", "w", encoding="utf-8") as f:
+                        json.dump({"mime": "video/mp4", "bytes": n}, f)
+                    os.replace(tmp, dest)
+            except OSError:
+                raise ConsoleError(500, "成片寫不進本機磁碟") from None
+            finally:
+                resp.close()
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            with st.media_lock:
+                known = self._job_media()
+                known[job_id] = sha
+                st.db.run(studio_store.kv_put, "job_media", known)
             return sha
-        raw = st.call("/videos/%s/content" % job_id, raw=True, timeout=180)
-        if not raw or len(raw) > MEDIA_MAX:
-            raise ConsoleError(502, "成片 %s 取不回來或太大" % job_id)
-        sha = self._store_blob(raw, "video/mp4")
-        known[job_id] = sha
-        st.db.run(studio_store.kv_put, "job_media", known)
-        return sha
+
+    def _land_later(self, job_id):
+        def run():
+            try:
+                self._cache_job(job_id)
+            except (ConsoleError, studio_store.StoreError, OSError):
+                pass
+        if self._job_media().get(job_id) is None:
+            threading.Thread(target=run, daemon=True).start()
 
     def _local_file(self, sha):
         p = os.path.join(self.state.media, sha)
@@ -1356,8 +1610,53 @@ class Handler(BaseHTTPRequestHandler):
                 mime = json.load(f).get("mime") or "application/octet-stream"
         except (OSError, ValueError):
             mime = "application/octet-stream"
-        f = open(p, "rb")
-        return self._relay(_FileResp(f, os.path.getsize(p)), mime, {"Content-Security-Policy": "sandbox"})
+        return self._send_file(p, mime, {"Content-Security-Policy": "sandbox"})
+
+    def _send_file(self, path, mime, extra=None):
+        size = os.path.getsize(path)
+        extra = dict(extra or {}, **{"Accept-Ranges": "bytes"})
+        rng = (self.headers.get("Range") or "").strip()
+        m = re.match(r"^bytes=(\d*)-(\d*)$", rng) if rng else None
+        if not m or not (m.group(1) or m.group(2)):
+            return self._relay(_FileResp(open(path, "rb"), size), mime, extra)
+        if m.group(1):
+            start = int(m.group(1))
+            end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+        else:
+            start, end = max(0, size - int(m.group(2))), size - 1
+        if start >= size or start > end:
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % size)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+        f = open(path, "rb")
+        f.seek(start)
+        n = end - start + 1
+        try:
+            self.send_response(206)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(n))
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
+            for k, v in extra.items():
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command == "HEAD":
+                return None
+            while n > 0:
+                chunk = f.read(min(n, 65536))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                n -= len(chunk)
+        except OSError:
+            self.close_connection = True
+        finally:
+            f.close()
+        return None
 
     def _work_bundle(self, pid):
         st = self.state
