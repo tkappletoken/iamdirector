@@ -2228,6 +2228,23 @@ function refCapacity(lim) {
     (lim.audio_only ? '可以只給音訊。' : '至少要有一張圖片或一段影片。') + doc;
 }
 
+function refLimitsFor(model, d) {
+  const lim = (d && d.limits) || {}, cap = catalogRefCap(model);
+  const same = { lim, errors: (d && d.errors) || [], warnings: (d && d.warnings) || [] };
+  if (cap == null || lim.total) return same;
+  if (cap <= 0) return lim.supported === false ? same : { lim: { total: null, supported: false, source: '模型目錄寫明這個模型不收參考素材' }, errors: [], warnings: [] };
+  const it = (CATALOG.video || []).find(x => x && x.send === model) || {};
+  const r = (it.meta && it.meta.constraints && it.meta.constraints.references) || {};
+  const n = k => Number.isFinite(Number(r[k])) && r[k] !== null && r[k] !== '' ? Number(r[k]) : 0;
+  const L = { total: cap, image: n('image') || cap, video: n('video'), audio: n('audio'), audio_only: false, supported: true, source: '模型目錄' };
+  const c = (d && d.counts) || {}, errors = [];
+  if ((d && d.total) > L.total) errors.push('最多 ' + L.total + ' 筆參考，目前 ' + d.total + ' 筆');
+  [['image', '圖'], ['video', '影片'], ['audio', '音訊']].forEach(([k, label]) => {
+    if ((c[k] || 0) > L[k]) errors.push(label + ' 最多 ' + L[k] + ' 筆，目前 ' + c[k] + ' 筆');
+  });
+  return { lim: L, errors, warnings: ((d && d.warnings) || []).filter(w => w !== lim.source) };
+}
+
 let refSeq = 0;
 async function checkRefs() {
   const box = $('refCount');
@@ -2242,7 +2259,7 @@ async function checkRefs() {
       .then(r => r.json());
     if (seq !== refSeq) return;
     if (!d || !d.counts) { box.textContent = (d && typeof d.error === 'string') ? d.error : ''; return; }
-    const lim = d.limits || {}, c = d.counts || {};
+    const R = refLimitsFor(model, d), lim = R.lim, c = d.counts || {};
     if (!refs.length) { box.innerHTML = refCapacity(lim); return; }
     const cell = (n, max, label) =>
       max ? '<span class="' + (n > max ? 'over' : '') + '">' + label + ' <b>' + n + '</b>/' + max + '</span>'
@@ -2250,8 +2267,8 @@ async function checkRefs() {
     box.innerHTML = [cell(d.total, lim.total, '總數'), cell(c.image, lim.image, '圖'),
                      cell(c.video, lim.video, '影片'), cell(c.audio, lim.audio, '音訊')].join(' · ') +
       (lim.source ? ' <span style="opacity:.7">（' + esc(lim.source) + '）</span>' : '') +
-      ((d.errors || []).length ? '<br><span class="over">✕ ' + d.errors.map(esc).join('；') + '</span>' : '') +
-      ((d.warnings || []).length ? '<br>▲ ' + d.warnings.map(esc).join('；') : '');
+      (R.errors.length ? '<br><span class="over">✕ ' + R.errors.map(esc).join('；') + '</span>' : '') +
+      (R.warnings.length ? '<br>▲ ' + R.warnings.map(esc).join('；') : '');
   } catch (e) { }
 }
 
@@ -4072,7 +4089,7 @@ $('mergeGo').onclick = async () => {
   try {
     const d = await fetch('/api/concat', { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: picked.map(j => String(j.file || j.src).split('/').pop()),
+      body: JSON.stringify({ files: picked.map(j => window.__STUDIO__ && j.src ? String(j.src) : String(j.file || j.src).split('/').pop()),
                              name: $('mergeName').value.trim() || undefined }) }).then(r => r.json());
     if (d.error) { say('合併失敗：' + JSON.stringify(d.error).slice(0, 220)); return; }
     say('合併好了：' + (d.file || d.src || '').split('/').pop() +
@@ -23800,6 +23817,7 @@ document.addEventListener('keydown', e => {
       root.append(box); return;
     }
     if (!pid) {
+      if (XP || root.classList.contains('sm-x')) { XP = 0; root.classList.remove('sm-x'); document.body.classList.remove('sm-xon'); root.style.height = ''; }
       const box = h('div', 'sm-in');
       if (VIEW === 'tpl') { root.append(box); actBar(tplPage(box), null); }
       else { homePage(box); root.append(box); }

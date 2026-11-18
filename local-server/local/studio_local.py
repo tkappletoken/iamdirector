@@ -57,6 +57,7 @@ IMAGE_TIMEOUT = 610
 IMAGE_TIMEOUTS_KEPT = 50
 CONCAT_MAX = 30
 CONCAT_NAME = re.compile(r"(?:^|/)download\?id=([A-Za-z0-9_-]{1,64})$")
+CONCAT_FILE = re.compile(r"([A-Za-z0-9_-]{1,64})\.mp4")
 CAST_IMAGE_DEFAULT = "gpt-image-2"
 ASR_DEFAULT = "qwen3-asr-flash"
 ASR_MAX = 10 * 1024 * 1024
@@ -982,7 +983,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "要勾 2 到 %d 支" % CONCAT_MAX})
         ids = []
         for f in files:
-            m = CONCAT_NAME.search(f) if isinstance(f, str) else None
+            m = (CONCAT_NAME.search(f) or CONCAT_FILE.fullmatch(f)) if isinstance(f, str) else None
             if not m:
                 return self._json(400, {"error": "只能合併這台電腦裡的成片"})
             ids.append(m.group(1))
