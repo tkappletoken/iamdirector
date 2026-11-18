@@ -22090,17 +22090,19 @@ document.addEventListener('keydown', e => {
     }
     return c;
   }
+  function cloudLink() {
+    const desk = window.iamdirectorDesktop;
+    if (!(window.__STUDIO__ && window.__STUDIO__.local && desk && desk.cloud && desk.cloud.list)) return null;
+    const dl = btn('sm-link', '從雲端下載作品', () => cloudListSheet());
+    dl.title = '列出雲端資產庫裡的作品，把這台電腦還沒有的下載回來';
+    return dl;
+  }
   function homePage(host) {
     if (LOCALM && VIEW !== 'works') return deskHome(host);
     const hero = h('div', 'sm-hero');
     const tx = h('div');
     tx.append(h('h1', null, '我的作品'), h('p', 'lead', '每張卡片底下那排進度，就是' + SPINE + '做到哪裡。按「繼續」直接回到那一步；做到一半可以隨時離開。'));
-    { const desk = window.iamdirectorDesktop;
-      if (window.__STUDIO__ && window.__STUDIO__.local && desk && desk.cloud && desk.cloud.list) {
-        const dl = btn('sm-link', '從雲端下載作品', () => cloudListSheet());
-        dl.title = '列出雲端資產庫裡的作品，把這台電腦還沒有的下載回來';
-        tx.append(dl);
-      } }
+    { const dl = cloudLink(); if (dl) tx.append(dl); }
     hero.append(tx);
     const msg = h('div', 'sm-msg'); msg.id = 'smHomeMsg';
     const grid = h('div', 'sm-grid');
@@ -22167,6 +22169,9 @@ document.addEventListener('keydown', e => {
       '.dh-sec small{font-size:var(--fs-s);color:var(--faint);font-weight:400}',
       '.dh-sec .sm-link{margin-left:auto;font-size:var(--fs-m)}',
       '.dh .dh-works{grid-template-columns:repeat(4,minmax(0,1fr))}',
+      '.dh .dh-works .sm-card .row{flex-wrap:wrap;align-items:flex-start;gap:6px 10px}',
+      '.dh .dh-works .sm-card .row .nm{flex:1 1 100%;white-space:normal;overflow-wrap:anywhere;line-height:1.35;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}',
+      '.dh .dh-sec .dh-cloud{margin-left:auto}', '.dh .dh-sec .dh-cloud + .sm-link{margin-left:0}',
       '.dh-feat{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}',
       '.dh-fc{padding:18px;border-radius:14px;background:linear-gradient(180deg,rgba(27,31,38,.95),rgba(20,23,28,.95));border:1px solid var(--edge)}',
       '.dh-fc .art{height:84px;border-radius:9px;margin-bottom:12px}',
@@ -22259,6 +22264,7 @@ document.addEventListener('keydown', e => {
     if (!loaded) root.append(h('div', 'sm-empty', '讀取中…'));
     else if (PROJ.length) {
       const sec = h('h2', 'dh-sec', '最近的作品'); sec.append(h('small', null, '共 ' + PROJ.length + ' 部'));
+      { const dl = cloudLink(); if (dl) { dl.classList.add('dh-cloud'); sec.append(dl); } }
       sec.append(btn('sm-link', '看全部作品 →', () => { VIEW = 'works'; render(); }));
       const grid = h('div', 'sm-grid dh-works');
       const t = p => (WORKS[p.id] && WORKS[p.id].t) || 0;
@@ -22266,6 +22272,7 @@ document.addEventListener('keydown', e => {
       root.append(sec, grid);
     } else {
       const sec = h('h2', 'dh-sec', '主線六步'); sec.append(h('small', null, '每一步都能交給 AI，也能自己調'));
+      { const dl = cloudLink(); if (dl) { dl.classList.add('dh-cloud'); sec.append(dl); } }
       const feat = h('div', 'dh-feat');
       STEPS.forEach((s, i) => {
         const c = h('div', 'dh-fc'); const art = h('div', 'art'); art.style.background = DH_ART[i];
@@ -22419,6 +22426,8 @@ document.addEventListener('keydown', e => {
         b.textContent = '建立中…';
       }
       const id = await createWork(f[t.fields[0][0]].slice(0, 16) + '・' + t.short);
+      t.fields.forEach(([k]) => { delete TPL.f[t.id + '.' + k]; });
+      if (TPL.photo) delete TPL.photo[t.id];
       const w = work(id);
       w.story = tplStory(t, f); w.aspect = TPL.aspect; w.step = 3; w.src = 'template';
       w.tpl = { id: t.id, name: t.name, short: t.short, roles: t.beats.map(x => x[0]) };
