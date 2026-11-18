@@ -473,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/version":
             return self._json(200, {"build": hashlib.sha256(st.page().encode()).hexdigest()[:12]})
         if path == "/api/ffmpeg":
-            return self._json(200, {"available": bool(studio_tools.ffmpeg_path())})
+            return self._json(200, {"available": bool(st.ffmpeg and st.ffprobe)})
         if path == "/api/payer":
             return self._json(200, self._payer_state())
         if path == "/api/me":
