@@ -11084,7 +11084,7 @@ document.addEventListener('keydown', e => {
     if (!stage) return;
 
     const ROUTED = !!window.__STUDIO__
-      && (location.pathname === '/projects' || location.pathname.startsWith('/w/'));
+      && (location.pathname === '/' || location.pathname === '/projects' || location.pathname.startsWith('/w/'));
 
     function routeFilter(pathname) {
       if (!pathname.startsWith('/w/')) return null;
@@ -18364,8 +18364,9 @@ document.addEventListener('keydown', e => {
     function draw() {
       const b = st.snap.body, T = st.t, W = canvas.width, H = canvas.height;
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
-      if (t < T.body) {
-        const hit = v1At(b, t);
+      const tb = (t >= T.body && T.body > 0 && T.total <= T.body + 0.01) ? Math.max(0, T.body - 0.04) : t;
+      if (tb < T.body) {
+        const hit = v1At(b, tb);
         if (hit) {
           const src = srcOfV(b.video[hit.k]);
           if (src) {
@@ -18387,7 +18388,7 @@ document.addEventListener('keydown', e => {
           }
         } else pool.forEach(o => { if (!o.paused) o.pause(); });
         if (b.subtitles === 'burn' || b.subtitles === 'both' || b.subtitles === 'srt') {
-          const q = b.cues.find(x => t >= x.start && t < x.end);
+          const q = b.cues.find(x => tb >= x.start && tb < x.end);
           if (q) {
             const fs = Math.max(12, Math.round(H * 0.055));
             ctx.font = '600 ' + fs + 'px -apple-system,"PingFang TC","Noto Sans TC",sans-serif';
@@ -18404,7 +18405,7 @@ document.addEventListener('keydown', e => {
         const tt = b.titles || {};
         [['open', 0, tt.open ? Math.min(T.body, tt.open.seconds) : 0], ['end', tt.end ? Math.max(0, T.body - tt.end.seconds) : 0, T.body]].forEach(([k, a0, b0]) => {
           const x = tt[k];
-          if (!x || t < a0 || t >= b0) return;
+          if (!x || tb < a0 || tb >= b0) return;
           const fs = Math.max(10, Math.round(Math.min(W, H) * (k === 'open' ? 0.062 : 0.052)));
           ctx.font = (k === 'open' ? '700 ' : '600 ') + fs + 'px -apple-system,"PingFang TC","Noto Sans TC",sans-serif';
           ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
@@ -21920,13 +21921,13 @@ document.addEventListener('keydown', e => {
     return bar;
   }
   function doneOf(w, n, pid) {
-    const sm = (n >= 2 && n <= 4) ? sumOf(w, pid) : null;
+    const sm = (n >= 2 && n <= 5) ? sumOf(w, pid) : null;
     switch (n) {
       case 1: return !!String(w.story || '').trim();
       case 2: return !!w.done.cast || (sm.cast || 0) > 0;
       case 3: return sm.n > 0 && sm.filled === sm.n;
       case 4: return sm.n > 0 && sm.gen === sm.n;
-      case 5: return !!w.done.sound;
+      case 5: return !!w.done.sound || (sm.snd || 0) > 0;
       case 6: return !!w.exported || exportedHere(pid);
       case 7: return !!w.done.pub;
     }
@@ -21936,6 +21937,11 @@ document.addEventListener('keydown', e => {
     const lib = (typeof cast !== 'undefined' && Array.isArray(cast)) ? cast : [];
     const text = (L || []).map(x => String((x && x.prompt) || '')).join('\n');
     return lib.filter(c => c && c.name && text.includes('@' + c.name)).length;
+  }
+  function soundIn(pid) {
+    const TLA = window.__TL_AUDIO__, cur = window.__CANVAS_PROJ_CUR__, ready = window.__CANVAS_PROJ_READY__;
+    if (!TLA || typeof TLA.list !== 'function' || typeof cur !== 'function' || cur() !== pid || !(typeof ready === 'function' && ready())) return null;
+    return TLA.list().filter(c => c && c.sm !== 'orig' && (c.tts || c.music)).length;
   }
   function exportedHere(pid) {
     const r7 = window.__R7__;
@@ -21948,7 +21954,7 @@ document.addEventListener('keydown', e => {
       case 2: return sm.cast ? sm.cast + ' 位角色' : w.done.cast ? 'AI 照分鏡描述' : '角色一致';
       case 3: return sm.n ? sm.n + ' 鏡・' + sm.sec + ' 秒' : '拆成鏡頭';
       case 4: return (w.jobs || []).length ? sm.gen + ' / ' + sm.n + ' 鏡' : sm.n ? sm.n + ' 鏡影片' : '每鏡一支';
-      case 5: return !w.done.sound ? '配音＋配樂' : sndMode(w) === 'orig' ? '影片原聲' : '已配音配樂';
+      case 5: return !w.done.sound && !sm.snd ? '配音＋配樂' : sndMode(w) === 'orig' && !sm.snd ? '影片原聲' : '已配音配樂';
       case 6: return w.exported || exportedHere(pid) ? '已匯出成片' : '接片＋字幕';
       case 7: return w.done.pub ? PUB('已上架', '已完成') : PUB('YouTube', '收尾');
     }
@@ -22812,7 +22818,9 @@ document.addEventListener('keydown', e => {
   function sumOf(w, pid) {
     const L = board(pid);
     if (!L) return w.sum || { n: 0, filled: 0, gen: 0, sec: 0 };
-    const s = { n: L.length, filled: L.filter(x => String(x.prompt || '').trim()).length, gen: L.filter(x => shotDone(w, x)).length, sec: totalSec(L), cast: castIn(L) };
+    const snd = soundIn(pid);
+    const s = { n: L.length, filled: L.filter(x => String(x.prompt || '').trim()).length, gen: L.filter(x => shotDone(w, x)).length, sec: totalSec(L), cast: castIn(L),
+                snd: snd != null ? snd : (w.sum && w.sum.snd) || 0 };
     if (JSON.stringify(s) !== JSON.stringify(w.sum || null)) { w.sum = s; saveWorks(); }
     return s;
   }
