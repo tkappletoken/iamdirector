@@ -1,7 +1,7 @@
 {
   "name": "iamdirector-desktop",
   "productName": "我是導演",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "我是導演（iamdirector.app）導演台的桌面版",
   "main": "src/main.js",
   "private": true,
