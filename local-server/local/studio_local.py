@@ -895,13 +895,15 @@ class Handler(BaseHTTPRequestHandler):
         cap = None
         try:
             listing, _ = st.models_cached()
-            entry = qc.find_entry(listing, storyboard.MODEL)
+            entry = qc.find_entry(listing, storyboard.model_of(q))
+            if not storyboard.text_entry_ok(entry) and body.get("text_model"):
+                return self._json(400, {"error": "目錄裡沒有你選的文字模型 %s，請到「付款與金鑰」重新選" % storyboard.model_of(q)})
             cap = storyboard.price_cap(entry, q) if entry else None
         except ConsoleError:
             pass
         if body.get("dry_run"):
             return self._json(200, {"object": "storyboard.estimate", "payer": "own_key",
-                                    "model": storyboard.MODEL, "shots": q.get("shots")})
+                                    "model": storyboard.model_of(q), "shots": q.get("shots")})
         ref = storyboard.new_ref()
         with st.lock:
             now = time.monotonic()
@@ -910,7 +912,7 @@ class Handler(BaseHTTPRequestHandler):
             st.sb[ref] = {"q": q, "t": now, "status": "quoted", "result": None}
         return self._json(200, {
             "object": "storyboard.confirmation", "status": "needs_confirmation", "quote_id": ref,
-            "payer": "own_key", "model": storyboard.MODEL, "shots": q.get("shots"),
+            "payer": "own_key", "model": storyboard.model_of(q), "shots": q.get("shots"),
             "expires_in": SB_QUOTE_TTL,
             "estimate": {"upstream_cost_max": str(cap) if cap is not None else None},
             "note": "用你自己的 AppleToken 金鑰，AppleToken 依實際用量收費"})
@@ -962,7 +964,7 @@ class Handler(BaseHTTPRequestHandler):
                                              "AppleToken 可能已照用量收費，請換個說法再試",
                                     "payer": "own_key", "invalid_output": True})
         result = {"object": "storyboard.result", "quote_id": qid, "payer": "own_key",
-                  "model": storyboard.MODEL, "shots": shots, "count": len(shots),
+                  "model": storyboard.model_of(q), "shots": shots, "count": len(shots),
                   "total_seconds": sum(x.get("seconds") or 0 for x in shots if isinstance(x, dict))}
         if usage:
             result["usage"] = usage

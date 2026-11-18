@@ -43,10 +43,14 @@ npm test
 npm run prepare:local -- arm64        # 下載固定雜湊的 Python，放進本機伺服器（依你的架構：arm64／x64）
 bash scripts/build-ffmpeg-lgpl.sh arm64   # macOS；Windows 用 build-ffmpeg-lgpl-mingw.sh、Linux 用 build-ffmpeg-lgpl-linux.sh
 npm start                              # 開發模式
+IAMDIRECTOR_UI=full npm start          # 開發模式，打開完整工作台（頁首有「主線／進階工作台」切換）
+IAMDIRECTOR_UI=simple npm start        # 開發模式，只有主線（清掉上次的 full）
 npm run dist:mac                       # 打包（不簽章）；Windows：npm run dist:win
 ```
 
 原始碼的下載網址與 SHA-256 都寫死在腳本裡，對不上就停止。
+
+`IAMDIRECTOR_UI` 只給開發測試用：打包後的 App 一律忽略它（`test/devui.test.js` 守著），使用者下載的正式版不受影響。
 
 ## 授權
 
