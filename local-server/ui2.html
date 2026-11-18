@@ -4503,6 +4503,7 @@ document.addEventListener('keydown', e => {
       });
       CATALOG = by;
       if (window.__MODEL_DEFAULTS__) window.__MODEL_DEFAULTS__.load().then(() => window.__MODEL_DEFAULTS__.apply());
+      if (window.__MODEL_DEFAULTS__) window.__MODEL_DEFAULTS__.refresh();
       applyConstraints();
       window.__REPRICE_MODELS__();
     } catch (e) { }
@@ -13468,7 +13469,19 @@ document.addEventListener('keydown', e => {
     });
     if (fb) note.textContent = '現在拿不到 ' + (source.name || source.id) + ' 的模型目錄，先列內建清單；目錄回來後會照目錄列。';
     box.append(note);
+    if (fb && shown) stale.set(box, source);
     return shown ? box : null;
+  }
+
+  const stale = new Map();
+  function refresh() {
+    if (!cat()) return;
+    stale.forEach((source, box) => {
+      stale.delete(box);
+      if (!box.isConnected) return;
+      const n = panel(source);
+      if (n) box.replaceWith(n); else box.remove();
+    });
   }
 
   Object.values(FIELD).forEach(id => {
@@ -13478,7 +13491,7 @@ document.addEventListener('keydown', e => {
   const pick = document.getElementById('modelPick');
   if (pick) pick.addEventListener('change', e => { if (e.isTrusted) touched.add('model'); });
 
-  window.__MODEL_DEFAULTS__ = { get: k => get(k), set, options, recommended, panel, load, apply };
+  window.__MODEL_DEFAULTS__ = { get: k => get(k), set, options, recommended, panel, refresh, load, apply };
   load();
 })();
 (function studioKeyBar() {
@@ -17091,11 +17104,24 @@ document.addEventListener('keydown', e => {
   }
   window.__CONFIRM_SHEET__ = confirmSheet;
   const ptsOf = d => (d && d.charge_points != null ? Number(d.charge_points) : null);
-  const ptsLabel = d => (d && d.quote_unavailable ? '無法預先報價' : d && d.payer === 'own_key' ? '自帶金鑰' : ptsOf(d) != null ? ptsOf(d).toFixed(2) + ' 點' : '—');
+  const atOf = d => (d && d.estimate && d.estimate.upstream_cost != null && d.estimate.upstream_cost !== '' &&
+                     isFinite(Number(d.estimate.upstream_cost)) ? Number(d.estimate.upstream_cost) : null);
+  const atFmt = n => String(Math.round(n * 10000) / 10000);
+  const ptsLabel = d => (d && d.quote_unavailable ? '無法預先報價'
+    : d && d.payer === 'own_key' ? (atOf(d) != null ? atFmt(atOf(d)) + ' AppleToken 點' : '自帶金鑰')
+    : ptsOf(d) != null ? ptsOf(d).toFixed(2) + ' 點' : '—');
+  const modelLabel = ref => {
+    const r = audioRef(ref) || '';
+    const hit = ttsModels().concat(musicModels()).find(m => m[0] === r);
+    return hit && hit[1] ? String(hit[1]) : String(r).split('/').pop();
+  };
   const noQuoteNote = list => (list.some(d => d && d.quote_unavailable)
     ? '有 ' + list.filter(d => d && d.quote_unavailable).length + ' 件無法預先報價：確認送出後照 AppleToken 實際計費，從你自己的 AppleToken 額度扣。' : '');
   function sheetTotal(list) {
-    if (list.every(d => d.payer === 'own_key')) return { total: null, note: '這幾件用你自己的 AppleToken 金鑰，扣你在 AppleToken 的額度，本站不扣點。' };
+    if (list.every(d => d.payer === 'own_key')) {
+      const at = list.every(d => atOf(d) != null) ? Math.round(list.reduce((a, d) => a + atOf(d), 0) * 10000) / 10000 : null;
+      return { total: at, unit: 'AppleToken 點', note: '這幾件用你自己的 AppleToken 金鑰，扣你在 AppleToken 的額度，本站不扣點。' };
+    }
     if (list.some(d => ptsOf(d) == null && d.payer !== 'own_key')) return { total: null, note: '有一件估不出點數。' };
     const total = Math.round(list.reduce((a, d) => a + (ptsOf(d) || 0), 0) * 100) / 100;
     const avail = (list.find(d => d.payer === 'points' && d.points_available != null) || {}).points_available;
@@ -17128,8 +17154,8 @@ document.addEventListener('keydown', e => {
       const ok = await confirmSheet({
         kicker: '配音 → A1', title: quoted.length + ' 句台詞依角色生成語音',
         rows: quoted.map(x => ({ v: '#' + x.it.n, m: (x.it.who ? x.it.who.name : '旁白') + '：' + x.it.text,
-                                 sub: (x.it.say && x.it.say !== x.it.text ? '念法「' + x.it.say + '」 · ' : '') + voiceOf(x.it.who).model + (voiceOf(x.it.who).voice ? ' · ' + voiceOf(x.it.who).voice : '') + ' · ' + x.q.characters + ' 字', p: ptsLabel(x.q) })),
-        total: sum.total, short: sum.short,
+                                 sub: (x.it.say && x.it.say !== x.it.text ? '念法「' + x.it.say + '」 · ' : '') + modelLabel(voiceOf(x.it.who).model) + (voiceOf(x.it.who).voice ? ' · ' + voiceOf(x.it.who).voice : '') + ' · ' + x.q.characters + ' 字', p: ptsLabel(x.q) })),
+        total: sum.total, unit: sum.unit, short: sum.short,
         note: [noQuoteNote(quoted.map(x => x.q)), sum.note, bad.length ? '報價失敗、這次不送：' + bad.join('；') : '', '確認之後才扣點；上游失敗會全額放回。生成的聲音對齊 S1 上同一鏡的字幕。'].filter(Boolean).join(' '),
         go: '確認並生成 ' + quoted.length + ' 句',
       });
@@ -17170,8 +17196,8 @@ document.addEventListener('keydown', e => {
       if (!r.ok || !r.d.quote_id) { say('配樂報價失敗：' + errText(r.d)); return false; }
       const ok = await confirmSheet({
         kicker: '配樂 → A2', title: '整條配樂另外鋪在 A2',
-        rows: [{ v: '♫', m: body.prompt || '純配樂', sub: o.model + (body.lyrics === '[Instrumental]' ? ' · 無人聲' : ' · 有歌詞'), p: ptsLabel(r.d) }],
-        total: ptsOf(r.d) != null && r.d.payer !== 'own_key' ? ptsOf(r.d) : null,
+        rows: [{ v: '♫', m: body.prompt || '純配樂', sub: modelLabel(o.model) + (body.lyrics === '[Instrumental]' ? ' · 無人聲' : ' · 有歌詞'), p: ptsLabel(r.d) }],
+        total: sheetTotal([r.d]).total, unit: sheetTotal([r.d]).unit,
         short: sheetTotal([r.d]).short,
         note: (sheetTotal([r.d]).short ? sheetTotal([r.d]).note + ' ' : '') + noQuoteNote([r.d]) + (r.d.payer === 'own_key' ? '用你自己的 AppleToken 金鑰，本站不扣點。' : '照上游實際價格結算。') + '配樂不在影片生成時加，整條另外鋪，跨段才連貫。生成要一兩分鐘，好了自動落在 A2；上游失敗全額退點。',
         go: '確認並生成配樂',
@@ -17211,11 +17237,11 @@ document.addEventListener('keydown', e => {
       const all = quoted.map(x => x.q).concat(mq ? [mq] : []);
       const sum = sheetTotal(all);
       const rows = quoted.map(x => ({ v: '#' + x.it.n, m: (x.it.who ? x.it.who.name : '旁白') + '：' + x.it.text,
-                                      sub: voiceOf(x.it.who).model + (voiceOf(x.it.who).voice ? ' · ' + voiceOf(x.it.who).voice : '') + ' · ' + x.q.characters + ' 字', p: ptsLabel(x.q) }));
-      if (mq) rows.push({ v: '♫', m: '配樂：' + (mbody.prompt || '純配樂'), sub: mbody.model + ' · 無人聲', p: ptsLabel(mq) });
+                                      sub: modelLabel(voiceOf(x.it.who).model) + (voiceOf(x.it.who).voice ? ' · ' + voiceOf(x.it.who).voice : '') + ' · ' + x.q.characters + ' 字', p: ptsLabel(x.q) }));
+      if (mq) rows.push({ v: '♫', m: '配樂：' + (mbody.prompt || '純配樂'), sub: modelLabel(mbody.model) + ' · 無人聲', p: ptsLabel(mq) });
       const ok = await confirmSheet({
         kicker: '聲音', title: [quoted.length ? quoted.length + ' 句台詞配音' : '', mq ? '一段配樂' : ''].filter(Boolean).join('＋'),
-        rows, total: sum.total, short: sum.short,
+        rows, total: sum.total, unit: sum.unit, short: sum.short,
         note: [noQuoteNote(all), sum.note, bad.length ? '報價失敗、這次不送：' + bad.join('；') : '',
                '確認之後才扣點；上游失敗會全額放回。配音對齊同一鏡的字幕，配樂放低音量墊在台詞底下。'].filter(Boolean).join(' '),
         go: '確認並生成',
@@ -21674,6 +21700,8 @@ document.addEventListener('keydown', e => {
     saveT = setTimeout(go, 600);
   }
   const OLD_STEP = { 1: 1, 2: 3, 3: 4, 4: 6 };
+  const DEF_ASPECT = '9:16';
+  const aspectOf = w => (w && /^\d{1,2}:\d{1,2}$/.test(w.aspect || '') ? w.aspect : DEF_ASPECT);
   function work(pid) {
     if (!WORKS[pid]) WORKS[pid] = { v: 2, step: 1, story: '', aspect: '9:16', shots: [], jobs: [], exported: false, done: {} };
     const w = WORKS[pid];
@@ -21808,8 +21836,8 @@ document.addEventListener('keydown', e => {
     const t = h('div', 'sm-top');
     const brand = h('div', 'sm-brand'); const bars = h('i'); for (let i = 0; i < 4; i++) bars.append(h('b'));
     brand.append(bars, h('span', 'full', '我是導演'));
-    const home = btn('sm-btn', '← 我的作品', () => { VIEW = null; go('/projects'); });
-    home.hidden = !curPid() && VIEW !== 'tpl';
+    const home = btn('sm-btn', LOCALM ? '← 首頁' : '← 我的作品', () => { VIEW = null; go('/projects'); });
+    home.hidden = !curPid() && VIEW !== 'tpl' && VIEW !== 'works';
     const pts = btn('sm-pts', null, () => { const q = document.getElementById('studioQuota'); if (q) q.click(); });
     const q = document.getElementById('studioQuota');
     const num = q && q.querySelector('.num');
@@ -21891,7 +21919,7 @@ document.addEventListener('keydown', e => {
       if (first.thumb) { const im = h('img'); im.src = first.thumb; im.alt = ''; th.append(im); }
       else { const v = h('video'); v.src = first.src; v.muted = true; v.preload = 'metadata'; th.append(v); }
     }
-    th.append(h('span', 'ratio', (w && w.aspect) || '9:16'));
+    th.append(h('span', 'ratio', aspectOf(w)));
     const bd = h('div', 'bd');
     const step = w ? w.step : 1;
     const all = !!w && STEPS.every((_, k) => doneOf(w, k + 1, p.id));
@@ -22063,6 +22091,7 @@ document.addEventListener('keydown', e => {
     return c;
   }
   function homePage(host) {
+    if (LOCALM && VIEW !== 'works') return deskHome(host);
     const hero = h('div', 'sm-hero');
     const tx = h('div');
     tx.append(h('h1', null, '我的作品'), h('p', 'lead', '每張卡片底下那排進度，就是' + SPINE + '做到哪裡。按「繼續」直接回到那一步；做到一半可以隨時離開。'));
@@ -22083,6 +22112,168 @@ document.addEventListener('keydown', e => {
     [['d', '做完'], ['c', '做到這裡'], ['', '還沒做']].forEach(([k, s]) => { const x = h('span'); x.append(h('i', k), document.createTextNode(s)); legend.append(x); });
     legend.append(h('span', null, '步驟：' + STEPS.join('／')));
     host.append(hero, msg, grid, PROJ.length ? legend : h('span'));
+  }
+  let DH = { tab: 'line', mdl: false };
+  const DH_SHOTS = [4, 6, 8, 10];
+  const DH_DESC = ['一句話或幾行字，整理成這部片的故事', '角色卡鎖住長相，每一鏡都是同一個人', 'AI 拆成分鏡，景別和運鏡可以逐鏡改',
+                   '逐鏡送出生成，先報價、確認才扣額度', '旁白、對白配音和配樂', '剪接、上字幕，匯出 mp4'];
+  const DH_ART = ['linear-gradient(120deg,#3a2f4a,#1d2b3a)', 'repeating-linear-gradient(90deg,#2f5560 0 30px,#142a2e 30px 34px)',
+                  'linear-gradient(90deg,#5a3b26 0 24%,#2b1f1a 24% 26%,#5a3b26 26% 50%,#2b1f1a 50% 52%,#5a3b26 52% 76%,#2b1f1a 76% 78%,#5a3b26 78%)',
+                  'radial-gradient(circle at 30% 50%,rgba(232,163,61,.33),transparent 40%),linear-gradient(160deg,#241a2e,#4b2f55)',
+                  'repeating-linear-gradient(90deg,#3e5530 0 3px,transparent 3px 7px),linear-gradient(#1f2a1a,#1f2a1a)',
+                  'linear-gradient(180deg,#2b2616 0 70%,#5a4d24 70% 74%,#2b2616 74%)'];
+  function dhStyle() {
+    if (document.getElementById('dhStyle')) return;
+    const s = document.createElement('style'); s.id = 'dhStyle';
+    s.textContent = [
+      '.dh{position:relative;max-width:1120px;margin:0 auto;padding:0 0 60px}',
+      '.dh-glow{position:absolute;left:50%;top:-40px;width:min(1100px,100%);height:560px;transform:translateX(-50%);pointer-events:none;z-index:0;',
+        'background:conic-gradient(from 180deg at 50% 0,transparent 160deg,rgba(255,226,170,.06) 175deg,rgba(255,226,170,.11) 180deg,rgba(255,226,170,.06) 185deg,transparent 200deg),',
+        'radial-gradient(60% 50% at 50% 0,rgba(232,163,61,.2),transparent 70%),radial-gradient(40% 40% at 88% 18%,rgba(91,200,216,.12),transparent 70%),',
+        'radial-gradient(36% 36% at 8% 34%,rgba(121,90,160,.12),transparent 70%);',
+        '-webkit-mask-image:radial-gradient(closest-side,#000 55%,transparent);mask-image:radial-gradient(closest-side,#000 55%,transparent)}',
+      '.dh>:not(.dh-glow){position:relative;z-index:1}',
+      '.dh .dh-tag{font-size:44px;line-height:1.2;margin:40px 0 0;font-weight:800;text-align:center;letter-spacing:.02em}',
+      '.dh-tag em{font-style:normal;color:var(--grease)}',
+      '.dh-sub{color:var(--pencil);text-align:center;margin:12px 0 0;font-size:var(--fs-l)}',
+      '.dh-comp{margin:28px auto 0;max-width:860px;border-radius:18px;background:linear-gradient(180deg,rgba(32,37,45,.94),rgba(20,23,28,.96));',
+        'border:1px solid var(--edge2);box-shadow:0 30px 80px rgba(0,0,0,.45)}',
+      '.dh-tabs{display:flex;gap:4px;padding:8px 10px 0;border-bottom:1px solid var(--edge);overflow-x:auto}',
+      '.dh-tab{width:auto;min-height:44px;padding:0 14px;border:0;border-bottom:2px solid transparent;border-radius:9px 9px 0 0;background:none;color:var(--pencil);font-size:var(--fs-m);white-space:nowrap;cursor:pointer}',
+      '.dh-tab[aria-selected="true"]{color:var(--paper);border-bottom-color:var(--grease);font-weight:600}',
+      '.dh-body{padding:16px 18px 6px}',
+      '.dh-body textarea{width:100%;min-height:96px;resize:vertical;border:0;background:none;color:var(--paper);font:inherit;font-size:var(--fs-l);line-height:1.6;padding:0;outline:none}',
+      '.dh-body textarea::placeholder{color:var(--faint)}',
+      '.dh-tfl{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}',
+      '.dh-tfl label{display:flex;flex-direction:column;gap:4px;font-size:var(--fs-s);color:var(--pencil)}',
+      '.dh-tfl input{width:100%;min-height:44px}',
+      '.dh-tname{margin:0 0 10px;font-size:var(--fs-m)}.dh-tname small{color:var(--faint);margin-left:8px;font-size:var(--fs-s)}',
+      '.dh-bar{display:flex;align-items:center;gap:8px;padding:10px 14px 14px;flex-wrap:wrap}',
+      '.dh-chip{width:auto;display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 12px;border-radius:999px;border:1px solid var(--edge2);',
+        'background:rgba(27,31,38,.9);color:var(--paper);font-size:var(--fs-s);white-space:nowrap;cursor:pointer}',
+      'button.dh-chip:hover{border-color:var(--pencil)}',
+      'span.dh-chip{cursor:default;color:var(--pencil)}',
+      '.dh-chip i{font-style:normal;color:var(--pencil)}',
+      '.dh-chip.mdl{border-color:rgba(91,200,216,.5);color:var(--rolling)}',
+      '.dh-chip[aria-pressed="true"]{border-color:var(--grease);color:var(--grease)}',
+      '.dh-go{margin-left:auto}',
+      '.dh-note{max-width:860px;margin:10px auto 0;color:var(--faint);font-size:var(--fs-s);text-align:center}',
+      '.dh-kinds{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:16px auto 0;max-width:860px}',
+      '.dh-spine{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin:18px auto 0;list-style:none;padding:0}',
+      '.dh-spine li{display:inline-flex;align-items:center;gap:6px;color:var(--pencil);font-size:var(--fs-s)}',
+      '.dh-spine li b{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;border:1px solid var(--edge2);color:var(--paper);font-family:var(--mono);font-size:var(--fs-s)}',
+      '.dh-spine li+li:before{content:"";width:18px;height:1px;background:var(--edge2)}',
+      '.dh .dh-sec{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;font-size:var(--fs-xl);margin:48px 0 14px}',
+      '.dh-sec small{font-size:var(--fs-s);color:var(--faint);font-weight:400}',
+      '.dh-sec .sm-link{margin-left:auto;font-size:var(--fs-m)}',
+      '.dh .dh-works{grid-template-columns:repeat(4,minmax(0,1fr))}',
+      '.dh-feat{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}',
+      '.dh-fc{padding:18px;border-radius:14px;background:linear-gradient(180deg,rgba(27,31,38,.95),rgba(20,23,28,.95));border:1px solid var(--edge)}',
+      '.dh-fc .art{height:84px;border-radius:9px;margin-bottom:12px}',
+      '.dh-fc .n{font-family:var(--mono);color:var(--grease);font-size:var(--fs-s)}',
+      '.dh-fc b{display:block;font-size:var(--fs-l);margin:4px 0}.dh-fc p{margin:0;color:var(--pencil);font-size:var(--fs-s)}',
+      '@media (max-width:900px){.dh .dh-works{grid-template-columns:repeat(2,minmax(0,1fr))}.dh .dh-tag{font-size:34px}.dh-feat{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+      '@media (max-width:640px){.dh .dh-works{grid-template-columns:1fr}.dh .dh-tag{font-size:var(--fs-xxl);margin-top:24px}.dh-feat{grid-template-columns:1fr}.dh-go{width:100%;margin-left:0}',
+        '.dh-spine li+li:before{width:8px}.dh-glow{width:100%}}',
+    ].join('');
+    document.head.append(s);
+  }
+  function deskHome(host) {
+    dhStyle();
+    const MD = window.__MODEL_DEFAULTS__;
+    if (MD && !DH.mdl) { DH.mdl = true; MD.load().then(() => render(true)).catch(() => {}); }
+    const root = h('div', 'dh');
+    root.append(h('div', 'dh-glow'));
+    const tag = h('h1', 'dh-tag'); tag.append(document.createTextNode('一句話，'), h('em', null, '拍成一部片'));
+    root.append(tag, h('p', 'dh-sub', '寫下你想拍的畫面，AI 帶你從故事一路做到剪輯字幕。'));
+    const comp = h('section', 'dh-comp'); comp.setAttribute('aria-label', '開一部新片');
+    const tabs = h('div', 'dh-tabs'); tabs.setAttribute('role', 'tablist');
+    [['line', '一句話故事'], ['tpl', '照範本拍']].forEach(([k, s]) => {
+      const b = btn('dh-tab', s, () => { DH.tab = k; render(true); });
+      b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(DH.tab === k)); b.dataset.tab = k; tabs.append(b);
+    });
+    const body = h('div', 'dh-body');
+    const bar = h('div', 'dh-bar');
+    const shots = NEW.shots || 6;
+    const aspect = DH.tab === 'tpl' ? TPL.aspect : NEW.aspect;
+    const asp = ASPECTS.find(a => a[0] === aspect) || ASPECTS[0];
+    const ab = btn('dh-chip', null, () => {
+      const nx = ASPECTS[(ASPECTS.indexOf(asp) + 1) % ASPECTS.length][0];
+      if (DH.tab === 'tpl') TPL.aspect = nx; else NEW.aspect = nx;
+      render(true);
+    });
+    ab.append(document.createTextNode(asp[0] + ' ' + asp[1]), h('i', null, '▾')); ab.title = '比例：' + asp[2] + '（點一下切換）'; ab.dataset.k = 'aspect';
+    bar.append(ab);
+    let main;
+    if (DH.tab === 'tpl') {
+      const t = TEMPLATES.find(x => x.id === TPL.id) || TEMPLATES[0]; TPL.id = t.id;
+      const nm = h('p', 'dh-tname'); nm.append(h('b', null, t.name), h('small', null, t.beats.length + ' 鏡・約 ' + tplSec(t) + ' 秒・' + t.voice));
+      const fl = h('div', 'dh-tfl');
+      t.fields.forEach(([k, lab, ph]) => {
+        const l = h('label'); l.append(h('span', null, lab));
+        const inp = h('input', 'in'); inp.id = 'smTpl_' + k; inp.placeholder = ph; inp.maxLength = 120;
+        inp.value = TPL.f[t.id + '.' + k] || '';
+        inp.oninput = () => { TPL.f[t.id + '.' + k] = inp.value; };
+        l.append(inp); fl.append(l);
+      });
+      body.append(nm, fl);
+      bar.append(h('span', 'dh-chip', t.beats.length + ' 鏡'), h('span', 'dh-chip', '約 ' + tplSec(t) + ' 秒'));
+      main = btn('sm-main dh-go', '套用範本 →', function () { applyTemplate(this, false); });
+      main.title = '照範本填好分鏡、建一部新作品，接著到第 3 步（分鏡）';
+    } else {
+      const lab = h('label', null, '你想拍什麼？'); lab.htmlFor = 'smOneLine'; lab.style.cssText = 'position:absolute;left:-9999px';
+      const ta = h('textarea'); ta.id = 'smOneLine'; ta.maxLength = 400; ta.value = NEW.text;
+      ta.placeholder = '例：深夜末班車上，一隻橘貓陪一個失戀的女孩坐到終點站…';
+      body.append(lab, ta);
+      const sb = btn('dh-chip', null, () => { NEW.shots = DH_SHOTS[(DH_SHOTS.indexOf(shots) + 1) % DH_SHOTS.length]; render(true); });
+      sb.append(document.createTextNode(shots + ' 鏡'), h('i', null, '▾')); sb.title = 'AI 要拆成幾鏡（點一下切換）'; sb.dataset.k = 'shots';
+      const sec = h('span', 'dh-chip', '約 ' + shots * defSec() + ' 秒'); sec.title = '每鏡約 ' + defSec() + ' 秒（照目前的影片模型）';
+      bar.append(sb, sec);
+      main = btn('sm-main dh-go', '拆成分鏡 →', function () { startOneLine(this); });
+      main.title = '建一部新作品，交給 AI 拆鏡（會先報價、跳確認單，按確認才扣費用），接著到第 3 步';
+      const paint = () => { main.disabled = !ta.value.trim(); };
+      ta.oninput = () => { NEW.text = ta.value; paint(); };
+      ta.onkeydown = e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && ta.value.trim()) startOneLine(main); };
+      paint();
+    }
+    const mv = MD ? String(MD.get('video') || '') : '';
+    const mb = btn('dh-chip mdl', '✦ 影片模型：' + (mv ? mv.split('/').pop() : '自動'), () => { const pay = window.__STUDIO_PAYER__; if (pay) pay.open(); });
+    mb.title = '在「付款與金鑰」面板指定預設模型'; mb.dataset.k = 'model';
+    const vo = h('span', 'dh-chip', '旁白：第 5 步再選'); vo.title = '旁白、對白配音和配樂在主線第 5 步（聲音）';
+    bar.append(mb, vo, main);
+    comp.append(tabs, body, bar);
+    root.append(comp, h('p', 'dh-note', DH.tab === 'tpl' ? '範本只是起點，套用後每一鏡都能改。' : '按 ⌘ Enter 也可以開始。AI 拆鏡前會先報價，你確認了才扣費用。'));
+    const kinds = h('div', 'dh-kinds'); kinds.setAttribute('aria-label', '照範本拍');
+    TEMPLATES.forEach(t => {
+      const b = btn('dh-chip', t.name.split('・')[0], () => { TPL.id = t.id; DH.tab = 'tpl'; render(true); setTimeout(() => { const x = document.querySelector('.dh-tfl input'); if (x) x.focus(); }, 0); });
+      b.dataset.tpl = t.id; b.title = t.name + '：' + t.beats.length + ' 鏡・約 ' + tplSec(t) + ' 秒';
+      b.setAttribute('aria-pressed', String(DH.tab === 'tpl' && TPL.id === t.id)); kinds.append(b);
+    });
+    kinds.append(btn('dh-chip', '全部範本 →', () => { TPL.kind = '全部'; VIEW = 'tpl'; render(); }));
+    root.append(kinds);
+    const sp = h('ol', 'dh-spine'); sp.setAttribute('aria-label', SPINE);
+    STEPS.forEach((s, i) => { const li = h('li'); li.append(h('b', null, String(i + 1)), document.createTextNode(s)); sp.append(li); });
+    root.append(sp);
+    const msg = h('div', 'sm-msg'); msg.id = 'smHomeMsg';
+    root.append(msg);
+    if (!loaded) root.append(h('div', 'sm-empty', '讀取中…'));
+    else if (PROJ.length) {
+      const sec = h('h2', 'dh-sec', '最近的作品'); sec.append(h('small', null, '共 ' + PROJ.length + ' 部'));
+      sec.append(btn('sm-link', '看全部作品 →', () => { VIEW = 'works'; render(); }));
+      const grid = h('div', 'sm-grid dh-works');
+      const t = p => (WORKS[p.id] && WORKS[p.id].t) || 0;
+      PROJ.slice().sort((a, b) => t(b) - t(a)).slice(0, 4).forEach((p, i) => grid.append(workCard(p, i)));
+      root.append(sec, grid);
+    } else {
+      const sec = h('h2', 'dh-sec', '主線六步'); sec.append(h('small', null, '每一步都能交給 AI，也能自己調'));
+      const feat = h('div', 'dh-feat');
+      STEPS.forEach((s, i) => {
+        const c = h('div', 'dh-fc'); const art = h('div', 'art'); art.style.background = DH_ART[i];
+        c.append(art, h('span', 'n', '0' + (i + 1)), h('b', null, s), h('p', null, DH_DESC[i])); feat.append(c);
+      });
+      root.append(sec, feat);
+    }
+    host.append(root);
   }
   async function createWork(name) {
     const r = await getJSON('/api/projects/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: String(name).slice(0, 60) }) });
@@ -22118,9 +22309,10 @@ document.addEventListener('keydown', e => {
       const id = await createWork(text.replace(/\s+/g, ' ').slice(0, 18) + (text.length > 18 ? '…' : ''));
       const w = work(id); w.story = text; w.aspect = NEW.aspect; w.step = 3; w.src = 'oneline';
       saveWorks(true);
-      NEW = { text: '', aspect: NEW.aspect };
+      const n = NEW.shots || 6;
+      NEW = { text: '', aspect: NEW.aspect, shots: NEW.shots };
       await go('/w/' + encodeURIComponent(id));
-      if (await aiSplit(w, id, 6)) render(true);
+      if (await aiSplit(w, id, n)) render(true);
     } catch (e) {
       if (!(window.__ERR_AT__ && window.__ERR_AT__(b, '開不了新作品：' + e.message, '沒有建立成功'))) say('開不了新作品：' + e.message);
     } finally { b.disabled = false; b.textContent = label; }
@@ -22380,7 +22572,7 @@ document.addEventListener('keydown', e => {
     ASPECTS.forEach(([v, t, d]) => {
       const b = btn('sm-choice', null, () => { w.aspect = v; saveWorks(); ch.querySelectorAll('.sm-choice').forEach(x => x.setAttribute('aria-pressed', String(x === b))); });
       b.append(document.createTextNode(t), h('small', null, d));
-      b.setAttribute('aria-pressed', String(w.aspect === v));
+      b.setAttribute('aria-pressed', String(aspectOf(w) === v));
       ch.append(b);
     });
     al.append(ch);
@@ -22683,10 +22875,10 @@ document.addEventListener('keydown', e => {
   }
   function shotBase(w) {
     const ar = document.getElementById('aspect_ratio');
-    if (ar && ar.value !== w.aspect) { ar.value = w.aspect; ar.dispatchEvent(new Event('change', { bubbles: true })); }
+    if (ar && ar.value !== aspectOf(w)) { ar.value = aspectOf(w); ar.dispatchEvent(new Event('change', { bubbles: true })); }
     const base = buildPayload({ silent: true, noPrompt: true });
     ['first_frame', 'last_frame', 'frame_images', 'input_references', 'size', 'seed'].forEach(k => { delete base[k]; });
-    base.aspect_ratio = w.aspect;
+    base.aspect_ratio = aspectOf(w);
     if (!base.resolution) { const r = spineRes(); if (r) base.resolution = r; }
     return base;
   }
@@ -23312,7 +23504,7 @@ document.addEventListener('keydown', e => {
     const ai = btn('sm-ai', w.exported ? 'AI 幫我做：重新整理並匯出' : 'AI 幫我做：接起來、上字幕、匯出', function () {
       if (!r7 || typeof r7.open !== 'function') { window.__ERR_AT__(this, '這個環境沒有開匯出功能。', '打不開'); return; }
       const ar = document.getElementById('aspect_ratio');
-      if (ar && ar.value !== w.aspect) { ar.value = w.aspect; ar.dispatchEvent(new Event('change', { bubbles: true })); }
+      if (ar && ar.value !== aspectOf(w)) { ar.value = aspectOf(w); ar.dispatchEvent(new Event('change', { bubbles: true })); }
       if (!arrangeTL(w, pid)) { window.__ERR_AT__(this, '時間軸還沒載入，稍等一下再試。', '排不了'); return; }
       const seen = new Set((r7.hist || []).map(e => e.id));
       try { r7.open({ simple: true }); } catch (e) { window.__ERR_AT__(this, e.message || String(e), '打不開'); return; }
@@ -23344,7 +23536,7 @@ document.addEventListener('keydown', e => {
     let story = String(w.story || '').trim();
     if (/^【[^】]*】/.test(story)) story = story.split('\n')[0].replace(/^【[^】]*】/, '').replace(/。$/, '').split('；')
       .map(x => x.split('：').slice(1).join('：').trim()).filter(Boolean).slice(0, 2).join('｜');
-    const vertical = w.aspect === '9:16';
+    const vertical = aspectOf(w) === '9:16';
     const desc = [story.slice(0, 300), '', '本片使用 AI 生成工具製作。', vertical ? '#Shorts' : ''].filter((x, i) => x || i === 1).join('\n').trim();
     const tags = [w.tpl && w.tpl.name && w.tpl.name.split('・')[0], 'AI 短片', vertical ? 'Shorts' : ''].filter(Boolean).join(', ');
     w.pub = { title: String((p && p.name) || '').slice(0, 100), desc, tags, privacy: 'scheduled', when: fmtLocal(tomorrow),
@@ -23412,8 +23604,8 @@ document.addEventListener('keydown', e => {
     const row = (ok, t, sub) => { const r = h('div', 'sm-chk ' + (ok === true ? 'ok' : ok === false ? 'bad' : 'warn')); r.append(h('i', null, ok === true ? '✓' : ok === false ? '✕' : '!'), h('span', null, t)); if (sub) r.append(h('small', null, sub)); chk.append(r); };
     const dur = ex && Number(ex.duration);
     row(ready, ready ? '成片已匯出' : '還沒有匯出好的成片');
-    row(true, w.aspect === '9:16' ? '直式 9:16：會是 Shorts' : '橫式 ' + (w.aspect || '16:9') + '：一般影片');
-    if (dur) row(w.aspect !== '9:16' || dur <= 180, '長度 ' + Math.round(dur) + ' 秒', w.aspect === '9:16' && dur > 180 ? 'Shorts 最長 3 分鐘，超過會變一般影片' : '');
+    row(true, aspectOf(w) === '9:16' ? '直式 9:16：會是 Shorts' : '橫式 ' + aspectOf(w) + '：一般影片');
+    if (dur) row(aspectOf(w) !== '9:16' || dur <= 180, '長度 ' + Math.round(dur) + ' 秒', aspectOf(w) === '9:16' && dur > 180 ? 'Shorts 最長 3 分鐘，超過會變一般影片' : '');
     row(w.cut && w.cut.cues ? true : null, w.cut && w.cut.cues ? '有字幕（' + w.cut.cues + ' 句）' : '沒有字幕', w.cut && w.cut.cues ? '' : '可以上架；有台詞的片建議加字幕');
     row(true, sndMode(w) === 'voice' ? '配樂是這部片自己生成的，不是現成歌曲' : '聲音用影片原聲');
     row(F.synthetic ? true : null, F.synthetic ? '已標示 AI 生成' : '沒有標示 AI 生成', F.synthetic ? '' : '不標示可能違反 YouTube 的揭露政策');
