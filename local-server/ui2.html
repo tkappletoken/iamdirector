@@ -11021,6 +11021,9 @@ document.addEventListener('keydown', e => {
       '.cv-right{position:static;top:auto;max-height:none;height:100%;min-height:0}',
       '.rail{overflow:hidden}',
       '.rail-scroll{overflow-y:auto}',
+      '.rail-scroll{min-height:min(45%,220px)}',
+      '.rail > .report{flex:0 1 auto;min-height:0;overflow-y:auto}',
+      '.rail > .report .roll{position:sticky;bottom:0;z-index:1;background:var(--ink)}',
       '.cv-pane-top > div:not(.rail):not(.cv-right){height:100%;min-height:0;',
         'display:flex;flex-direction:column;overflow:hidden}',
       '#p-canvas{height:100%;min-height:0;flex:1}',
@@ -18338,10 +18341,11 @@ document.addEventListener('keydown', e => {
     const pool = new Map();
     const sound = new Map();
     let t = 0, playing = false, last = 0, raf = 0, st = getState();
+    let shown = null;
     const vidFor = src => {
       if (!pool.has(src)) {
         const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'auto'; v.crossOrigin = 'anonymous';
-        const again = () => { if (playing || pool.get(src) !== v || v.__drawnAt === v.currentTime) return; v.__drawnAt = v.currentTime; draw(); };
+        const again = () => { if (playing || v.seeking || pool.get(src) !== v || v.__drawnAt === v.currentTime) return; v.__drawnAt = v.currentTime; draw(); };
         v.addEventListener('loadeddata', again); v.addEventListener('seeked', again);
         v.src = src; pool.set(src, v);
       }
@@ -18363,6 +18367,7 @@ document.addEventListener('keydown', e => {
     }
     function draw() {
       const b = st.snap.body, T = st.t, W = canvas.width, H = canvas.height;
+      shown = null;
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
       const tb = (t >= T.body && T.body > 0 && T.total <= T.body + 0.01) ? Math.max(0, T.body - 0.04) : t;
       if (tb < T.body) {
@@ -18371,8 +18376,10 @@ document.addEventListener('keydown', e => {
           const src = srcOfV(b.video[hit.k]);
           if (src) {
             const v = vidFor(src);
-            const drift = Math.abs((v.currentTime || 0) - hit.local);
-            if (!v.seeking && (holdK !== hit.k ? drift > 0.05 : drift > (playing ? 0.6 : 0.04))) { try { v.currentTime = hit.local; } catch (e) {} }
+            const dur = v.duration, local = isFinite(dur) && dur > 0 ? Math.min(hit.local, Math.max(0, dur - 0.04)) : hit.local;
+            const drift = Math.abs((v.currentTime || 0) - local);
+            const pastEnd = local < hit.local && (v.currentTime || 0) > local + 0.01;
+            if (!v.seeking && (pastEnd || (holdK !== hit.k ? drift > 0.05 : drift > (playing ? 0.6 : 0.04)))) { try { v.currentTime = local; } catch (e) {} }
             if (playing && v.paused) v.play().catch(() => {});
             pool.forEach(o => { if (o !== v && !o.paused) o.pause(); });
             const f = v.seeking ? null : frame(v);
@@ -18385,6 +18392,7 @@ document.addEventListener('keydown', e => {
               holdK = hit.k;
             }
             if (holdK === hit.k) ctx.drawImage(hold, 0, 0);
+            shown = { k: hit.k, ct: v.currentTime, dur: v.duration, seeking: v.seeking };
           }
         } else pool.forEach(o => { if (!o.paused) o.pause(); });
         if (b.subtitles === 'burn' || b.subtitles === 'both' || b.subtitles === 'srt') {
@@ -18463,7 +18471,7 @@ document.addEventListener('keydown', e => {
       seek: x => { t = Math.max(0, Math.min(st.t.total, x)); draw(); api.onTick(t); },
       refresh: () => { st = getState(); const [w, hh] = frameSize(st.snap.body.format.aspect, '480p'); if (canvas.width !== w || canvas.height !== hh) { canvas.width = w; canvas.height = hh; } draw(); },
       destroy: () => { pause(); pool.forEach(o => { o.removeAttribute('src'); }); sound.forEach(o => o.removeAttribute('src')); pool.clear(); sound.clear(); },
-      get t() { return t; }, get playing() { return playing; },
+      get t() { return t; }, get playing() { return playing; }, get shown() { return shown; },
       onTick: () => {}, onState: () => {},
     };
     const kick = () => { if (!playing) draw(); };
