@@ -10,6 +10,7 @@ const menu = require('./menu');
 const settings = require('./settings');
 const updater = require('./updater');
 const devport = require('./devport');
+const devui = require('./devui');
 const windowBounds = require('./window-bounds');
 const extLogin = require('./external-login');
 const localPage = require('./local-page');
@@ -136,7 +137,9 @@ function createWindow() {
 
   const first = lastUrl && policy.isRestorableUrl(lastUrl, START_URL) ? lastUrl : START_URL;
   trace('load-start', { restored: first !== START_URL });
-  win.loadURL(first);
+  const ui = devui.decide({ isPackaged: app.isPackaged, env: process.env });
+  if (ui.reason === 'invalid') console.warn('IAMDIRECTOR_UI 只接受 simple 或 full，已忽略：' + ui.raw);
+  win.loadURL(devui.withUi(first, { isPackaged: app.isPackaged, env: process.env }));
 }
 
 function guardContents(wc) {

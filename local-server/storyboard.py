@@ -8,6 +8,8 @@ import qc
 import studio_tools
 
 MODEL = os.environ.get("STUDIO_STORYBOARD_MODEL", "siraya/gpt-4.1-mini")
+MODEL_REF = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
+TEXT_MODEL_SKIP = re.compile(r"(^|/)(nsfw-|uncensored-)", re.I)
 MAX_SHOTS = 12
 DEFAULT_SHOTS = 6
 MAX_STORY = 3000
@@ -36,7 +38,7 @@ def check_quote(body):
     if not isinstance(body, dict):
         raise SBError(400, "要是 JSON 物件")
     bad = sorted(k for k in body if k not in ("story", "shots", "style", "video_model", "project_id", "payer",
-                                              "dry_run"))
+                                              "dry_run", "text_model"))
     if bad:
         raise SBError(400, "AI 分鏡不收這些欄位：%s" % "、".join(bad))
     story = body.get("story")
@@ -57,8 +59,19 @@ def check_quote(body):
     pid = body.get("project_id") or None
     if pid is not None and (not isinstance(pid, str) or not UUID.match(pid)):
         raise SBError(400, "project_id 不合法")
+    tm = body.get("text_model") or None
+    if tm is not None and (not isinstance(tm, str) or not MODEL_REF.match(tm.strip())):
+        raise SBError(400, "text_model 要是 /v2 的模型 ref（例如 siraya/gpt-4.1-mini）")
+    if tm is not None and TEXT_MODEL_SKIP.search(tm.strip()):
+        raise SBError(400, "這個文字模型不能用來產生分鏡")
     return {"story": story, "shots": n, "style": _clean(style, MAX_STYLE), "video_model": vm.strip(),
-            "project_id": pid}
+            "project_id": pid, "model": tm.strip() if tm else MODEL}
+
+def text_entry_ok(entry):
+    return isinstance(entry, dict) and entry.get("modality") in (None, "text")
+
+def model_of(q):
+    return (q or {}).get("model") or MODEL
 
 def seconds_rule(video_model):
     r = studio_tools.duration_rule(video_model)
@@ -89,7 +102,7 @@ def messages(q):
             {"role": "user", "content": "<story>\n%s\n</story>" % story}]
 
 def chat_payload(q, model=None):
-    return {"model": model or MODEL, "messages": messages(q), "max_tokens": MAX_TOKENS,
+    return {"model": model or model_of(q), "messages": messages(q), "max_tokens": MAX_TOKENS,
             "temperature": 0.4, "response_format": {"type": "json_object"}}
 
 def parse_shots(resp, q):
