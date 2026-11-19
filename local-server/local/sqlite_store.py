@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS local_quotes (
 );
 """
 
+ADD_COLUMNS = (
+    ("approval_cards", "payload", "JSONB"), ("approval_cards", "quote_expires_at", "TEXT"),
+    ("approval_cards", "approved_points", "TEXT"), ("approval_cards", "approved_upstream", "TEXT"),
+    ("approval_cards", "batch_id", "TEXT"), ("approval_cards", "note", "TEXT"),
+    ("approval_cards", "decided_by", "TEXT"),
+    ("user_spend_limits", "auto_approve", "INTEGER"), ("user_spend_limits", "limits_version", "INTEGER"),
+)
+
 sqlite3.register_converter("JSONB", lambda b: json.loads(b.decode("utf-8")))
 
 _ANY = re.compile(r"=\s*ANY\(%s\)", re.I)
@@ -139,6 +147,10 @@ class LocalDB:
         self.path = path
         raw = self._open()
         raw.executescript(SCHEMA)
+        for table, col, typ in ADD_COLUMNS:
+            have = {r[1] for r in raw.execute("PRAGMA table_info(%s)" % table)}
+            if col not in have:
+                raw.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, typ))
         raw.close()
 
     def _open(self):

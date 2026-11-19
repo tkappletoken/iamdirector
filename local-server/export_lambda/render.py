@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 SPEC_VERSION = 1
 
@@ -632,12 +633,118 @@ def plan(spec, files, probes, caps, workdir, strict=True, fontsdir=None, contain
     return {"argv": argv, "total": t["total"], "warnings": warnings, "srt_text": sidecar,
             "out": out, "size": [W, H]}
 
+def _engine_note(event, engine, reason=None):
+    print("[postblocks] " + json.dumps({"event": event, "engine": engine, "reason": reason}, ensure_ascii=False),
+          file=sys.stderr, flush=True)
+
+def _diff(new, old):
+    for k in ("argv", "total", "warnings", "srt_text", "out", "size"):
+        if new.get(k) != old.get(k):
+            return k
+    for path, text in sorted(new.get("files", {}).items()):
+        try:
+            with open(path, encoding="utf-8") as f:
+                if f.read() != text:
+                    return "file:" + os.path.basename(path)
+        except OSError:
+            return "file:" + os.path.basename(path)
+    for name in ("meme.ass", "subs.ass", "subs.srt"):
+        path = os.path.join(os.path.dirname(old["out"]), name)
+        if os.path.exists(path) and path not in new.get("files", {}):
+            return "file:" + name
+    return None
+
+def plan_select(spec, files, probes, caps, workdir, strict=True, fontsdir=None, container="mp4",
+                caption_fontsdir=None, engine=None, note=None, pipeline=None):
+    note = note or _engine_note
+    try:
+        import postblocks
+        mode = postblocks.engine_of(engine)
+    except Exception as e:
+        note("fallback", engine or "?", "import:%s" % type(e).__name__)
+        mode, postblocks = "legacy", None
+    kw = dict(strict=strict, fontsdir=fontsdir, container=container, caption_fontsdir=caption_fontsdir)
+    if mode == "legacy":
+        if pipeline:
+            note("pipeline_ignored", mode, None)
+        return plan(spec, files, probes, caps, workdir, **kw)
+    if pipeline:
+        try:
+            pipe, custom = postblocks.merge(spec, postblocks.clean_user(pipeline), container)
+        except Exception as e:
+            pipe, custom = None, True
+            why0 = "pipeline:%s" % type(e).__name__
+        else:
+            why0 = None
+        if custom:
+            if mode == "shadow" or why0:
+                note("shadow" if mode == "shadow" else "fallback", mode, why0 or "custom")
+                return plan(spec, files, probes, caps, workdir, **kw)
+            try:
+                new = postblocks.compile_pipeline(pipe, files, probes, caps, workdir, **kw)
+            except Exception as e:
+                note("fallback", mode, "exception:%s" % type(e).__name__)
+                return plan(spec, files, probes, caps, workdir, **kw)
+            for path, text in new["files"].items():
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+            note("used_custom", mode, None)
+            return {k: v for k, v in new.items() if k != "files"}
+    new, why = None, None
+    try:
+        new = postblocks.compile_spec(spec, files, probes, caps, workdir, **kw)
+    except postblocks.PipelineError as e:
+        why = "pipeline:%s" % (str(e).split("：")[0].split(".")[0][:40])
+    except Exception as e:
+        why = "exception:%s" % type(e).__name__
+    old = plan(spec, files, probes, caps, workdir, **kw)
+    if why is None:
+        why = _diff(new, old)
+    if mode == "shadow":
+        note("shadow", mode, why or "same")
+        return old
+    if why is not None:
+        note("fallback", mode, why)
+        return old
+    for path, text in new["files"].items():
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    note("used", mode, None)
+    return {k: v for k, v in new.items() if k != "files"}
+
+def _run_steps(ffmpeg, p):
+    vals = {}
+    for k, st in enumerate(p["steps"]):
+        argv = []
+        for a in st["argv"]:
+            for name, v in vals.items():
+                a = a.replace("@@%s@@" % name, v)
+            argv.append(a)
+        if any("@@" in a for a in argv):
+            raise RenderError("後製積木第 %d 段還有沒填的值" % (k + 1))
+        r = subprocess.run([ffmpeg] + argv, capture_output=True, text=True, timeout=14 * 60, stdin=subprocess.DEVNULL)
+        if r.returncode != 0:
+            raise RenderError("ffmpeg 第 %d 段失敗（%d）：%s" % (k + 1, r.returncode, (r.stderr or "")[-600:]))
+        if st.get("capture") == "loudnorm":
+            m = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", r.stderr or "", re.S)
+            if not m:
+                raise RenderError("量不到響度（loudnorm 沒有回量測值）")
+            got = json.loads(m.group(0))
+            for name in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset"):
+                v = str(got.get(name, ""))
+                if not re.match(r"^-?(\d+(\.\d+)?|inf)$", v):
+                    raise RenderError("響度量測值看不懂：%s" % name)
+                vals[name] = v
+    if not os.path.exists(p["out"]):
+        raise RenderError("ffmpeg 沒有產生成片")
+
 def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fontsdir=None, status=None,
-        container="mp4", caption_fontsdir=None):
+        container="mp4", caption_fontsdir=None, engine=None):
     ffmpeg = ffmpeg or shutil.which("ffmpeg") or "ffmpeg"
     ffprobe = ffprobe or shutil.which("ffprobe") or "ffprobe"
     report = status or (lambda d: None)
     eid = spec.get("id") if isinstance(spec, dict) else None
+    pipeline = spec.get("pipeline") if isinstance(spec, dict) and isinstance(spec.get("pipeline"), list) else None
     try:
         spec = validate(spec)
     except SpecError as e:
@@ -658,12 +765,20 @@ def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fonts
         if spec.get("captions") or spec.get("effects"):
             caps_, effs_, at_ = resolve_meme(spec, files, ffmpeg, timing(spec)["body"])
             spec = dict(spec, captions=caps_, effects=effs_, twist=dict(spec.get("twist") or {}, resolved=at_))
-        p = plan(spec, files, probes, ffmpeg_caps(ffmpeg), workdir, strict=strict, fontsdir=fontsdir,
-                 container=container, caption_fontsdir=caption_fontsdir)
-        r = subprocess.run([ffmpeg] + p["argv"], capture_output=True, text=True, timeout=14 * 60,
-                           stdin=subprocess.DEVNULL)
-        if r.returncode != 0 or not os.path.exists(p["out"]):
-            raise RenderError("ffmpeg 失敗（%d）：%s" % (r.returncode, (r.stderr or "")[-600:]))
+        p = plan_select(spec, files, probes, ffmpeg_caps(ffmpeg), workdir, strict=strict, fontsdir=fontsdir,
+                        container=container, caption_fontsdir=caption_fontsdir, engine=engine, pipeline=pipeline)
+        if p.get("steps"):
+            try:
+                _run_steps(ffmpeg, p)
+            except (RenderError, OSError, subprocess.TimeoutExpired) as e:
+                _engine_note("fallback", "blocks", "steps:%s" % type(e).__name__)
+                p = plan(spec, files, probes, ffmpeg_caps(ffmpeg), workdir, strict=strict, fontsdir=fontsdir,
+                         container=container, caption_fontsdir=caption_fontsdir)
+        if not p.get("steps"):
+            r = subprocess.run([ffmpeg] + p["argv"], capture_output=True, text=True, timeout=14 * 60,
+                               stdin=subprocess.DEVNULL)
+            if r.returncode != 0 or not os.path.exists(p["out"]):
+                raise RenderError("ffmpeg 失敗（%d）：%s" % (r.returncode, (r.stderr or "")[-600:]))
         put(spec["out_bucket"], keys[container], p["out"], "video/" + container)
         if p["srt_text"]:
             put(spec["out_bucket"], keys["srt"], p["srt_text"].encode("utf-8"), "application/x-subrip")

@@ -39,7 +39,7 @@ class DirS3:
             shutil.copyfile(src, dst)
 
 def run(spec, s3_root, work=None, strict=False, ffmpeg=None, ffprobe=None, fontsdir=None, container="mp4",
-        caption_fontsdir=None):
+        caption_fontsdir=None, engine=None):
     s3 = DirS3(s3_root)
 
     def status(d):
@@ -52,7 +52,8 @@ def run(spec, s3_root, work=None, strict=False, ffmpeg=None, ffprobe=None, fonts
     work = work or tempfile.mkdtemp(prefix="export-local-")
     try:
         return render.run(spec, s3.fetch, s3.put, work, ffmpeg=ffmpeg, ffprobe=ffprobe,
-                          strict=strict, status=status, fontsdir=fontsdir, container=container, caption_fontsdir=caption_fontsdir)
+                          strict=strict, status=status, fontsdir=fontsdir, container=container, caption_fontsdir=caption_fontsdir,
+                          engine=engine)
     finally:
         if own:
             shutil.rmtree(work, ignore_errors=True)

@@ -5,7 +5,7 @@ import mimetypes
 import re
 from pathlib import Path
 
-from ..core import (STILL_RUNNING_HINT, Workbench, is_confirmation,
+from ..core import (STILL_RUNNING_HINT, ApiError, Workbench, is_confirmation,
                     poll_post_process, poll_video)
 from .activity import Feed, describe
 from ..core.api import AUDIO_STYLES, PP_POLL_MAX_TRIES, PP_POLL_SLOW
@@ -300,7 +300,9 @@ class Registry:
             "或給 template='meme'（迷因短片：一鏡到底、固定鏡頭、9:16、11–15 秒）＋fields"
             "（setup 前段情境、twist_at 第幾秒反轉、chaos 後段暴走；選填 seconds、resolution＝720p／1080p（預設 720p）、"
             "characters＝角色外觀描述（提示詞裡用到名字就要寫，不然模型不知道長什麼樣子）、extra_negative＝追加的 negative"
-            "（接在內建的後面，內建的刪不掉）、cap_setup、cap_twist、flash_before、style＝meme／memebox）。"
+            "（接在內建的後面，內建的刪不掉）、props＝道具（120 字內，明確寫進提示詞）、visual_cues＝一定要看得見的元素（120 字內）、"
+            "allow_cuts＝允許切鏡頭（預設 false＝一鏡到底）、count_animals（預設 true：characters 寫成「名字: 描述; …」"
+            "就自動加 Only N animals in the entire video）、cap_setup、cap_twist、flash_before、style＝meme／memebox）。"
             "範本的 negative 與「只用環境音」由伺服器寫，報價用 quote_work；回應的 warnings 要看。",
             _obj({"name": {"type": "string", "minLength": 1},
                   "shots": {"type": "array", "items": {"type": "object"}},
@@ -317,7 +319,8 @@ class Registry:
 
         add("twist_detect",
             "量一支成片的反轉點（畫面突然暴走的那一刻，秒數）與閃光的位置。唯讀、不花錢。"
-            "at 是 null＝找不到明顯的反轉，匯出時請用 overrides.twist.at 手動指定。只在桌面版本機模式。",
+            "at 是 null＝沒把握：看 candidates（最多 3 個 {t, score}，第一個是建議），請使用者確認之後用 "
+            "overrides.twist.at 指定。只在桌面版本機模式。",
             _obj({"job_id": {"type": "string"}}, ["job_id"]),
             lambda a: wb.twist(a["job_id"]))
 
@@ -327,6 +330,42 @@ class Registry:
             _obj({"project_id": {"type": "string"}, "job_id": {"type": "string"}, "overrides": {"type": "object"}},
                  ["project_id", "job_id"]),
             lambda a: wb.work_export(a["project_id"], a["job_id"], a.get("overrides")))
+
+        add("blocks_list",
+            "後製積木目錄（唯讀、不花錢）：每一塊的 id、名稱、階段（stage）、必要與否（locked）、"
+            "能不能換順序（sortable，只有 overlay 階段）、參數表，以及 templates（範本的預設組合）。",
+            _obj({}),
+            lambda a: wb.blocks())
+
+        add("pipeline_from_template",
+            "範本的預設積木組合（例如 meme）：回一份 pipeline 陣列，可以直接改開關／順序／參數後交給 "
+            "pipeline_preview／pipeline_export。字卡內容、白閃時間照舊來自作品（create_work 的範本）。",
+            _obj({"template": {"type": "string", "enum": ["meme"]}}, ["template"]),
+            lambda a: {"template": a["template"], "pipeline": (wb.blocks().get("templates") or {}).get(a["template"])})
+
+        add("pipeline_validate",
+            "驗一份積木組合（不匯出、不花錢）：放錯階段、必要的積木被關掉、參數不對都會回錯誤並說明是哪一塊。"
+            "沒錯就回 ok 與整理過的組合。",
+            _obj({"project_id": {"type": "string"}, "job_id": {"type": "string"}, "snapshot": {"type": "object"},
+                  "pipeline": {"type": "array", "items": {"type": "object"}}, "overrides": {"type": "object"}},
+                 ["pipeline"]),
+            lambda a: {"ok": True, "blocks": self._pipeline_dry(a).get("blocks")})
+
+        add("pipeline_preview",
+            "預覽一份積木組合（dry_run：只編譯、不跑 ffmpeg、不下載素材、不花錢）：回 filtergraph、總長、警告、"
+            "每塊積木在成片上的位置（placements）。custom＝true 表示跟範本預設不同。"
+            "給 project_id＋job_id（作品，桌面版）或 snapshot（跟匯出同一份請求，網頁版與桌面版都可以）。",
+            _obj({"project_id": {"type": "string"}, "job_id": {"type": "string"}, "snapshot": {"type": "object"},
+                  "pipeline": {"type": "array", "items": {"type": "object"}}, "overrides": {"type": "object"}}),
+            self._pipeline_dry)
+
+        add("pipeline_export",
+            "照一份積木組合匯出 mp4（桌面版本機，不花錢；網頁版請用 export_request 請導演按匯出）。"
+            "回匯出 id，用 result(export_id) 拿檔案。開關 POSTBLOCKS_ENGINE 不是 blocks 時會照原本的流程匯出（積木的自訂不採用）。",
+            _obj({"project_id": {"type": "string"}, "job_id": {"type": "string"},
+                  "pipeline": {"type": "array", "items": {"type": "object"}}, "overrides": {"type": "object"}},
+                 ["project_id", "job_id", "pipeline"]),
+            lambda a: wb.work_export(a["project_id"], a["job_id"], a.get("overrides"), a["pipeline"]))
 
         add("quote",
             "**只報價，不扣款、不建工作**。同時建一張核准卡（pending）：回 quote_id、金額、付款方，"
@@ -342,9 +381,17 @@ class Registry:
 
         add("request_approval",
             "取得一張報價的核准卡：卡片 id、給人點的連結（approve_url）、付款方、金額、模型、秒數、狀態。"
-            "狀態 pending＝還沒有人核准；approved＝可以 submit_approved；rejected／expired＝重新報價。",
-            _obj({"quote_id": {"type": "string"}, "approval_id": {"type": "string"}}),
-            lambda a: wb.approval_get(a.get("approval_id"), a.get("quote_id")))
+            "狀態 pending＝還沒有人核准；approved＝可以 submit_approved；rejected／expired＝重新報價。"
+            "卡片 24 小時有效，跟上游報價脫鉤：人晚一點才核准也沒關係，送出時報價過期會自動重新報價"
+            "（不超過核准金額才送，漲了卡片退回 pending、note 寫原因，要使用者重新核准）。"
+            "一次報了好幾支：給 quote_ids（2–50 個）合成**一批一張卡**（回 batch id、每一件與總額、一個 approve_url），"
+            "人一次核准全部；之後用 batch_id 查進度，送出還是每一件各自 submit_approved。"
+            "使用者若開了自動核准（預先授權，只有他本人能開），上限內的卡一報價就是 approved（decided_by＝auto:…），"
+            "直接 submit_approved；超過上限的照舊 pending、note 寫原因，要他本人核准。",
+            _obj({"quote_id": {"type": "string"}, "approval_id": {"type": "string"},
+                  "quote_ids": {"type": "array", "items": {"type": "string"}}, "batch_id": {"type": "string"}}),
+            lambda a: (wb.approval_batch(a["quote_ids"]) if a.get("quote_ids") else
+                       wb.approval_get(a.get("approval_id"), a.get("quote_id"), a.get("batch_id"))))
 
         add("status",
             "查一張核准卡或一支影片的進度。**排隊再久都不是失敗**：queued／processing 就繼續查，"
@@ -678,11 +725,13 @@ class Registry:
                 "驗一支影片：給 1–4 格畫面（data:image/jpeg;base64,…，同一支影片依時間取）與預期角色，"
                 "回 verdict（subjects_ok、colors_ok、defects、overall 1–10）與建議評分。**會花錢**："
                 "付款方跟那一支影片一樣，本站點數件照實收扣點（每支約 0.3 點），自帶金鑰件扣自己的 AppleToken 額度。"
-                "同一支、同樣畫面重送回同一筆結果，不重扣。",
+                "同一支、同樣畫面重送回同一筆結果，不重扣。"
+                "作品是允許切鏡頭的（迷因範本 fields.allow_cuts=true）才帶 allow_cuts=true：切鏡頭不算瑕疵；預設不帶。",
                 _obj({"job_id": {"type": "string"},
                       "frames": {"type": "array", "items": {"type": "string"}},
-                      "expect": {"type": "array", "items": {"type": "object"}}}, ["job_id", "frames"]),
-                lambda a: wb.qc(a["job_id"], a.get("frames"), a.get("expect")), spends=True)
+                      "expect": {"type": "array", "items": {"type": "object"}},
+                      "allow_cuts": {"type": "boolean"}}, ["job_id", "frames"]),
+                lambda a: wb.qc(a["job_id"], a.get("frames"), a.get("expect"), a.get("allow_cuts") is True), spends=True)
 
             add("qc_rate",
                 "把一支影片的評分寫回 AppleToken（/v2/ratings；同一件重評會覆蓋）。score 1–5；"
@@ -695,9 +744,10 @@ class Registry:
             add("submit_approved",
                 "送出一張**使用者已經核准**的核准卡（quote 建的那張）。**這一步會扣款。**"
                 "只收 approved 的卡；卡片只能送一次；帶 expect_amount 時金額要跟卡片一致，對不上就拒絕。"
+                "報價過期會先自動重新報價（付款方不變）；漲價就不送、回 repriced，卡片退回 pending 等使用者重新核准。"
                 "被拒或失敗都**不要自動重試**：重做請重新 quote、讓使用者再核准一次。",
                 _obj({"approval_id": {"type": "string"}, "expect_amount": {"type": "string"}}, ["approval_id"]),
-                lambda a: wb.approval_submit(a["approval_id"], a.get("expect_amount")), spends=True)
+                lambda a: _submit_approved(wb, a), spends=True)
 
             add("video_confirm",
                 "把一張確認單正式送出。**這一步會扣款。**"
@@ -997,6 +1047,17 @@ class Registry:
 
     def _price_of(self, quote_id):
         return self._quoted.get(quote_id, UNKNOWN_COST)
+
+    def _pipeline_dry(self, a):
+        wb = self.wb
+        if isinstance(a.get("snapshot"), dict):
+            snap = dict(a["snapshot"])
+            if a.get("pipeline") is not None:
+                snap["pipeline"] = a["pipeline"]
+            return wb.pipeline_preview(snap)
+        if not (a.get("project_id") and a.get("job_id")):
+            raise ValueError("要給 snapshot，或 project_id＋job_id")
+        return wb.work_export(a["project_id"], a["job_id"], a.get("overrides"), a.get("pipeline"), dry_run=True)
 
     def _h_status(self, a):
         out = {}
@@ -1312,6 +1373,14 @@ class Registry:
                               {"of": a["job_id"], "via": "mcp"})
         self.ledger.record_spend("post-process", self.session, ref=pid)
         return data
+
+def _submit_approved(wb, a):
+    try:
+        return wb.approval_submit(a["approval_id"], a.get("expect_amount"))
+    except ApiError as e:
+        if e.status == 409 and isinstance(e.payload, dict) and e.payload.get("repriced"):
+            return dict(e.payload)
+        raise
 
 _SPENDING_NAMES = ("video_confirm", "submit_approved", "image_generate", "audio_confirm", "post_process",
                    "shots_confirm", "character_angles", "storyboard_ai",
