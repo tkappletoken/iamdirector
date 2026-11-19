@@ -29,6 +29,9 @@ const SERVER_FILES = [
   'upstream.py', 'studio_store.py', 'studio_tools.py', 'storyboard.py', 'qc.py', 'page_strip.py',
   'export_spec.py', 'export_lambda/render.py', 'export_lambda/twist.py', 'scripts/export_local.py', 'templates.py',
   'cast_refs.py', 'shot_controls.py',
+  'takes.py',
+  'filming/__init__.py', 'filming/camera_moves.py', 'filming/contract.py', 'filming/inbox.py',
+  'filming/qc_report.py', 'filming/registry.py', 'filming/scene.py', 'filming/ui_actions.py', 'filming/ui_schema.py',
   'ui2.html',
   'previs/editor.js', 'previs/core.js', 'previs/vendor/three.module.min.js', 'previs/vendor/OrbitControls.js',
   'previs/vendor/TransformControls.js', 'previs/vendor/mp4-muxer.mjs',
@@ -125,7 +128,10 @@ function smoke(pyDir, serverDir) {
   execFileSync(py, ['-I', '-B', '-c',
     'import sys; sys.path[:0]=[sys.argv[1]+"/local", sys.argv[1]]; import studio_local; print("ok")'
     // studio_local loads these lazily (export, cast refs): import them here so a missing file fails the build
-    + '; import postblocks, cast_refs, shot_controls; print("lazy modules ok")', serverDir],
+    + '; import postblocks, cast_refs, shot_controls, takes, filming'
+    + '; from filming import camera_moves, contract, inbox, qc_report, registry, scene, ui_actions, ui_schema'
+    + '; assert filming.__file__, "filming/__init__.py missing (namespace package)"'
+    + '; print("lazy modules ok")', serverDir],
   { stdio: 'inherit' });
   execFileSync(py, ['-I', '-B', '-c', [
     'import sys; sys.path.insert(0, sys.argv[1] + "/cli")',
