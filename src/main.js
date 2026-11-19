@@ -65,6 +65,9 @@ app.on('open-url', (e, url) => { e.preventDefault(); onProtocolUrl(url); });
 
 const pendingLogin = extLogin.createPending();
 const approvals = deepLink.createInbox();
+const approvalDelivery = deepLink.createDelivery({
+  inbox: approvals, isAppPage: (u) => policy.isAppUrl(u, START_URL), trace,
+});
 let started = false;
 let localKind = null;
 
@@ -116,7 +119,7 @@ function createWindow() {
   win.on('focus', () => win.flashFrame(false));
 
   guardContents(win.webContents);
-  win.webContents.on('did-finish-load', deliverApproval);
+  approvalDelivery.attach(win.webContents);
   win.webContents.on('will-prevent-unload', (event) => {
     const n = liveJobs; liveJobs = 0;
     const r = dialog.showMessageBoxSync(win, {
@@ -230,15 +233,6 @@ function onProtocolUrl(url) {
   protocolQueue = protocolQueue.then(() => handleProtocolUrl(url)).catch(() => {});
 }
 
-function deliverApproval() {
-  if (!win || win.isDestroyed() || win.webContents.isLoading()) return;
-  if (!policy.isAppUrl(win.webContents.getURL(), START_URL)) return;
-  const id = approvals.take();
-  if (!id) return;
-  trace('approve-link-delivered', {});
-  win.webContents.send('desktop:open-approval', id);
-}
-
 async function handleProtocolUrl(url) {
   const apv = deepLink.parseApprove(url);
   if (apv) {
@@ -246,7 +240,7 @@ async function handleProtocolUrl(url) {
     approvals.put(apv.id);
     if (!started) return;
     bringToFront();
-    deliverApproval();
+    if (win) approvalDelivery.deliver(win.webContents);
     return;
   }
   const cb = extLogin.parseCallback(url);

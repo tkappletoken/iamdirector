@@ -96,3 +96,58 @@ test('冷啟動：放太久的連結丟掉，不在之後的換頁突然打開',
   t += d.INBOX_TTL_MS + 1;
   assert.equal(box.take(), null);
 });
+
+// 假的 webContents：事件順序照 Electron 45.3.2 實測——did-finish-load 當下 isLoading() 還是 true，
+// did-stop-loading 時才是 false（0.2.12 VM：冷啟動時連結先進暫存區，掛在 did-finish-load 上永遠送不出去）
+function fakeWc(url) {
+  const EventEmitter = require('node:events');
+  const wc = new EventEmitter();
+  let loading = false;
+  wc.sent = [];
+  wc.isDestroyed = () => false;
+  wc.isLoading = () => loading;
+  wc.getURL = () => url;
+  wc.send = (ch, id) => wc.sent.push([ch, id]);
+  wc.load = () => { loading = true; wc.emit('did-start-loading'); wc.emit('did-finish-load'); loading = false; wc.emit('did-stop-loading'); };
+  wc.startLoading = () => { loading = true; };
+  return wc;
+}
+const APP = 'http://127.0.0.1:5000/';
+const isAppPage = (u) => u.startsWith(APP);
+
+test('冷啟動：連結在頁面載入中到達，載完才送到頁面（只送一次）', () => {
+  const box = d.createInbox(() => 1000);
+  const dl = d.createDelivery({ inbox: box, isAppPage });
+  const wc = fakeWc(APP);
+  dl.attach(wc);
+  wc.startLoading();
+  box.put(ID16);
+  assert.equal(dl.deliver(wc), false, '載入中不送');
+  wc.load();
+  assert.deepEqual(wc.sent, [['desktop:open-approval', ID16]]);
+  wc.load();
+  assert.equal(wc.sent.length, 1, '之後換頁不再送');
+});
+
+test('App 已開著：連結到了立刻送', () => {
+  const box = d.createInbox(() => 1000);
+  const dl = d.createDelivery({ inbox: box, isAppPage });
+  const wc = fakeWc(APP);
+  dl.attach(wc);
+  box.put(ID32);
+  assert.equal(dl.deliver(wc), true);
+  assert.deepEqual(wc.sent, [['desktop:open-approval', ID32]]);
+});
+
+test('停在不是 App 的頁面（離線頁、登入等待頁）先不送，留到回 App 頁', () => {
+  const box = d.createInbox(() => 1000);
+  const dl = d.createDelivery({ inbox: box, isAppPage });
+  const wc = fakeWc('data:text/html,offline');
+  dl.attach(wc);
+  box.put(ID16);
+  wc.load();
+  assert.equal(wc.sent.length, 0);
+  wc.getURL = () => APP;
+  wc.load();
+  assert.deepEqual(wc.sent, [['desktop:open-approval', ID16]]);
+});
