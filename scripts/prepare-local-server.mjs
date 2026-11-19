@@ -27,10 +27,17 @@ const TRIPLE = {
 const SERVER_FILES = [
   'local/studio_local.py', 'local/sqlite_store.py',
   'upstream.py', 'studio_store.py', 'studio_tools.py', 'storyboard.py', 'qc.py', 'page_strip.py',
-  'export_spec.py', 'export_lambda/render.py', 'scripts/export_local.py',
+  'export_spec.py', 'export_lambda/render.py', 'export_lambda/twist.py', 'scripts/export_local.py', 'templates.py',
   'ui2.html',
   'previs/editor.js', 'previs/core.js', 'previs/vendor/three.module.min.js', 'previs/vendor/OrbitControls.js',
   'previs/vendor/TransformControls.js', 'previs/vendor/mp4-muxer.mjs',
+  'approvals.py',
+  'cli/appletoken/__init__.py',
+  'cli/appletoken/core/__init__.py', 'cli/appletoken/core/api.py', 'cli/appletoken/core/errors.py',
+  'cli/appletoken/core/http.py', 'cli/appletoken/core/poll.py', 'cli/appletoken/core/preflight.py',
+  'cli/appletoken/core/redact.py', 'cli/appletoken/core/session.py',
+  'cli/appletoken/mcp/__init__.py', 'cli/appletoken/mcp/activity.py', 'cli/appletoken/mcp/tools.py',
+  'fonts/NotoSansTC-Bold.otf', 'fonts/OFL.txt', 'fonts/README.md',
 ];
 const PRUNE = ['test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'lib2to3', 'pydoc_data', 'unittest/test'];
 
@@ -103,6 +110,17 @@ function smoke(pyDir, serverDir) {
   execFileSync(py, ['-I', '-B', '-c',
     'import sys; sys.path[:0]=[sys.argv[1]+"/local", sys.argv[1]]; import studio_local; print("ok")', serverDir],
   { stdio: 'inherit' });
+  execFileSync(py, ['-I', '-B', '-c', [
+    'import sys; sys.path.insert(0, sys.argv[1] + "/cli")',
+    'from appletoken.core import Client; from appletoken.core.session import Session',
+    'from appletoken.mcp import tools as t',
+    's = Session("x" * 40, base_url="http://127.0.0.1:1", kind="token", register=False)',
+    'r = t.Registry(s, allow_spend=True, remote=True, local=True, client=Client(s))',
+    'need = {"create_work", "quote", "request_approval", "submit_approved", "status", "result"}',
+    'assert need <= set(r.names()), need - set(r.names())',
+    'assert "appletoken.mcp.server" not in sys.modules and "mcp" not in sys.modules',
+    'print("mcp tools ok:", len(r.names()))',
+  ].join('\n'), serverDir], { stdio: 'inherit' });
 }
 
 if (process.argv.includes('--sync')) { syncCommitted(); process.exit(0); }

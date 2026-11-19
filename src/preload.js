@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('iamdirectorDesktop', Object.freeze({
     kind: String(kind), text: String(text == null ? '' : text).slice(0, 200),
   }),
   onOpenKey: (fn) => { ipcRenderer.on('desktop:open-key', () => { try { fn(); } catch (_) {} }); },
+  onOpenApproval: (fn) => {
+    ipcRenderer.on('desktop:open-approval', (_e, id) => { try { fn(String(id)); } catch (_) {} });
+  },
   takeStartAction: () => ipcRenderer.invoke('desktop:take-start-action'),
   cloud: Object.freeze({
     status: () => ipcRenderer.invoke('desktop:cloud-status'),

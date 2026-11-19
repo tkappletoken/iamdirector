@@ -1,4 +1,5 @@
 import json
+import secrets
 import re
 
 MAX_PROJECTS = 200
@@ -164,3 +165,47 @@ def kv_delete(conn, uid, key):
     with conn.cursor() as cur:
         cur.execute("DELETE FROM studio_kv WHERE tenant_id = %s AND key = %s", (uid, key))
         return {"key": key, "deleted": cur.rowcount > 0}
+
+WORK_SHOTS_MAX = 30
+WORK_PROMPT_MAX = 2000
+
+def board_key(pid):
+    return "sb_" + str(pid).replace("-", "")[:29]
+
+def normalize_shots(shots):
+    if not isinstance(shots, list) or not 1 <= len(shots) <= WORK_SHOTS_MAX:
+        raise StoreError(400, "bad_shots", "分鏡要有 1–%d 鏡" % WORK_SHOTS_MAX)
+    out = []
+    for i, s in enumerate(shots, 1):
+        s = s if isinstance(s, dict) else {"prompt": s}
+        p = s.get("prompt")
+        if not isinstance(p, str) or not p.strip() or len(p) > WORK_PROMPT_MAX:
+            raise StoreError(400, "bad_shots", "第 %d 鏡的 prompt 要有 1–%d 個字" % (i, WORK_PROMPT_MAX))
+        sec = s.get("seconds")
+        if sec not in (None, ""):
+            if isinstance(sec, bool) or not isinstance(sec, (int, float)) or not 1 <= sec <= 30:
+                raise StoreError(400, "bad_shots", "第 %d 鏡的 seconds 要是 1–30 的數字" % i)
+        out.append({"sid": "s%s%02d" % (secrets.token_hex(5), i), "prompt": p.strip(),
+                    "seconds": sec if sec not in (None, "") else None, "pick": True})
+    return out
+
+def meta_key(pid):
+    return "tp_" + str(pid).replace("-", "")[:29]
+
+def create_work(conn, uid, name, shots, meta=None):
+    lst = normalize_shots(shots)
+    proj = create_project(conn, uid, name)
+    kv_put(conn, uid, board_key(proj["id"]), lst)
+    out = {"project_id": proj["id"], "name": proj["name"], "shots": len(lst), "board_key": board_key(proj["id"])}
+    if meta:
+        kv_put(conn, uid, meta_key(proj["id"]), meta)
+        out["template"] = meta.get("template")
+    return out
+
+def work_meta(conn, uid, pid):
+    _check_pid(pid)
+    got = kv_get(conn, uid, meta_key(pid))
+    v = got.get("value") if isinstance(got, dict) else None
+    if not isinstance(v, dict) or not isinstance(v.get("template"), str):
+        raise StoreError(404, "no_template", "這部作品不是用範本建的（沒有範本的送件設定）")
+    return v

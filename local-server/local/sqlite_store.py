@@ -34,6 +34,38 @@ CREATE TABLE IF NOT EXISTS studio_kv (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   PRIMARY KEY (tenant_id, key)
 );
+-- 核准卡與花費上限（P1，跟正式站 034_approvals 同名同欄位；SQL 在根目錄 approvals.py，兩邊共用）
+CREATE TABLE IF NOT EXISTS approval_cards (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  charge_id TEXT,
+  quote_ref TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'video',
+  payer TEXT NOT NULL,
+  points TEXT,
+  upstream_cost TEXT,
+  summary JSONB NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  token_id TEXT,
+  job_id TEXT,
+  error TEXT,
+  expires_at TEXT NOT NULL,
+  decided_at TEXT,
+  submitted_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS user_spend_limits (
+  user_id TEXT PRIMARY KEY,
+  per_job_points TEXT, daily_points TEXT, per_job_upstream TEXT, daily_upstream TEXT,
+  updated_at TEXT
+);
+-- 本機報價（以前只放在程序記憶體 st.quotes）：App 重開之後核准卡還送得出去
+CREATE TABLE IF NOT EXISTS local_quotes (
+  quote_id TEXT PRIMARY KEY,
+  payload JSONB NOT NULL,
+  upstream_cost TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 """
 
 sqlite3.register_converter("JSONB", lambda b: json.loads(b.decode("utf-8")))

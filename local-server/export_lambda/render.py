@@ -200,6 +200,11 @@ def validate(spec):
         if t:
             out["titles"][k] = {"text": t, "seconds": _num(v.get("seconds", 3), "字卡秒數", 1, 8)}
 
+    import twist as _tw
+    try:
+        out.update(_tw.clean_meme(spec))
+    except _tw.TwistError as e:
+        raise SpecError(str(e)) from None
     if timing(out)["total"] > MAX_TOTAL:
         raise SpecError("整部超過 %d 分鐘" % (MAX_TOTAL // 60))
     return out
@@ -244,6 +249,116 @@ def _ass_text(t):
     return t.replace("\\", "＼").replace("{", "｛").replace("}", "｝").replace("\n", "\\N")
 
 FONT = "WenQuanYi Zen Hei"
+
+MEME_FONT = "Noto Sans TC"
+MEME_FONT_FILE = "NotoSansTC-Bold.otf"
+CAPTION_MAX, EFFECT_MAX = 20, 10
+_CMAP = {}
+
+def font_chars(path):
+    if path in _CMAP:
+        return _CMAP[path]
+    import struct
+    with open(path, "rb") as f:
+        data = f.read()
+    num = struct.unpack(">H", data[4:6])[0]
+    off = None
+    for i in range(num):
+        tag, _c, o, _l = struct.unpack(">4sIII", data[12 + 16 * i:28 + 16 * i])
+        if tag == b"cmap":
+            off = o
+    if off is None:
+        raise RenderError("字型檔沒有 cmap：%s" % os.path.basename(path))
+    n = struct.unpack(">H", data[off + 2:off + 4])[0]
+    subs = []
+    for i in range(n):
+        pid, eid, so = struct.unpack(">HHI", data[off + 4 + 8 * i:off + 12 + 8 * i])
+        subs.append((pid, eid, off + so))
+    chars = set()
+    for _pid, _eid, so in subs:
+        fmt = struct.unpack(">H", data[so:so + 2])[0]
+        if fmt == 12:
+            ng = struct.unpack(">I", data[so + 12:so + 16])[0]
+            for g in range(ng):
+                a, b, _ = struct.unpack(">III", data[so + 16 + 12 * g:so + 28 + 12 * g])
+                chars.update(range(a, b + 1))
+        elif fmt == 4:
+            seg = struct.unpack(">H", data[so + 6:so + 8])[0] // 2
+            ends = struct.unpack(">%dH" % seg, data[so + 14:so + 14 + 2 * seg])
+            starts = struct.unpack(">%dH" % seg, data[so + 16 + 2 * seg:so + 16 + 4 * seg])
+            for a, b in zip(starts, ends):
+                if a != 0xFFFF:
+                    chars.update(range(a, b + 1))
+    _CMAP[path] = chars
+    return chars
+
+def meme_font(fontsdir):
+    path = os.path.join(fontsdir or "", MEME_FONT_FILE)
+    if not fontsdir or not os.path.isfile(path):
+        raise RenderError("字卡字型找不到：%s（要 fonts/%s，不改用別的字型）" % (path, MEME_FONT_FILE))
+    return path
+
+def check_caption_chars(captions, font_path):
+    have = font_chars(font_path)
+    miss = sorted({c for q in captions for c in q["text"] if not c.isspace() and ord(c) not in have})
+    if miss:
+        raise RenderError("字卡裡有字型沒有的字：%s（字型 %s 只含繁中常用字與標點；換個寫法，或換用完整字型）"
+                          % ("".join(miss[:20]), MEME_FONT_FILE))
+
+def resolve_meme(spec, files, ffmpeg, body, env=None):
+    import twist as tw
+    caps, effs = spec.get("captions") or [], spec.get("effects") or []
+    tcfg = spec.get("twist") or {}
+    at = tcfg.get("at")
+    if at is None and tcfg.get("auto") and (caps or effs) and spec.get("video"):
+        v = spec["video"][0]
+        try:
+            got = tw.detect(ffmpeg, files[v["key"]], env=env)
+        except tw.TwistError as e:
+            raise RenderError("偵測反轉點失敗：%s" % e) from None
+        if got.get("at") is not None:
+            at = round(got["at"] - v["in"], 3)
+    try:
+        out_c = [dict(q, start=tw.resolve(q["start"], at, body), end=tw.resolve(q["end"], at, body)) for q in caps]
+        out_e = [dict(e, start=tw.resolve(e["start"], at, body), end=tw.resolve(e["end"], at, body)) for e in effs]
+    except tw.TwistError as e:
+        raise RenderError(str(e)) from None
+    return ([q for q in out_c if q["end"] > q["start"]], [e for e in out_e if e["end"] > e["start"]], at)
+
+def meme_ass(captions, W, H):
+    def size(q):
+        return max(18, int(H * (0.055 if q.get("size") == "xl" else 0.041)))
+    base = max(18, int(H * 0.041))
+    head = ("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\nWrapStyle: 0\n"
+            "ScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            "Style: Meme,%s,%d,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,%d,0,8,%d,%d,%d,1\n"
+            "Style: MemeBox,%s,%d,&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,%d,0,8,%d,%d,%d,1\n\n"
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+            % (W, H, MEME_FONT, base, max(2, round(H / 240)), int(W * 0.06), int(W * 0.06), int(H * 0.12),
+               MEME_FONT, base, max(4, round(H / 110)), int(W * 0.06), int(W * 0.06), int(H * 0.12)))
+    rows = []
+    for q in captions:
+        st = "MemeBox" if q.get("style") == "memebox" else "Meme"
+        pos = q.get("pos") or "top"
+        if isinstance(pos, dict):
+            tag = "{\\an5\\pos(%d,%d)\\fs%d}" % (W // 2, int(H * float(pos["y"])), size(q))
+        else:
+            an = {"top": 8, "middle": 5, "bottom": 2}[pos]
+            mv = {"top": int(H * 0.12), "middle": 0, "bottom": int(H * 0.2)}[pos]
+            tag = "{\\an%d\\fs%d}" % (an, size(q))
+            rows.append("Dialogue: 3,%s,%s,%s,,0,0,%d,,%s%s" % (_ts(q["start"], "."), _ts(q["end"], "."), st, mv, tag,
+                                                                _ass_text(q["text"])))
+            continue
+        rows.append("Dialogue: 3,%s,%s,%s,,0,0,0,,%s%s" % (_ts(q["start"], "."), _ts(q["end"], "."), st, tag,
+                                                            _ass_text(q["text"])))
+    return head + "\n".join(rows) + ("\n" if rows else "")
+
+def flash_filters(effects):
+    return ["drawbox=x=0:y=0:w=iw:h=ih:color=white@1:t=fill:enable='between(t,%s,%s)'" % (e["start"], e["end"])
+            for e in effects if e.get("type") == "white_flash"]
 
 def title_rows(titles, body):
     out = []
@@ -378,7 +493,7 @@ def webm_codec_args(height):
 def _esc(path):
     return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
-def plan(spec, files, probes, caps, workdir, strict=True, fontsdir=None, container="mp4"):
+def plan(spec, files, probes, caps, workdir, strict=True, fontsdir=None, container="mp4", caption_fontsdir=None):
     W, H = frame_size(spec["format"]["aspect"], spec["format"]["resolution"])
     fps = spec["format"]["fps"]
     t = timing(spec)
@@ -433,6 +548,24 @@ def plan(spec, files, probes, caps, workdir, strict=True, fontsdir=None, contain
     if pad > 0.001:
         graph.append("[vcat]tpad=stop_mode=add:stop_duration=%s:color=black[vbody]" % pad)
         last = "vbody"
+    meme_caps, meme_raw_fx = spec.get("captions") or [], spec.get("effects") or []
+    if any(not isinstance(x.get(k), float) for x in meme_caps + meme_raw_fx for k in ("start", "end")):
+        raise RenderError("字卡／特效的時間還沒解析成秒數（要先跑 resolve_meme）")
+    meme_fx = flash_filters(meme_raw_fx)
+    if meme_fx:
+        graph.append("[%s]%s[vfx]" % (last, ",".join(meme_fx)))
+        last = "vfx"
+    if meme_caps:
+        if not caps.get("libass"):
+            raise RenderError("這支 ffmpeg 沒有 libass（subtitles 濾鏡），燒不了迷因字卡")
+        cdir = caption_fontsdir or os.environ.get("CAPTION_FONTS_DIR") or fontsdir
+        fpath = meme_font(cdir)
+        check_caption_chars(meme_caps, fpath)
+        mpath = os.path.join(workdir, "meme.ass")
+        with open(mpath, "w", encoding="utf-8") as f:
+            f.write(meme_ass(meme_caps, W, H))
+        graph.append("[%s]subtitles=filename='%s':fontsdir='%s'[vmeme]" % (last, _esc(mpath), _esc(cdir)))
+        last = "vmeme"
     if t["card"]:
         graph.append("color=c=black:s=%dx%d:r=%d:d=%s,format=yuv420p,setsar=1[vcard]" % (W, H, fps, t["card"]))
         graph.append("[%s][vcard]concat=n=2:v=1:a=0[vall]" % last)
@@ -500,7 +633,7 @@ def plan(spec, files, probes, caps, workdir, strict=True, fontsdir=None, contain
             "out": out, "size": [W, H]}
 
 def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fontsdir=None, status=None,
-        container="mp4"):
+        container="mp4", caption_fontsdir=None):
     ffmpeg = ffmpeg or shutil.which("ffmpeg") or "ffmpeg"
     ffprobe = ffprobe or shutil.which("ffprobe") or "ffprobe"
     report = status or (lambda d: None)
@@ -522,8 +655,11 @@ def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fonts
             fetch(spec["src_bucket"], key, path)
             files[key] = path
             probes[key] = probe(ffprobe, path)
+        if spec.get("captions") or spec.get("effects"):
+            caps_, effs_, at_ = resolve_meme(spec, files, ffmpeg, timing(spec)["body"])
+            spec = dict(spec, captions=caps_, effects=effs_, twist=dict(spec.get("twist") or {}, resolved=at_))
         p = plan(spec, files, probes, ffmpeg_caps(ffmpeg), workdir, strict=strict, fontsdir=fontsdir,
-                 container=container)
+                 container=container, caption_fontsdir=caption_fontsdir)
         r = subprocess.run([ffmpeg] + p["argv"], capture_output=True, text=True, timeout=14 * 60,
                            stdin=subprocess.DEVNULL)
         if r.returncode != 0 or not os.path.exists(p["out"]):

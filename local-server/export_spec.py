@@ -1,4 +1,12 @@
+import os
 import re
+import sys
+
+try:
+    import twist as _twist
+except ImportError:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "export_lambda"))
+    import twist as _twist
 
 ASPECTS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
 RESOLUTIONS = ("480p", "720p", "1080p")
@@ -41,7 +49,8 @@ def _str(v, name, limit):
 def normalize(body):
     if not isinstance(body, dict):
         raise ExportError(400, "要是 JSON 物件")
-    allowed = {"title", "format", "video", "audio", "cues", "subtitles", "disclosure", "titles"}
+    allowed = {"title", "format", "video", "audio", "cues", "subtitles", "disclosure", "titles",
+               "captions", "effects", "twist"}
     bad = sorted(k for k in body if k not in allowed)
     if bad:
         raise ExportError(400, "匯出不收這些欄位：%s" % "、".join(bad))
@@ -153,6 +162,10 @@ def normalize(body):
                          "seconds": _num(d.get("seconds", 4), "片尾秒數", 2, 8)}
     if out["disclosure"]["on"] and not out["disclosure"]["text"]:
         raise ExportError(400, "AI 揭露片尾開著，但沒有文字")
+    try:
+        out.update(_twist.clean_meme(body))
+    except _twist.TwistError as e:
+        raise ExportError(400, str(e)) from None
     return out
 
 def build_spec(uid, eid, req, video_keys, video_models, audio_keys, src_bucket, out_bucket):
@@ -181,6 +194,9 @@ def build_spec(uid, eid, req, video_keys, video_models, audio_keys, src_bucket, 
             "disclosure": {"on": req["disclosure"]["on"], "text": req["disclosure"]["text"],
                            "seconds": req["disclosure"]["seconds"], "models": models},
             "models": models}
+    for k in ("captions", "effects", "twist"):
+        if req.get(k):
+            spec[k] = req[k]
     return spec
 
 def _ref(v):
