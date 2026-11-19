@@ -27,7 +27,7 @@ const TRIPLE = {
 const SERVER_FILES = [
   'local/studio_local.py', 'local/sqlite_store.py',
   'upstream.py', 'studio_store.py', 'studio_tools.py', 'storyboard.py', 'qc.py', 'page_strip.py',
-  'export_spec.py', 'export_lambda/render.py', 'scripts/export_local.py',
+  'export_spec.py', 'export_lambda/render.py', 'export_lambda/twist.py', 'scripts/export_local.py', 'templates.py',
   'ui2.html',
   'previs/editor.js', 'previs/core.js', 'previs/vendor/three.module.min.js', 'previs/vendor/OrbitControls.js',
   'previs/vendor/TransformControls.js', 'previs/vendor/mp4-muxer.mjs',
@@ -37,6 +37,7 @@ const SERVER_FILES = [
   'cli/appletoken/core/http.py', 'cli/appletoken/core/poll.py', 'cli/appletoken/core/preflight.py',
   'cli/appletoken/core/redact.py', 'cli/appletoken/core/session.py',
   'cli/appletoken/mcp/__init__.py', 'cli/appletoken/mcp/activity.py', 'cli/appletoken/mcp/tools.py',
+  'fonts/NotoSansTC-Bold.otf', 'fonts/OFL.txt', 'fonts/README.md',
 ];
 const PRUNE = ['test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'lib2to3', 'pydoc_data', 'unittest/test'];
 
