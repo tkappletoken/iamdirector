@@ -12,6 +12,23 @@ test('核准連結：iamdirector://approve/<apv_ id> 取得 id', () => {
   assert.deepEqual(d.parseApprove('iamdirector://approve/' + ID32), { id: ID32 });
 });
 
+test('核准連結：剛好一個結尾斜線也認（有些 Windows 瀏覽器會補），兩個以上不認', () => {
+  assert.deepEqual(d.parseApprove('iamdirector://approve/' + ID16 + '/'), { id: ID16 });
+  assert.deepEqual(d.parseApprove('iamdirector://approve/' + ID32 + '/'), { id: ID32 });
+  for (const u of [
+    'iamdirector://approve/' + ID16 + '//',
+    'iamdirector://approve/' + ID16 + '///',
+    'iamdirector://approve/' + ID16 + '/?x=1',
+    'iamdirector://approve/' + ID16 + '/#x',
+    'iamdirector://approve/' + ID16 + '/ ',
+    'iamdirector://approve//' + ID16,
+    'iamdirector://approve//' + ID16 + '/',
+    'iamdirector://approve/apv_' + 'a'.repeat(15) + '/',
+    'iamdirector://approve/' + ID16 + '/.',
+    'iamdirector://approve/' + ID16 + '/..',
+  ]) assert.equal(d.parseApprove(u), null, u);
+});
+
 test('核准連結：格式不對一律不認', () => {
   for (const u of [
     'iamdirector://approve/apv_' + 'a'.repeat(15),
@@ -19,7 +36,6 @@ test('核准連結：格式不對一律不認', () => {
     'iamdirector://approve/APV_' + 'a'.repeat(16),
     'iamdirector://approve/apv-' + 'a'.repeat(16),
     'iamdirector://approve/apv_' + 'a'.repeat(15) + '_',
-    'iamdirector://approve/' + ID16 + '/',
     'iamdirector://approve/' + ID16 + '/x',
     'iamdirector://approve/x/' + ID16,
     'iamdirector://approve/../' + ID16,

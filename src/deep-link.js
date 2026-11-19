@@ -7,12 +7,14 @@ const INBOX_TTL_MS = 10 * 60 * 1000;
 function parseApprove(url) {
   if (typeof url !== 'string' || url.length > PREFIX.length + 40) return null;
   if (!url.startsWith(PREFIX)) return null;
-  const id = url.slice(PREFIX.length);
+  const rest = url.slice(PREFIX.length);
+  const slash = rest.endsWith('/') ? '/' : '';
+  const id = rest.slice(0, rest.length - slash.length);
   if (!ID.test(id)) return null;
   let u;
   try { u = new URL(url); } catch (_) { return null; }
   if (u.protocol !== 'iamdirector:' || u.hostname !== 'approve' || u.username || u.password || u.port
-    || u.search || u.hash || u.pathname !== '/' + id) return null;
+    || u.search || u.hash || u.pathname !== '/' + id + slash) return null;
   return { id };
 }
 
