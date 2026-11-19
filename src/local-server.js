@@ -4,7 +4,7 @@ const path = require('node:path');
 
 const READY_TIMEOUT_MS = 15000;
 
-function resolveRuntime({ isPackaged, resourcesPath, env, platform }) {
+function resolveRuntime({ isPackaged, resourcesPath, env, platform, appRoot, arch, exists }) {
   if (isPackaged) {
     const py = platform === 'win32'
       ? path.join(resourcesPath, 'python', 'python.exe')
@@ -15,7 +15,15 @@ function resolveRuntime({ isPackaged, resourcesPath, env, platform }) {
   const dir = env.IAMDIRECTOR_LOCAL_SERVER_DIR;
   if (!dir) throw new Error('開發模式要設 IAMDIRECTOR_LOCAL_SERVER_DIR（指向 iamdirector repo）');
   return { python: env.IAMDIRECTOR_PYTHON || 'python3', server: path.join(dir, 'local', 'studio_local.py'),
-    ffmpegDir: env.IAMDIRECTOR_FFMPEG_DIR || null };
+    ffmpegDir: env.IAMDIRECTOR_FFMPEG_DIR || devFfmpegDir({ appRoot, arch, platform, exists }) };
+}
+
+// Dev mode without IAMDIRECTOR_FFMPEG_DIR: use the bundled LGPL build in vendor/ if it exists,
+// otherwise the server falls back to PATH (e.g. Homebrew ffmpeg, which has no libass).
+function devFfmpegDir({ appRoot, arch, platform, exists }) {
+  if (!appRoot || !arch || !exists) return null;
+  const dir = path.join(appRoot, 'vendor', 'ffmpeg-' + arch);
+  return exists(path.join(dir, platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')) ? dir : null;
 }
 
 function start({ spawn, runtime, dataDir, keystore, gatewayBase, onExit, openh264Dir }) {

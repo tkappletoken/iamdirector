@@ -751,6 +751,7 @@ async function startLocal() {
   const keystore = keystoreMod.create({ safeStorage, fs, userData: app.getPath('userData'), platform: process.platform });
   const runtime = localServer.resolveRuntime({
     isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, env: process.env, platform: process.platform,
+    appRoot: app.getAppPath(), arch: process.arch, exists: fs.existsSync,
   });
   localRuntime = runtime;
   const oh = openh264.applies({ fs, platform: process.platform, ffmpegDir: runtime.ffmpegDir })
