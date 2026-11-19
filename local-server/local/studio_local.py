@@ -52,6 +52,7 @@ import sqlite_store
 import storyboard
 import studio_store
 import studio_tools
+import takes
 import upstream
 from upstream import ConsoleError, Cred, retry_field, with_hint
 
@@ -127,9 +128,12 @@ LOCAL_API = (
     "/api/approvals", "/api/approvals/decide", "/api/approvals/submit", "/api/approvals/limits",
     "/api/works/create", "/api/local/mcp", "/api/local/mcp-token", "/api/local/result",
     "/api/works/quote", "/api/works/export", "/api/twist",
+    "/api/works/get", "/api/works/clone",
     "/api/local/engine",
     "/api/blocks", "/api/pipeline/preview",
     "/api/local/agent-scope",
+    "/api/takes", "/api/takes/move", "/api/takes/qc", "/api/takes/pick", "/api/takes/retake-plan",
+    "/api/chains", "/api/chains/next", "/api/chains/move",
 )
 
 AGENT_ALLOWED = {
@@ -141,7 +145,9 @@ AGENT_ALLOWED = {
     ("POST", "/api/works/create"), ("POST", "/api/parse-shots"), ("POST", "/api/check-refs"), ("POST", "/mcp"),
     ("POST", "/api/works/quote"), ("POST", "/api/works/export"), ("GET", "/api/twist"), ("GET", "/api/export/status"),
     ("GET", "/api/blocks"), ("POST", "/api/pipeline/preview"),
+    ("GET", "/api/works/get"), ("POST", "/api/works/clone"),
 }
+AGENT_ALLOWED |= set(takes.ROUTES)
 AGENT_SCOPES = ("basic", "full")
 AGENT_FULL = {
     ("POST", "/api/storyboard/quote"), ("POST", "/api/storyboard"),
@@ -690,6 +696,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/projects") or path.startswith("/w/") or \
                 (path.startswith("/approve/") and approvals.card_or_batch(path[len("/approve/"):])):
             return self._workbench()
+        if ("GET", path) in takes.ROUTES:
+            return self._takes("GET", path, {}, q)
         if path == "/api/approvals" and one("batch_id"):
             return self._approvals_batch_get(one("batch_id"))
         if path == "/api/approvals":
@@ -816,6 +824,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._export_file(one("id"), one("kind"))
         if path == "/api/projects":
             return self._store(studio_store.list_projects)
+        if path == "/api/works/get":
+            return self._store(studio_store.work_get, one("project_id"))
         if path in MISSING:
             return self._json(501, {"error": MISSING[path]})
         return self._json(404, {"error": "沒有這個端點"})
@@ -842,6 +852,8 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             return
         st = self.state
+        if ("POST", path) in takes.ROUTES:
+            return self._takes("POST", path, body, {})
         if path == "/api/payer/key":
             return self._payer_key(body)
         if path == "/api/payer/key/delete":
@@ -912,7 +924,20 @@ class Handler(BaseHTTPRequestHandler):
             shots = body.get("shots")
             if shots is None and isinstance(body.get("script"), str):
                 shots = studio_tools.parse_shots(body["script"], body.get("model"))
+            if shots is None and isinstance(body.get("story"), str):
+                shots = studio_tools.parse_shots(studio_tools.story_to_script(body["story"]), body.get("model"))
             return self._store(studio_store.create_work, body.get("name"), shots)
+        if path == "/api/works/clone":
+            def go(c, u):
+                src = studio_store.work_get(c, u, str(body.get("project_id") or ""))
+                name, shots, meta, warn = templates.clone_plan(src, body.get("name"), body.get("fields"), body.get("shots"))
+                return dict(studio_store.create_work(c, u, name, shots, meta), cloned_from=src["project_id"], warnings=warn)
+            try:
+                return self._json(200, self.state.db.run(go))
+            except studio_store.StoreError as e:
+                return self._json(e.code, e.body)
+            except templates.TemplateError as e:
+                return self._json(e.code, {"error": e.msg})
         if path == "/api/works/quote":
             tp = self._work_template(body.get("project_id"))
             if not isinstance(tp, dict):
@@ -964,7 +989,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/local/work-import":
             return self._work_import(body)
         if path == "/api/parse-shots":
-            return self._json(200, {"shots": studio_tools.parse_shots(body.get("text") or "", body.get("model"))})
+            text = body.get("text") or ""
+            if not text and isinstance(body.get("story"), str):
+                text = studio_tools.story_to_script(body["story"])
+            return self._json(200, {"shots": studio_tools.parse_shots(text, body.get("model"))})
         if path == "/api/captions":
             try:
                 return self._json(200, studio_tools.build_captions(body))
@@ -1339,12 +1367,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             job, frames, expect = qc.check_request(body)
             cuts = qc.allow_cuts_of(body)
+            count = qc.count_of(body)
         except qc.QCError as e:
             out = {"error": e.message}
             if auto:
                 out["frames_auto"] = auto
             return self._json(e.code, out)
         send = {"job": job, "frames": frames, "expect": expect, "allow_cuts": cuts}
+        if count:
+            send["count"] = count
         if not self._human() and not getattr(self, "_via_card", False):
             cap = None
             try:
@@ -1375,11 +1406,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(409, NO_KEY)
         try:
             resp = st.call("/chat/completions", payload=qc.chat_payload(send["frames"], send["expect"],
-                                                                        allow_cuts=send["allow_cuts"]),
+                                                                        allow_cuts=send["allow_cuts"],
+                                                                        count=send.get("count")),
                            timeout=GENERATE_TIMEOUT)
         except ConsoleError as e:
             return self._err(e, payer="own_key")
-        v = qc.parse_verdict(resp)
+        v = qc.check_count(qc.parse_verdict(resp), send.get("count"))
         out = {"job": send["job"], "payer": "own_key", "model": qc.MODEL, "verdict": v}
         if v.get("ok"):
             out["rating"] = qc.to_rating(v)
@@ -1390,6 +1422,11 @@ class Handler(BaseHTTPRequestHandler):
         if actual is not None:
             out["upstream_cost"] = str(actual)
         return self._json(200, out)
+
+    def _takes(self, method, path, body, q):
+        picker = "human" if self._human() else "agent"
+        code, out = self.state.db.run(lambda c, u: takes.handle(c, u, method, path, body, q, picker))
+        return self._json(code, out)
 
     def _approvals_run(self, fn):
         try:
@@ -2251,8 +2288,12 @@ class Handler(BaseHTTPRequestHandler):
             req = export_spec.normalize(body)
         except export_spec.ExportError as e:
             return self._json(e.code, {"error": e.msg})
-        return self._json(200, postblocks.preview(export_spec.preview_spec(req), req.get("pipeline"),
-                                                  container=container, caption_fontsdir=os.path.join(ROOT, "fonts")))
+        try:
+            got = postblocks.preview(export_spec.preview_spec(req), req.get("pipeline"),
+                                     container=container, caption_fontsdir=os.path.join(ROOT, "fonts"))
+        except postblocks.PipelineError as e:
+            return self._json(400, {"error": str(e)})
+        return self._json(200, got)
 
     def _export_start(self, body):
         st = self.state

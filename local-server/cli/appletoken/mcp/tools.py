@@ -297,11 +297,11 @@ class Registry:
 
         add("create_work",
             "建一部作品：新的專案＋它自己的分鏡（主線打開就看得到）。**免費**。"
-            "shots 是 [{prompt, seconds?}]（1–30 鏡）；或給 script（「Shot 1｜0-3s …」那種腳本）讓伺服器拆鏡；"
+            "shots 是 [{prompt, seconds?}]（1–30 鏡）；或給 script（「Shot 1｜0-3s …」那種腳本）讓伺服器拆鏡；或給 story（一段故事，照句子拆）；"
             "或給 template='meme'（迷因短片：一鏡到底、固定鏡頭、9:16、11–15 秒）＋fields"
             "（setup 前段情境、twist_at 第幾秒反轉、chaos 後段暴走；選填 seconds、resolution＝720p／1080p（預設 720p）、"
             "characters＝角色外觀描述（提示詞裡用到名字就要寫，不然模型不知道長什麼樣子）、extra_negative＝追加的 negative"
-            "（接在內建的後面，內建的刪不掉）、props＝道具（120 字內，明確寫進提示詞）、visual_cues＝一定要看得見的元素（120 字內）、"
+            "（接在內建的後面，內建的刪不掉）、first_frame／last_frame＝首尾幀（網址或 asset://，依模型能力表換欄位）、props＝道具（120 字內，明確寫進提示詞）、visual_cues＝一定要看得見的元素（120 字內）、"
             "allow_cuts＝允許切鏡頭（預設 false＝一鏡到底）、count_animals（預設 true：characters 寫成「名字: 描述; …」"
             "就自動加 Only N animals in the entire video）、cap_setup、cap_twist、flash_before、style＝meme／memebox）。"
             "範本的 negative 與「只用環境音」由伺服器寫，報價用 quote_work；回應的 warnings 要看。"
@@ -310,8 +310,76 @@ class Registry:
                   "shots": {"type": "array", "items": {"type": "object"}},
                   "script": {"type": "string"}, "model": {"type": "string"},
                   "template": {"type": "string", "enum": ["meme"]}, "fields": {"type": "object"},
-                  "dry_run": {"type": "boolean"}}, ["name"]),
+                  "dry_run": {"type": "boolean"}, "story": {"type": "string"}}, ["name"]),
             lambda a: _work_create(wb, a))
+
+        add("take_list",
+            "列一鏡（shot_key）或整個專案的候選（take）：狀態、品管報告、是不是定稿；best＝品管最好的那支。免費。",
+            _obj({"project_id": {"type": "string"}, "shot_key": {"type": "string"}, "take_id": {"type": "string"}}),
+            lambda a: wb.takes_list(a.get("project_id"), a.get("shot_key"), a.get("take_id")))
+        add("take_add",
+            "記一支候選：送件之後把 job_id 記在那一鏡底下；重抽的帶 parent_take（重抽哪一支）＋reason（品管缺點代碼、"
+            "seam_jump、generation_failed、manual）。同一個 job_id 只會有一支。免費。",
+            _obj({"shot_key": {"type": "string"}, "project_id": {"type": "string"}, "job_id": {"type": "string"},
+                  "parent_take": {"type": "string"}, "reason": {"type": "string"}, "approval_id": {"type": "string"},
+                  "status": {"type": "string", "enum": ["queued", "generating", "ready"]}}, ["shot_key"]),
+            lambda a: wb.take_add(a["shot_key"], a.get("project_id"), a.get("job_id"), a.get("parent_take"),
+                                  a.get("reason"), a.get("approval_id"), a.get("status") or "queued"))
+        add("take_update",
+            "候選的狀態往前走：queued → generating → ready／failed → refunded（只能往前，不合法回 409）。免費。",
+            _obj({"take_id": {"type": "string"}, "status": {"type": "string",
+                  "enum": ["generating", "ready", "failed", "refunded"]}, "error": {"type": "string"},
+                  "job_id": {"type": "string"}}, ["take_id", "status"]),
+            lambda a: wb.take_update(a["take_id"], a["status"], a.get("error"), a.get("job_id")))
+        add("take_qc",
+            "存一支候選的品管報告（video_qc 的判定、接縫 SSIM…：每份要有 ok，可帶 score 0–1、defects、redo）。"
+            "qc_ok＝全部過才 true。免費。",
+            _obj({"take_id": {"type": "string"}, "reports": {"type": "array", "items": {"type": "object"}}},
+                 ["take_id", "reports"]),
+            lambda a: wb.take_qc(a["take_id"], a["reports"]))
+        add("take_pick",
+            "定稿：這一鏡用這一支（同一鏡最多一支，換人選會把舊的取消）。只有 ready 的能定稿；記成 picked_by=agent。免費。",
+            _obj({"take_id": {"type": "string"}}, ["take_id"]),
+            lambda a: wb.take_pick(a["take_id"]))
+        add("take_retake_plan",
+            "該不該重抽這一鏡（不花錢、不送件）：回 retake＋attempt＋parent，或 stop 的原因（retakes_exhausted、"
+            "already_ok、already_picked）。生成失敗的帶 failed_take＋charge_status：錢退了（refunded／released／"
+            "cancelled）才准重送，沒退回 waiting_refund。要重抽就照舊報價→核准卡（上限照算）→送件，再 take_add。",
+            _obj({"shot_key": {"type": "string"}, "reason": {"type": "string"}, "project_id": {"type": "string"},
+                  "max_retakes": {"type": "integer", "minimum": 0, "maximum": 5}, "failed_take": {"type": "string"},
+                  "charge_status": {"type": "string"}}, ["shot_key"]),
+            lambda a: wb.take_retake_plan(a["shot_key"], a.get("reason") or "manual", a.get("project_id"),
+                                          a.get("max_retakes", 1), a.get("failed_take"), a.get("charge_status")))
+        add("chain_create",
+            "開一次長片接力（例如 4 段 × 15 秒 = 1 分鐘）：segments＝[{prompt, seconds 2–15, model?, shot_key?}]。"
+            "之後一直叫 chain_next 照它說的做。免費。",
+            _obj({"segments": {"type": "array", "items": {"type": "object"}}, "project_id": {"type": "string"},
+                  "max_retakes": {"type": "integer", "minimum": 0, "maximum": 5}}, ["segments"]),
+            lambda a: wb.chain_create(a["segments"], a.get("project_id"), a.get("max_retakes", 1)))
+        add("chain_next",
+            "接力的下一步（不花錢、不送件，只告訴你該做什麼）：generate（first_frame_from＝上一段定稿的 take，"
+            "拿它的最後一幀當首幀）、wait、pick、retake（附重抽計畫）、stop（停下來要人決定，附原因）、export。",
+            _obj({"chain_id": {"type": "string"}}, ["chain_id"]),
+            lambda a: wb.chain_next(a["chain_id"]))
+        add("chain_update",
+            "改接力的狀態：running、done（帶 export_id）、failed、stopped（帶 stop_reason 代碼）。免費。",
+            _obj({"chain_id": {"type": "string"}, "status": {"type": "string",
+                  "enum": ["running", "done", "failed", "stopped"]}, "stop_reason": {"type": "string"},
+                  "export_id": {"type": "string"}}, ["chain_id", "status"]),
+            lambda a: wb.chain_update(a["chain_id"], a["status"], a.get("stop_reason"), a.get("export_id")))
+
+        add("work_get",
+            "讀回一部作品：名字、分鏡（prompt、seconds）；範本作品再帶 template 與 fields（create_work 時給的那一份）。免費。",
+            _obj({"project_id": {"type": "string"}}, ["project_id"]),
+            lambda a: wb.work_get(a["project_id"]))
+
+        add("work_clone",
+            "複製一部作品成新的一部（新專案、自己的分鏡）。免費。範本作品給 fields＝只改這幾欄（值給 null 拿掉那一欄），"
+            "伺服器用範本重新組（negative、固定鏡頭照舊），回 warnings；一般作品可以給 shots 換掉分鏡。"
+            "用來做「同一支迷因換一個 twist」「長片接力換首幀（fields.first_frame）」。name 不給＝原名＋「副本」。",
+            _obj({"project_id": {"type": "string"}, "name": {"type": "string"}, "fields": {"type": "object"},
+                  "shots": {"type": "array", "items": {"type": "object"}}}, ["project_id"]),
+            lambda a: wb.work_clone(a["project_id"], a.get("name"), a.get("fields"), a.get("shots")))
 
         add("quote_work",
             "用範本建的作品**只報價，不扣款**：送件的 payload 由伺服器照範本組（你改不掉 negative 與環境音），"
@@ -568,10 +636,11 @@ class Registry:
             "（例如「鏡頭1 00:00-00:05」），沒寫的話是 null——"
             "那時候不要把 null 送給 video_quote，讓平台自己決定長度。"
             "帶 model 的話 seconds 會先對齊那個模型收得下的長度，"
-            "被調整過時 adjust_note 會說明。",
-            _obj({"text": {"type": "string"}, "model": {"type": "string"}},
-                 ["text"]),
-            lambda a: wb.parse_shots(a["text"], a.get("model")))
+            "被調整過時 adjust_note 會說明。"
+            "沒有腳本只有故事：給 story（一段話），伺服器先照句子拆成「鏡頭 N」（每句或幾句一鏡、最多約 6 鏡）再切，"
+            "跟工作台主線「依照故事拆」一樣；要 AI 拆用 storyboard_ai_quote。text 與 story 給一個。",
+            _obj({"text": {"type": "string"}, "model": {"type": "string"}, "story": {"type": "string"}}),
+            lambda a: _parse_shots(wb, a))
 
         add("build_captions",
             "把每顆鏡頭的台詞組成 SRT 或 VTT，回在 body 欄位。"
@@ -742,12 +811,17 @@ class Registry:
                 "付款方跟那一支影片一樣，本站點數件照實收扣點（每支約 0.3 點），自帶金鑰件扣自己的 AppleToken 額度。"
                 "同一支、同樣畫面重送回同一筆結果，不重扣。"
                 "作品是允許切鏡頭的（迷因範本 fields.allow_cuts=true）才帶 allow_cuts=true：切鏡頭不算瑕疵；預設不帶。"
-                "桌面本機可以不帶 frames，由本機取 15%／50%／90% 三格；網頁版一定要帶。",
+                "桌面本機可以不帶 frames，由本機取 15%／50%／90% 三格；網頁版一定要帶。"
+                "要數動物就帶 count（英文物種 → 預期幾隻，例如 {\"dog\": 1, \"cat\": 1}）：數量不對或多了別的動物，"
+                "verdict.count_ok=false 並算不合格（影片助手 05：床上出現兩隻橘貓）。",
                 _obj({"job_id": {"type": "string"},
                       "frames": {"type": "array", "items": {"type": "string"}},
                       "expect": {"type": "array", "items": {"type": "object"}},
-                      "allow_cuts": {"type": "boolean"}}, ["job_id"]),
-                lambda a: wb.qc(a["job_id"], a.get("frames"), a.get("expect"), a.get("allow_cuts") is True), spends=True)
+                      "allow_cuts": {"type": "boolean"},
+                      "count": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 9}}},
+                     ["job_id"]),
+                lambda a: wb.qc(a["job_id"], a.get("frames"), a.get("expect"), a.get("allow_cuts") is True, a.get("count")),
+                spends=True)
 
             add("qc_rate",
                 "把一支影片的評分寫回 AppleToken（/v2/ratings；同一件重評會覆蓋）。score 1–5；"
@@ -1425,7 +1499,12 @@ def _work_create(wb, a):
     if a.get("dry_run") and not a.get("template"):
         raise ValidationError("dry_run 只給範本作品用（template）：一般分鏡沒有預覽，會真的建作品")
     return wb.work_create(a["name"], a.get("shots"), a.get("script"), a.get("model"),
-                          a.get("template"), a.get("fields"), dry_run=a.get("dry_run") is True)
+                          a.get("template"), a.get("fields"), dry_run=a.get("dry_run") is True, story=a.get("story"))
+
+def _parse_shots(wb, a):
+    if bool(a.get("text")) == bool(a.get("story")):
+        raise ValidationError("text（腳本）與 story（故事）給一個")
+    return wb.parse_shots(a.get("text"), a.get("model"), story=a.get("story"))
 
 def _shot_payload(a):
     body = dict(a)

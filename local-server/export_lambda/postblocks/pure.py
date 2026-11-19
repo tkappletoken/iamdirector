@@ -5,8 +5,8 @@ SIMPLE = ("bool", "enum", "number", "text")
 
 TEMPLATE_PIPELINES = {
     "meme": [{"use": "fit", "params": {"mode": "crop"}}, {"use": "fps", "params": {"fps": 30}},
-             {"use": "white_flash"}, {"use": "meme_captions"}, {"use": "subtitles", "params": {"mode": "none"}},
-             {"use": "disclosure", "on": False}],
+             {"use": "white_flash"}, {"use": "meme_captions"}, {"use": "disclosure", "on": False},
+             {"use": "subtitles", "params": {"mode": "none"}}],
 }
 
 def catalog():

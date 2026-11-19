@@ -43,8 +43,21 @@ MEME = {
         "style": "字卡樣式：meme（白字黑描邊，預設）或 memebox（黑字白底）",
         "cap_size": "字卡字級：l（預設，畫面高度 4.1%）、xl（5.5%）、xxl（7.5%，手機上最清楚）",
         "model": "模型（選填，預設 gputw/minimax-h3）",
+        "first_frame": "首幀（選填；圖片網址或 asset://，不收 data URI——欄位存在作品裡；長片接力的上一段最後一格）",
+        "last_frame": "尾幀（選填；同上。模型能力表沒實測過的寫法會直接擋）",
     },
 }
+FRAME_MAX = 2000
+FRAME_OK = re.compile(r"^(https?://|asset://)\S+$", re.I)
+
+def _model_caps():
+    import importlib.util
+    import os
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli", "appletoken", "core", "model_caps.py")
+    spec = importlib.util.spec_from_file_location("_iamdirector_model_caps", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 TEMPLATES = {"meme": MEME}
 
 def _text(fields, k, limit, required=False):
@@ -146,7 +159,24 @@ def meme(fields):
     negative = builtin + (", " + extra_neg if extra_neg else "")
     shot = {"model": model, "prompt": prompt, "seconds": seconds, "aspect_ratio": MEME["aspect_ratio"],
             "resolution": res, "negative_prompt": negative, "generate_audio": True}
+    frames = {}
+    for k in ("first_frame", "last_frame"):
+        v = fields.get(k)
+        if v in (None, ""):
+            continue
+        if not isinstance(v, str) or len(v) > FRAME_MAX or not FRAME_OK.match(v.strip()):
+            raise TemplateError(400, "%s 要是圖片網址或 asset://（%d 字內；不收 data URI，先用 asset_upload）" % (k, FRAME_MAX))
+        frames[k] = v.strip()
+    if frames:
+        mc = _model_caps()
+        try:
+            extra, notes = mc.frames_payload(model, frames.get("first_frame"), frames.get("last_frame"))
+        except mc.CapsError as e:
+            raise TemplateError(400, str(e))
+        shot.update(extra)
     warnings = []
+    if frames and notes:
+        warnings.append("%s 的首尾幀還沒實測過（%s）：照工作台預設的寫法送，結果不保證" % (model, "、".join(notes)))
     if not chars:
         names = sorted({w for w in _NAME.findall(setup + " " + chaos) if w not in _COMMON})
         if names:
@@ -168,6 +198,24 @@ def meme(fields):
     return {"template": "meme", "fields": dict(fields), "shot": shot, "post": post,
             "prompt": prompt, "seconds": seconds, "negative_prompt": negative, "builtin_negative": builtin,
             "warnings": warnings}
+
+def clone_plan(src, name=None, fields=None, shots=None):
+    new_name = (name or "").strip() or ((src.get("name") or "作品")[:56] + " 副本")
+    if src.get("template"):
+        if shots is not None:
+            raise TemplateError(400, "範本作品的分鏡由範本組：要改請給 fields")
+        merged = dict(src.get("fields") or {})
+        for k, v in (fields or {}).items():
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        tp = build(src["template"], merged)
+        return new_name, [{"prompt": tp["prompt"], "seconds": tp["seconds"]}], \
+            {"template": tp["template"], "fields": tp["fields"]}, tp["warnings"]
+    if fields:
+        raise TemplateError(400, "這部作品不是用範本建的，沒有 fields 可以改：要改請給 shots")
+    return new_name, shots if shots is not None else src.get("shots") or [], None, []
 
 def build(template, fields):
     t = TEMPLATES.get(template)
