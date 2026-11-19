@@ -51,6 +51,8 @@ const SERVER_FILES = [
   'export_lambda/postblocks/subtitles.py', 'export_lambda/postblocks/titles.py',
   'export_lambda/postblocks/twist_detect.py', 'export_lambda/postblocks/video_fade.py',
   'export_lambda/postblocks/white_flash.py',
+  'export_lambda/postblocks/format.py', 'export_lambda/postblocks/seam_check.py',
+  'export_lambda/postblocks/subs.py', 'export_lambda/postblocks/transition.py',
 ];
 const PRUNE = ['test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'lib2to3', 'pydoc_data', 'unittest/test'];
 
