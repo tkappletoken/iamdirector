@@ -581,7 +581,7 @@ ipcMain.on('desktop:live-jobs', (e, n) => {
 ipcMain.on('desktop:notify', (e, msg) => {
   if (!win || e.sender !== win.webContents) return;
   if (!policy.isAppUrl(e.senderFrame?.url || '', START_URL)) return;
-  const kinds = { job: '生成完成', export: '匯出完成' };
+  const kinds = { job: '生成完成', export: '匯出完成', approval: '有核准卡等你核准' };
   if (!msg || !kinds[msg.kind]) return;
   trace('notify-request', { kind: msg.kind, focused: win.isFocused() });
   if (win.isFocused()) return;

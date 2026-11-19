@@ -38,6 +38,17 @@ const SERVER_FILES = [
   'cli/appletoken/core/redact.py', 'cli/appletoken/core/session.py',
   'cli/appletoken/mcp/__init__.py', 'cli/appletoken/mcp/activity.py', 'cli/appletoken/mcp/tools.py',
   'fonts/NotoSansTC-Bold.otf', 'fonts/OFL.txt', 'fonts/README.md',
+  'export_lambda/postblocks/__init__.py', 'export_lambda/postblocks/audio_clip.py',
+  'export_lambda/postblocks/audio_fade.py', 'export_lambda/postblocks/base.py',
+  'export_lambda/postblocks/clip_trim.py', 'export_lambda/postblocks/compile.py',
+  'export_lambda/postblocks/concat.py', 'export_lambda/postblocks/disclosure.py',
+  'export_lambda/postblocks/encode.py', 'export_lambda/postblocks/fit.py', 'export_lambda/postblocks/fps.py',
+  'export_lambda/postblocks/loudness.py', 'export_lambda/postblocks/meme_captions.py',
+  'export_lambda/postblocks/mix.py', 'export_lambda/postblocks/music_duck.py',
+  'export_lambda/postblocks/pad_black.py', 'export_lambda/postblocks/pure.py',
+  'export_lambda/postblocks/subtitles.py', 'export_lambda/postblocks/titles.py',
+  'export_lambda/postblocks/twist_detect.py', 'export_lambda/postblocks/video_fade.py',
+  'export_lambda/postblocks/white_flash.py',
 ];
 const PRUNE = ['test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'lib2to3', 'pydoc_data', 'unittest/test'];
 

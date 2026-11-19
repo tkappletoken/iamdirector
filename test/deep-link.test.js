@@ -12,6 +12,36 @@ test('核准連結：iamdirector://approve/<apv_ id> 取得 id', () => {
   assert.deepEqual(d.parseApprove('iamdirector://approve/' + ID32), { id: ID32 });
 });
 
+const APB16 = 'apb_' + 'Q1w2E3r4T5y6U7i8';
+const APB32 = 'apb_' + '9'.repeat(32);
+
+test('批次卡連結：iamdirector://approve/<apb_ id> 也認（16–32 位英數，可帶一個結尾斜線）', () => {
+  assert.deepEqual(d.parseApprove('iamdirector://approve/' + APB16), { id: APB16 });
+  assert.deepEqual(d.parseApprove('iamdirector://approve/' + APB32), { id: APB32 });
+  assert.deepEqual(d.parseApprove('iamdirector://approve/' + APB16 + '/'), { id: APB16 });
+});
+
+test('批次卡連結：格式不對一律不認', () => {
+  for (const u of [
+    'iamdirector://approve/apb_' + 'a'.repeat(15),
+    'iamdirector://approve/apb_' + 'a'.repeat(33),
+    'iamdirector://approve/APB_' + 'a'.repeat(16),
+    'iamdirector://approve/apb-' + 'a'.repeat(16),
+    'iamdirector://approve/apc_' + 'a'.repeat(16),
+    'iamdirector://approve/ap_' + 'a'.repeat(16),
+    'iamdirector://approve/apbv_' + 'a'.repeat(16),
+    'iamdirector://approve/apb_' + 'a'.repeat(15) + '_',
+    'iamdirector://approve/' + APB16 + '//',
+    'iamdirector://approve/' + APB16 + '?x=1',
+    'iamdirector://approve/' + APB16 + '#x',
+    'iamdirector://approve/../' + APB16,
+    'iamdirector://approve/%61pb_' + 'a'.repeat(16),
+    'iamdirector://approve:1/' + APB16,
+    'iamdirector://u@approve/' + APB16,
+    'iamdirector://auth/' + APB16,
+  ]) assert.equal(d.parseApprove(u), null, u);
+});
+
 test('核准連結：剛好一個結尾斜線也認（有些 Windows 瀏覽器會補），兩個以上不認', () => {
   assert.deepEqual(d.parseApprove('iamdirector://approve/' + ID16 + '/'), { id: ID16 });
   assert.deepEqual(d.parseApprove('iamdirector://approve/' + ID32 + '/'), { id: ID32 });
@@ -150,4 +180,14 @@ test('停在不是 App 的頁面（離線頁、登入等待頁）先不送，留
   wc.getURL = () => APP;
   wc.load();
   assert.deepEqual(wc.sent, [['desktop:open-approval', ID16]]);
+});
+
+test('通知：核准卡的 kind 有標題「有核准卡等你核准」', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const m = src.match(/const kinds = (\{[^}]*\});/);
+  assert.ok(m, 'main.js 找不到 desktop:notify 的 kinds');
+  const kinds = Function('return ' + m[1])();
+  assert.equal(kinds.approval, '有核准卡等你核准');
+  assert.equal(kinds.job, '生成完成');
+  assert.equal(kinds.export, '匯出完成');
 });

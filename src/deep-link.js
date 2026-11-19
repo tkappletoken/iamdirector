@@ -1,7 +1,7 @@
 'use strict';
 
 const PREFIX = 'iamdirector://approve/';
-const ID = /^apv_[A-Za-z0-9]{16,32}$/;
+const ID = /^ap[vb]_[A-Za-z0-9]{16,32}$/;
 const INBOX_TTL_MS = 10 * 60 * 1000;
 
 function parseApprove(url) {
