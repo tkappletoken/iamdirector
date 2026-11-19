@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import base64
 import hashlib
 import hmac
@@ -41,6 +42,9 @@ def sha256_file(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+import approvals
+import templates
+import twist
 import page_strip
 import qc
 import sqlite_store
@@ -69,6 +73,7 @@ MODELS_TTL = 60.0
 SB_QUOTE_TTL = 1800
 QUOTE_TTL = 3600
 BODY_MAX = 512 * 1024
+DRAIN_MAX = 64 * 1024 * 1024
 BODY_LIMITS = {"/api/assets": 24 * 1024 * 1024, "/api/image-generate": 24 * 1024 * 1024,
                "/api/export": 24 * 1024 * 1024, "/api/local/work-import": 2 * 1024 * 1024}
 MEDIA_MAX = 4 * 1024 ** 3
@@ -106,7 +111,30 @@ LOCAL_API = (
     "/api/projects/rename", "/api/projects/items",
     "/api/audio/speech", "/api/audio/music", "/api/audio/music-status", "/api/audio/music-content",
     "/api/audio/content", "/api/export", "/api/export/config", "/api/export/status", "/api/export/download",
+    "/api/approvals", "/api/approvals/decide", "/api/approvals/submit", "/api/approvals/limits",
+    "/api/works/create", "/api/local/mcp", "/api/local/mcp-token", "/api/local/result",
+    "/api/works/quote", "/api/works/export", "/api/twist",
 )
+
+AGENT_ALLOWED = {
+    ("GET", "/api/version"), ("GET", "/api/model-groups"), ("GET", "/api/status"), ("GET", "/api/me"),
+    ("GET", "/api/usage"), ("GET", "/api/payer"), ("GET", "/api/projects"), ("GET", "/api/store"),
+    ("GET", "/api/charges"), ("GET", "/api/confirm-status"), ("GET", "/api/approvals"),
+    ("GET", "/api/approvals/limits"), ("GET", "/api/local/result"), ("GET", "/api/ffmpeg"),
+    ("POST", "/api/generate"), ("POST", "/api/estimate"), ("POST", "/api/approvals/submit"),
+    ("POST", "/api/works/create"), ("POST", "/api/parse-shots"), ("POST", "/api/check-refs"), ("POST", "/mcp"),
+    ("POST", "/api/works/quote"), ("POST", "/api/works/export"), ("GET", "/api/twist"), ("GET", "/api/export/status"),
+}
+MCP_PACKAGE_FILES = (
+    "cli/appletoken/__init__.py",
+    "cli/appletoken/core/__init__.py", "cli/appletoken/core/api.py", "cli/appletoken/core/errors.py",
+    "cli/appletoken/core/http.py", "cli/appletoken/core/poll.py", "cli/appletoken/core/preflight.py",
+    "cli/appletoken/core/redact.py", "cli/appletoken/core/session.py",
+    "cli/appletoken/mcp/__init__.py", "cli/appletoken/mcp/activity.py", "cli/appletoken/mcp/tools.py",
+)
+AGENT_TOKEN_PREFIX = "iadl_"
+MCP_FILE = "mcp.json"
+JOB_ID_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _LATER = "本機模式還沒有這一項（之後的版本會補上）"
 _LOGIN = "登入 iamdirector 帳號後才有這一項"
 MISSING = {
@@ -173,6 +201,9 @@ class State:
         os.makedirs(self.originals, mode=0o700, exist_ok=True)
         self.models = None
         self.quotes = {}
+        self.agent_loop = secrets.token_urlsafe(32)
+        self.mcp_token = None
+        self.mcp_path = os.path.join(data_dir, MCP_FILE)
         self.sb = {}
         self.desktop = None
         self._page = None
@@ -191,6 +222,30 @@ class State:
 
     def __repr__(self):
         return "State(key=%s)" % ("set" if self._key else "none")
+
+    def mcp_setup(self, port, regenerate=False):
+        tok = None
+        if not regenerate:
+            try:
+                with open(self.mcp_path, encoding="utf-8") as f:
+                    got = json.load(f).get("token")
+                if isinstance(got, str) and got.startswith(AGENT_TOKEN_PREFIX) and len(got) >= 40:
+                    tok = got
+            except (OSError, ValueError, AttributeError):
+                tok = None
+        tok = tok or AGENT_TOKEN_PREFIX + secrets.token_urlsafe(32)
+        data = json.dumps({"url": "http://127.0.0.1:%d/mcp" % port, "token": tok,
+                           "note": "iamdirector 桌面版本機 MCP 的連線設定。權杖等同可以替你報價、送出你核准過的卡，不要分享。"},
+                          ensure_ascii=False, indent=2)
+        tmp = self.mcp_path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.mcp_path)
+        with self.lock:
+            self.mcp_token = tok
+        return tok
 
     def key(self):
         with self.lock:
@@ -275,6 +330,16 @@ class State:
                 self._page = page_strip.strip_html(f.read())
         return self._page
 
+MCP_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+MCP_INSTRUCTIONS = (
+    "這是「我是導演」桌面版（本機模式）的 MCP。花錢的規則：先 quote（免費，同時建一張核准卡），"
+    "把 approval.approve_url（iamdirector://approve/<id>）交給使用者，等他本人在 App 裡按核准——你自己核准不了。"
+    "核准之後用 submit_approved 送出；卡片只能用一次，失敗不要自動重試，要重做就重新 quote。"
+    "status 查進度（排隊再久都不是失敗），result 拿成品在這台電腦上的路徑。付款方一律是使用者自己的 AppleToken 額度。")
+
+def _rpc_err(mid, code, message):
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
+
 class Controller:
 
     def __init__(self, state, stdin, stdout, on_eof):
@@ -350,11 +415,67 @@ class Handler(BaseHTTPRequestHandler):
                                                  "http://localhost:%d" % self.port):
             return self._plain(403, "bad origin")
         got = self.headers.get("X-Local-Token") or ""
-        if not st.token or not hmac.compare_digest(got.encode(), st.token.encode()):
+        self.who = None
+        if st.token and got and hmac.compare_digest(got.encode(), st.token.encode()):
+            self.who = "human"
+            return True
+        auth = self.headers.get("Authorization") or ""
+        bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
+        path = parse.urlsplit(self.path).path
+        if bearer and hmac.compare_digest(bearer.encode(), st.agent_loop.encode()):
+            self.who = "agent"
+        elif bearer and path == "/mcp" and st.mcp_token and hmac.compare_digest(bearer.encode(), st.mcp_token.encode()):
+            self.who = "agent"
+        else:
             return self._plain(401, "missing local token")
+        if (self.command if self.command != "HEAD" else "GET", path) not in AGENT_ALLOWED:
+            return self._json(403, {"error": "本機的 Agent 只能報價、查詢、建作品和送出已核准的卡；"
+                                             "核准、設上限、換金鑰要你本人在 App 裡操作"})
         return True
 
+    def _human(self):
+        return getattr(self, "who", None) == "human"
+
+    def _drain(self):
+        if getattr(self, "_req_seen", None) is self.raw_requestline:
+            return
+        self._req_seen = self.raw_requestline
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            self.close_connection = True
+            return
+        if n <= 0:
+            return
+        if n > DRAIN_MAX:
+            self.close_connection = True
+            return
+        conn = getattr(self, "connection", None)
+        try:
+            if conn is not None:
+                conn.settimeout(10)
+            left = n
+            while left > 0:
+                chunk = self.rfile.read(min(left, 64 * 1024))
+                if not chunk:
+                    break
+                left -= len(chunk)
+            if left > 0:
+                self.close_connection = True
+        except OSError:
+            self.close_connection = True
+        finally:
+            if conn is not None:
+                try:
+                    conn.settimeout(None)
+                except OSError:
+                    pass
+
+    def _mark_read(self):
+        self._req_seen = self.raw_requestline
+
     def _plain(self, code, text):
+        self._drain()
         body = text.encode()
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -366,6 +487,7 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _send(self, code, body, ctype, extra=None):
+        self._drain()
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
@@ -390,6 +512,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(code, dict(retry_field(e), error=with_hint(e) if with_hints else e.body, **extra))
 
     def _body(self, path):
+        self._mark_read()
         n = int(self.headers.get("Content-Length") or 0)
         if n > BODY_LIMITS.get(path, BODY_MAX):
             self._json(413, {"error": "內容太大"})
@@ -451,6 +574,9 @@ class Handler(BaseHTTPRequestHandler):
             "api_base": st.base, "api_is_public": st.base == DEFAULT_BASE,
             "api": list(LOCAL_API), "missing": dict(MISSING),
         }
+        web = os.environ.get("STUDIO_PUBLIC_ORIGIN", "").strip().rstrip("/")
+        if re.match(r"^https?://[A-Za-z0-9.:-]+$", web):
+            manifest["web_origin"] = web
         blob = json.dumps(manifest, ensure_ascii=False).replace("</", "<\\/")
         html = page.replace(MANIFEST_SLOT, "<script>window.__STUDIO__=%s;</script>" % blob, 1)
         return self._send(200, html, "text/html; charset=utf-8")
@@ -465,8 +591,21 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, parse.parse_qs(u.query)
         one = lambda k: (q.get(k) or [""])[0]
         st = self.state
-        if path in ("/", "/projects") or path.startswith("/w/"):
+        if path in ("/", "/projects") or path.startswith("/w/") or \
+                (path.startswith("/approve/") and approvals.ID.match(path[len("/approve/"):])):
             return self._workbench()
+        if path == "/api/approvals":
+            return self._approvals_get(one("id"), one("quote_id"), one("status"))
+        if path == "/api/approvals/limits":
+            return self._approvals_limits(None)
+        if path == "/api/local/mcp":
+            tok = st.mcp_token or ""
+            return self._json(200, {"url": "http://127.0.0.1:%d/mcp" % self.port, "file": st.mcp_path,
+                                    "token_tail": tok[-4:] if tok else None})
+        if path == "/api/local/result":
+            return self._local_result(one("id"))
+        if path == "/api/twist":
+            return self._twist(one("job"))
         if path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
         if path.startswith("/previs/"):
@@ -611,6 +750,47 @@ class Handler(BaseHTTPRequestHandler):
             return self._estimate(body)
         if path == "/api/generate":
             return self._generate(body)
+        if path == "/mcp":
+            return self._mcp(body)
+        if path == "/api/approvals/decide":
+            if not self._human():
+                return self._json(403, {"error": "核准要你本人在 App 裡按"})
+            return self._approvals_run(lambda c, u: approvals.public(approvals.decide(c, u, body.get("id"), bool(body.get("approve")))))
+        if path == "/api/approvals/limits":
+            if not self._human():
+                return self._json(403, {"error": "上限要你本人在 App 裡設"})
+            return self._approvals_limits(body)
+        if path == "/api/approvals/submit":
+            return self._approval_submit(body)
+        if path == "/api/works/create":
+            if body.get("template"):
+                try:
+                    tp = templates.build(body["template"], body.get("fields") or {})
+                except templates.TemplateError as e:
+                    return self._json(e.code, {"error": e.msg})
+                meta = {"template": tp["template"], "fields": tp["fields"]}
+                if body.get("dry_run"):
+                    return self._json(200, {"template": tp["template"], "prompt": tp["prompt"], "seconds": tp["seconds"],
+                                            "shot": tp["shot"], "post": tp["post"]})
+                return self._store(studio_store.create_work, body.get("name"),
+                                   [{"prompt": tp["prompt"], "seconds": tp["seconds"]}], meta)
+            shots = body.get("shots")
+            if shots is None and isinstance(body.get("script"), str):
+                shots = studio_tools.parse_shots(body["script"], body.get("model"))
+            return self._store(studio_store.create_work, body.get("name"), shots)
+        if path == "/api/works/quote":
+            tp = self._work_template(body.get("project_id"))
+            if not isinstance(tp, dict):
+                return tp
+            return self._generate(dict(tp["shot"], require_confirmation=True, approval_card=True))
+        if path == "/api/works/export":
+            return self._work_export(body)
+        if path == "/api/local/mcp-token":
+            if not self._human():
+                return self._json(403, {"error": "權杖要你本人在 App 裡重新產生"})
+            tok = st.mcp_setup(self.port, regenerate=True)
+            return self._json(200, {"ok": True, "file": st.mcp_path, "token_tail": tok[-4:],
+                                    "message": "已重新產生，舊的權杖立刻失效。把新的連線檔重新設定給你的 Agent。"})
         if path == "/api/image-generate":
             return self._image_generate(body)
         if path == "/api/assets":
@@ -779,8 +959,15 @@ class Handler(BaseHTTPRequestHandler):
         requested = body.pop("payer", None)
         if requested not in (None, "", "own_key"):
             return self._json(409, {"error": "本機模式只能用你自己的金鑰付款"})
+        want_card = bool(body.pop("approval_card", False))
         if body.get("quote_id") and "confirm" in body:
+            if not self._human() and body.get("confirm"):
+                return self._json(409, {"error": "本機的 Agent 不能直接確認：用 quote 建核准卡，使用者核准後用 submit_approved 送出"})
             return self._confirm(str(body.get("quote_id") or "").strip(), bool(body.get("confirm")))
+        if not self._human():
+            if not body.get("require_confirmation"):
+                return self._json(403, {"error": "本機的 Agent 只能報價（require_confirmation）"})
+            want_card = True
         if upstream.bad_seconds(body):
             return self._json(400, {"error": upstream.SECONDS_HINT})
         want_sheet = bool(body.get("require_confirmation"))
@@ -800,8 +987,17 @@ class Handler(BaseHTTPRequestHandler):
             for k in [k for k, v in st.quotes.items() if now - v["t"] > QUOTE_TTL]:
                 st.quotes.pop(k, None)
             st.quotes[qid] = {"open_ended": open_ended, "status": "quoted", "t": now}
+        cost = (sheet.get("estimate") or {}).get("points")
+        try:
+            st.db.run(lambda c, u: c.cursor().execute(
+                "INSERT INTO local_quotes (quote_id, payload, upstream_cost) VALUES (%s, %s, %s) ON CONFLICT (quote_id) DO NOTHING",
+                (qid, json.dumps({"open_ended": open_ended}), str(cost) if cost is not None else None)))
+        except Exception:
+            pass
         if want_sheet:
             out = dict(sheet, payer="own_key", provider="appletoken")
+            if want_card:
+                out["approval"] = self._card_for_quote(qid, cost, open_ended, body, sheet)
             if open_ended:
                 out["open_ended"] = True
                 out["billing_note"] = ("帶參考影片：上游按參考影片秒數＋成品秒數計費，實際可能較高，"
@@ -813,8 +1009,19 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         if not QID.match(qid):
             return self._json(400, {"error": "quote_id 不合法"})
+        if confirm and not getattr(self, "_via_card", False):
+            try:
+                carded = st.db.run(lambda c, u: approvals.by_quote(c, u, qid)) is not None
+            except Exception:
+                carded = False
+            if carded:
+                return self._json(409, {"error": "這張報價有核准卡：在卡片上按核准之後用 submit_approved 送出"})
         with st.lock:
             q = st.quotes.get(qid)
+        if q is None:
+            q = self._restore_quote(qid)
+        with st.lock:
+            q = st.quotes.get(qid) or q
             if q is None:
                 return self._json(409, {"error": "找不到這張報價，請重新報價"})
             if q["status"] != "quoted":
@@ -833,6 +1040,211 @@ class Handler(BaseHTTPRequestHandler):
         out = dict(r) if isinstance(r, dict) else {"data": r}
         out.update(payer="own_key", provider="appletoken")
         return self._json(200, out)
+
+    def _restore_quote(self, qid):
+        def get(c, u):
+            with c.cursor() as cur:
+                cur.execute("SELECT payload FROM local_quotes WHERE quote_id = %s", (qid,))
+                return cur.fetchone()
+        try:
+            row = self.state.db.run(get)
+        except Exception:
+            row = None
+        if not row:
+            return None
+        pl = row[0] if isinstance(row[0], dict) else {}
+        q = {"open_ended": bool(pl.get("open_ended")), "status": "quoted", "t": time.monotonic()}
+        with self.state.lock:
+            self.state.quotes.setdefault(qid, q)
+        return q
+
+    def _card_link(self, cid):
+        return "iamdirector://approve/%s" % cid
+
+    def _card_for_quote(self, qid, cost, open_ended, body, sheet):
+        exp = datetime.datetime.now(datetime.timezone.utc) + approvals.CARD_TTL
+        q_exp = approvals._ts(sheet.get("expires_at")) if isinstance(sheet, dict) else None
+        if q_exp and q_exp < exp:
+            exp = q_exp
+        charge = {"id": None, "quote_ref": qid, "kind": "video", "payer": "own_key", "points": None, "upstream_cost": cost}
+        summ = dict(approvals.summary_of(body), **({"open_ended": True} if open_ended else {}))
+        try:
+            card = self.state.db.run(lambda c, u: approvals.create(c, user_id=u, charge=charge, summary=summ, expires_at=exp))
+        except Exception as e:
+            return {"enabled": False, "error": "核准卡建不起來（%s），請重新報價" % type(e).__name__}
+        return dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
+
+    def _approvals_run(self, fn):
+        try:
+            return self._json(200, self.state.db.run(fn))
+        except approvals.ApprovalError as e:
+            return self._json(e.code, {"error": e.message})
+
+    def _approvals_get(self, cid, qref, status):
+        def go(c, u):
+            if cid or qref:
+                card = approvals.get(c, u, cid) if cid else approvals.by_quote(c, u, qref)
+                if not card:
+                    raise approvals.ApprovalError(404, "找不到這張核准卡")
+                return approvals.public(card, self._card_link(card["id"]))
+            if status and status not in approvals.STATUSES:
+                raise approvals.ApprovalError(400, "status 不合法")
+            return {"items": [approvals.public(x, self._card_link(x["id"])) for x in approvals.list_cards(c, u, status or None)]}
+        return self._approvals_run(go)
+
+    def _approvals_limits(self, body):
+        def go(c, u):
+            lim = approvals.limits_set(c, u, body) if body is not None else approvals.limits_get(c, u)
+            return dict(lim, used_today_points=approvals.fmt(approvals.used_today(c, u, "points")),
+                        used_today_upstream=approvals.fmt(approvals.used_today(c, u, "upstream")))
+        return self._approvals_run(go)
+
+    def _approval_submit(self, body):
+        st = self.state
+        try:
+            card = st.db.run(lambda c, u: approvals.claim_for_submit(c, u, body.get("id"), body.get("expect_amount")))
+        except approvals.ApprovalError as e:
+            return self._json(e.code, {"error": e.message})
+        sent = {}
+
+        def capture(code, obj):
+            sent["code"], sent["obj"] = code, obj
+
+        self._json = capture
+        self._via_card = True
+        try:
+            self._confirm(card["quote_ref"], True)
+        finally:
+            del self._json
+            self._via_card = False
+        code, obj = sent.get("code", 500), sent.get("obj") or {"error": "送件沒有回應"}
+        ok = 200 <= code < 300
+        jid = obj.get("id") if isinstance(obj, dict) else None
+        card = st.db.run(lambda c, u: (approvals.mark_result(c, u, card["id"], job_id=jid) if ok else
+                                      approvals.mark_result(c, u, card["id"], error=(obj or {}).get("error") or "HTTP %s" % code),
+                                      approvals.get(c, u, card["id"]))[1])
+        out = dict(obj) if isinstance(obj, dict) else {"data": obj}
+        out["approval"] = approvals.public(card, self._card_link(card["id"]))
+        return self._json(code, out)
+
+    def _work_template(self, pid):
+        if not isinstance(pid, str) or not PROJECT_ID.match(pid):
+            return self._json(400, {"error": "project_id 不合法"})
+        try:
+            meta = self.state.db.run(lambda c, u: studio_store.work_meta(c, u, pid))
+            return templates.build(meta.get("template"), meta.get("fields") or {})
+        except studio_store.StoreError as e:
+            return self._json(e.code, e.body)
+        except templates.TemplateError as e:
+            return self._json(e.code, {"error": e.msg})
+
+    def _twist(self, jid):
+        st = self.state
+        if not JOB_ID_OK.match(jid or ""):
+            return self._json(400, {"error": "job id 不合法"})
+        if not st.ffmpeg:
+            return self._json(409, {"error": "這台找不到 ffmpeg，量不了畫面變化"})
+        try:
+            path = os.path.join(st.media, self._cache_job(jid))
+            got = twist.detect(st.ffmpeg, path, env=st.openh264_env())
+        except ConsoleError as e:
+            return self._err(e, with_hints=False)
+        except twist.TwistError as e:
+            return self._json(500, {"error": str(e)})
+        got["job"] = jid
+        if got["at"] is None:
+            got["note"] = "找不到明顯的反轉點：匯出時請手動指定 twist.at（第幾秒）"
+        return self._json(200, got)
+
+    def _work_export(self, body):
+        tp = self._work_template(body.get("project_id"))
+        if not isinstance(tp, dict):
+            return tp
+        jid = body.get("job_id")
+        if not isinstance(jid, str) or not JOB_ID_OK.match(jid):
+            return self._json(400, {"error": "job_id 不合法"})
+        post = dict(tp["post"])
+        ov = body.get("overrides") or {}
+        if not isinstance(ov, dict) or any(k not in ("captions", "effects", "twist") for k in ov):
+            return self._json(400, {"error": "overrides 只收 captions／effects／twist"})
+        post.update(ov)
+        req = {"project_id": body.get("project_id"), "format": post["format"],
+               "video": [{"job": jid, "in": 0, "out": float(tp["seconds"])}], "audio": [{"lane": "A1", "job": jid, "at": 0, "in": 0,
+               "dur": float(tp["seconds"])}], "cues": [], "subtitles": "none", "disclosure": {"on": False},
+               "captions": post["captions"], "effects": post["effects"], "twist": post["twist"]}
+        return self._export_start(req)
+
+    def _local_result(self, jid):
+        if not JOB_ID_OK.match(jid or ""):
+            return self._json(400, {"error": "job id 不合法"})
+        try:
+            name = self._cache_job(jid)
+        except ConsoleError as e:
+            return self._err(e, with_hints=False)
+        return self._json(200, {"path": os.path.join(self.state.media, name), "src": "/api/download?id=" + jid})
+
+    def _mcp(self, payload):
+        if isinstance(payload, list):
+            if not payload or len(payload) > 10 or sum(1 for m in payload if isinstance(m, dict) and m.get("method") == "tools/call") > 1:
+                return self._json(400, _rpc_err(None, -32600, "批次最多 10 則、其中最多 1 個 tools/call"))
+            outs = [r for r in (self._mcp_one(m) for m in payload) if r is not None]
+            return self._json(200, outs) if outs else self._send(202, b"", "application/json")
+        out = self._mcp_one(payload)
+        return self._send(202, b"", "application/json") if out is None else self._json(200, out)
+
+    def _mcp_registry(self):
+        cli = os.path.join(ROOT, "cli")
+        if cli not in sys.path:
+            sys.path.insert(0, cli)
+        from appletoken.core import Client
+        from appletoken.core.session import Session
+        from appletoken.mcp import tools as mtools
+        sess = Session(self.state.agent_loop, base_url="http://127.0.0.1:%d" % self.port, kind="token",
+                       source="local-mcp", register=False)
+        sess.public_url = sess.base_url
+        return mtools, mtools.Registry(sess, allow_spend=True, allow_delete=False, allow_topup=False,
+                                       allow_logout=False, max_spend_points=None,
+                                       client=Client(sess, timeout=150), remote=True, local=True)
+
+    def _mcp_one(self, msg):
+        if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
+            return _rpc_err(msg.get("id") if isinstance(msg, dict) else None, -32600, "不是合法的 JSON-RPC 2.0 請求")
+        mid, method, params = msg.get("id"), msg["method"], msg.get("params") or {}
+        if method.startswith("notifications/") or "id" not in msg:
+            return None
+        if method == "initialize":
+            want = params.get("protocolVersion") if isinstance(params, dict) else None
+            ver = want if want in MCP_VERSIONS else MCP_VERSIONS[0]
+            return {"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": ver, "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "iamdirector-local", "version": "dev"}, "instructions": MCP_INSTRUCTIONS}}
+        if method == "ping":
+            return {"jsonrpc": "2.0", "id": mid, "result": {}}
+        if method not in ("tools/list", "tools/call"):
+            return _rpc_err(mid, -32601, "不支援的方法：%s" % method)
+        try:
+            mtools, reg = self._mcp_registry()
+        except ImportError:
+            return _rpc_err(mid, -32603, "這個版本沒有附 MCP 工具（cli/appletoken 沒有打包進來）")
+        if method == "tools/list":
+            return {"jsonrpc": "2.0", "id": mid, "result": {"tools": [
+                {"name": t.name, "description": t.description, "inputSchema": t.schema}
+                for t in sorted(reg.list_tools(), key=lambda t: t.name)]}}
+        if not isinstance(params, dict) or not isinstance(params.get("name"), str):
+            return _rpc_err(mid, -32602, "tools/call 要有 name")
+        args = params.get("arguments") or {}
+        if not isinstance(args, dict):
+            return _rpc_err(mid, -32602, "arguments 要是物件")
+        try:
+            out = reg.call(params["name"], args)
+            bad = isinstance(out, dict) and "error" in out
+        except Exception as e:
+            out, bad = {"error": str(e) or type(e).__name__}, True
+        text = json.dumps(out, ensure_ascii=False, default=str).replace(self.state.agent_loop, "…")
+        res = {"content": [{"type": "text", "text": text}], "isError": bool(bad)}
+        if isinstance(out, dict) and not bad:
+            res["structuredContent"] = json.loads(text)
+        return {"jsonrpc": "2.0", "id": mid, "result": res}
 
     def _original(self, aid):
         p = os.path.join(self.state.originals, aid)
@@ -1041,13 +1453,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(500, {"error": "合併失敗"})
             with open(out, "rb") as f:
                 sha = self._store_blob(f.read(), "video/mp4")
+            kept_dir = os.path.join(st.data_dir, "merged")
+            os.makedirs(kept_dir, mode=0o700, exist_ok=True)
+            kept = os.path.join(kept_dir, "%s-%s.mp4" % (name, sha[:8]))
+            if not os.path.exists(kept):
+                shutil.copyfile(out, kept)
         except render.RenderError as e:
             return self._json(409, {"error": str(e)})
         except (OSError, subprocess.SubprocessError):
             return self._json(500, {"error": "合併失敗（ffmpeg 沒跑完）"})
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        return self._json(200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": lossless})
+        return self._json(200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": lossless, "path": kept})
 
     def _image_lost(self, body, started):
         model = str(body.get("model") or "")[:120]
@@ -1463,7 +1880,8 @@ class Handler(BaseHTTPRequestHandler):
                     with ffmpeg_env(env):
                         done = export_local.run(spec, s3, work, strict=False, ffmpeg=st.ffmpeg, ffprobe=st.ffprobe,
                                                 fontsdir=fontsdir if fontsdir and os.path.isdir(fontsdir) else None,
-                                                container=container)
+                                                container=container,
+                                                caption_fontsdir=os.path.join(ROOT, "fonts"))
                 finally:
                     shutil.rmtree(work, ignore_errors=True)
             keep = ("state", "error", "duration", "bytes", "srt", "size", "warnings", "models")
@@ -1701,6 +2119,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._local_file(sha)
 
     def _local_media_put(self, sha, mime):
+        self._mark_read()
         n = int(self.headers.get("Content-Length") or 0)
         if not export_spec.SHA.match(sha or ""):
             return self._json(400, {"error": "sha 不合法"})
@@ -1829,6 +2248,7 @@ def serve(data_dir, base=DEFAULT_BASE, port=0, ui_path=None, stdin=None, stdout=
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     httpd.daemon_threads = True
     handler.port = httpd.server_address[1]
+    st.mcp_setup(handler.port)
     if stdin is not None:
         ctl = Controller(st, stdin, stdout, on_eof=lambda: threading.Thread(target=httpd.shutdown, daemon=True).start())
         st.desktop = ctl

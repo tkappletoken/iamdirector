@@ -527,6 +527,7 @@ pre.err { color:var(--ng); }
 #alert.show { opacity:1; transform:translateX(-50%) translateY(0); }
 #alert.bad { border-color:var(--ng); color:var(--ng); }
 #alert.good { border-color:var(--good); color:var(--good); }
+#alert.info { border-color:var(--rolling,#5BC8D8); color:var(--rolling,#5BC8D8); }
 
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration:.001ms !important; transition-duration:.001ms !important; }
@@ -785,9 +786,9 @@ pre.err { color:var(--ng); }
         <div class="refcount" id="refCount"></div>
         <div id="refs"></div>
         <button type="button" class="addbtn" id="addRef">＋ 新增一筆參考</button>
-        <div class="hint">對應 <code>input_references</code>，僅 Seedance 2.0/2.5 與 Veo 支援。
+        <div class="hint">對應 <code>input_references</code>；這個模型收幾份，看上面那一行（照模型目錄）。
           含真人臉的素材要先上傳到素材庫，填 <code>asset://{id}</code>。</div>
-        <div class="hint warn" id="refsDropped" hidden>目前選的模型不吃參考素材，<b>這幾筆這次不會送出</b>，只送提示詞。要用參考圖請換 Seedance 2.0／2.5 或 Veo。</div>
+        <div class="hint warn" id="refsDropped" hidden>目前選的模型不吃參考素材，<b>這幾筆這次不會送出</b>，只送提示詞。要用參考圖請換一個收參考素材的模型（模型清單上會寫最多幾個）。</div>
         <div class="hint warn" id="videoRefHint" hidden>帶 video 參考時 <code>seconds</code> 會自動送 <code>-1</code>，這是 API 的硬性要求。</div>
       </div>
 
@@ -854,7 +855,7 @@ pre.err { color:var(--ng); }
           <div><label for="concurrency">同時開拍</label><input id="concurrency" type="number" min="1" max="8" value="2"></div>
         </div>
         <div class="r2">
-          <div><label for="maxRetry">失敗重試</label><input id="maxRetry" type="number" min="0" max="5" value="1"></div>
+          <div><label for="maxRetry" title="只在平台明說「沒收件、沒扣款」時（限流、上游忙、維護）才自動再送；逾時、斷線、拍攝失敗都不會自動再送">失敗重試</label><input id="maxRetry" type="number" min="0" max="5" value="1" title="只在平台明說「沒收件、沒扣款」時（限流、上游忙、維護）才自動再送；逾時、斷線、拍攝失敗都不會自動再送"></div>
           <div><label for="axSeed">種子軸</label><input id="axSeed" class="mono" placeholder="1,2,3 或 1..5"></div>
         </div>
         <label for="axModel">模型軸<span class="note"> · 留空就用上面選的</span></label>
@@ -1255,7 +1256,7 @@ function capabilityWarnings(payload) {
   const out = [];
   if (!caps.known) return out;
   if (payload.input_references && !caps.input_references)
-    out.push('input_references：文件標示僅 Seedance 2.0/2.5 與 Veo 支援，這個模型可能會忽略或報錯');
+    out.push('input_references：這個模型不收參考素材（照模型目錄），可能會忽略或報錯');
   if (payload.negative_prompt && !caps.negative_prompt)
     out.push('negative_prompt：僅部分模型支援，這個模型可能會忽略');
   if (payload.generate_audio && !caps.generate_audio)
@@ -2671,6 +2672,7 @@ async function startJob(job) {
     job.payload.seconds = vrefSeconds(job.payload, (job.refDur || null));
   }
   job.status = 'processing'; job.startedAt = Date.now(); job.error = null; save();
+  const sent = job.payload || {};
   let r, d;
   try {
     r = await fetch('/api/generate', {
@@ -2678,12 +2680,21 @@ async function startJob(job) {
       body: JSON.stringify(job.payload)
     });
     d = await r.json();
-  } catch (e) { return failJob(job, String(e)); }
+  } catch (e) {
+    if (sent.quote_id && sent.confirm === true) {
+      job.pendingConfirm = sent.quote_id; job.confirmUnknown = true; save();
+      return awaitUpstreamConfirm(job);
+    }
+    job.unsure = true;
+    return failJob(job, '連線中斷，不確定平台有沒有收到這次送件（' + String(e) + '）。' + UNSURE_TEXT);
+  }
   if (job.cancelled) return;
   job.response = d;
-  if (!r.ok) return failJob(job, d.error || d);
+  if (!r.ok) return failJob(job, d.error || d, d.retry);
   if (d.status === 'pending_confirm') {
-    job.pendingConfirm = d.quote_id; save();
+    job.pendingConfirm = d.quote_id;
+    if (d.payer === 'own_key') job.confirmUnknown = true;
+    save();
     return awaitUpstreamConfirm(job);
   }
   const direct = (d.data || [])[0]?.url;
@@ -2702,6 +2713,8 @@ async function startJob(job) {
 }
 
 const PENDING_CONFIRM_TEXT = '上游確認中，點數已預扣，結果出來會自動結算／退回';
+const UNSURE_TEXT = '可能已經在拍，請先到 AppleToken 用量確認，或稍後再查進度，不要直接重送。';
+const pendingText = j => j.confirmUnknown ? '上游還沒回覆這次送件：' + UNSURE_TEXT : PENDING_CONFIRM_TEXT;
 async function awaitUpstreamConfirm(job) {
   const qid = job.pendingConfirm;
   for (let i = 0; i < 240; i++) {
@@ -2726,22 +2739,63 @@ async function awaitUpstreamConfirm(job) {
   }
 }
 
-function failJob(job, err) {
+function failJob(job, err, retry) {
   if (job.cancelled) return;
   job.tries = (job.tries || 0) + 1;
   const max = Math.max(0, Number($('maxRetry').value) || 0);
   job.error = err;
-  if (job.tries <= max) {
+  if (retry && retry.retryable === true && !job.id && job.tries <= max) {
     job.status = 'retrying';
     job.retryNote = '第 ' + job.tries + ' 次重試';
     save();
+    const after = Number(retry.after) > 0 ? Number(retry.after) * 1000 : Math.min(2000 * Math.pow(2, job.tries), 30000);
     setTimeout(() => {
       if (job.cancelled) return;
       job.status = 'queued'; job.id = null; job.error = null; save(); pump();
-    }, Math.min(2000 * Math.pow(2, job.tries), 30000));
+    }, Math.min(after, 120000));
   } else {
     job.status = 'failed'; save();
   }
+}
+
+function unsureResendOk(job) {
+  if (!job || !job.unsure) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const back = document.createElement('div');
+    back.className = 'unsure-card-back';
+    back.style.cssText = 'position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.45);' +
+      'display:flex;align-items:center;justify-content:center;padding:16px';
+    const box = document.createElement('div');
+    box.className = 'unsure-card';
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+    box.style.cssText = 'background:var(--paper);color:var(--ink);border:1px solid var(--edge);border-radius:12px;' +
+      'padding:16px 18px;width:min(480px,96vw)';
+    const h = document.createElement('h3');
+    h.textContent = '重送之前先確認'; h.style.cssText = 'margin:0 0 10px';
+    const p = document.createElement('p');
+    p.textContent = '這一件不確定平台有沒有收到。重送可能重複扣款，請先到用量頁確認沒有這一筆';
+    p.style.cssText = 'margin:0 0 10px;line-height:1.6';
+    const ack = document.createElement('label');
+    ack.style.cssText = 'display:flex;gap:6px;align-items:flex-start;margin:10px 0;line-height:1.5';
+    const ackBox = document.createElement('input');
+    ackBox.type = 'checkbox'; ackBox.className = 'unsure-ack'; ackBox.style.cssText = 'width:auto;margin:3px 0 0';
+    ack.append(ackBox, document.createTextNode('我已確認'));
+    const bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px';
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.className = 'unsure-cancel'; cancel.textContent = '先不送';
+    const go = document.createElement('button');
+    go.type = 'button'; go.className = 'unsure-go'; go.textContent = '重送'; go.disabled = true;
+    ackBox.onchange = () => { go.disabled = !ackBox.checked; };
+    const done = ok => { back.remove(); resolve(ok); };
+    cancel.onclick = () => done(false);
+    go.onclick = () => { if (ackBox.checked) done(true); };
+    back.addEventListener('click', e => { if (e.target === back) done(false); });
+    bar.append(cancel, go);
+    box.append(h, p, ack, bar);
+    back.append(box);
+    document.body.append(back);
+  });
 }
 
 async function poll(job) {
@@ -2753,10 +2807,15 @@ async function poll(job) {
     try {
       r = await fetch('/api/status?id=' + encodeURIComponent(job.id));
       d = await r.json();
-    } catch (e) { return failJob(job, String(e)); }
+    } catch (e) { delay = Math.min(delay * 2, 60000); continue; }
     if (job.cancelled) return;
-    if (r.status === 429) { delay = Math.min(delay * 2, 60000); continue; }
-    if (!r.ok) return failJob(job, d.error || d);
+    if (!r.ok && [400, 401, 403, 404, 410].indexOf(r.status) < 0) { delay = Math.min(delay * 2, 60000); continue; }
+    if (!r.ok) {
+      job.status = 'failed'; job.unsure = true;
+      job.error = '查不到這件的進度（HTTP ' + r.status + '）：' + ((d && d.error && (d.error.message || d.error)) || '') +
+                  '。這件已經送出，' + UNSURE_TEXT;
+      save(); return;
+    }
     job.statusRaw = d;
     if (d.status === 'completed') {
       job.status = 'completed'; job.remote = d.output_url;
@@ -2921,7 +2980,7 @@ function jobCard(j) {
   const label = { dry: '試組', queued: '排隊中', retrying: j.retryNote || '重試中',
                   processing: j.pendingConfirm ? '上游確認中' : '拍攝中', completed: '完成', failed: selfCancel ? '已取消' : 'NG',
                   cancelled: '已取消' }[j.status] || j.status;
-  const wellLabel = j.pendingConfirm && j.status === 'processing' ? PENDING_CONFIRM_TEXT : label;
+  const wellLabel = j.pendingConfirm && j.status === 'processing' ? pendingText(j) : label;
   const stCls = j.pendingConfirm && j.status === 'processing' ? 'processing pending' : selfCancel ? 'cancelled' : j.status;
   const p = j.payload || {};
   const no = j.of > 1 ? j.idx : (j.shot || 1);
@@ -2949,7 +3008,7 @@ function jobCard(j) {
         '<span class="row dim">' + esc(specs || '—') + ' · ' + esc(j.t || '') + '</span>' +
         (vars ? '<span class="row dim">' + esc(vars) + '</span>' : '') +
       '</span>' +
-      '<span class="st ' + stCls + '"' + (j.pendingConfirm ? ' title="' + esc(PENDING_CONFIRM_TEXT) + '"' : '') + '>' + esc(label) + '</span>' +
+      '<span class="st ' + stCls + '"' + (j.pendingConfirm ? ' title="' + esc(pendingText(j)) + '"' : '') + '>' + esc(label) + '</span>' +
     '</div>' +
     '<div class="prompt" title="' + esc(j.prompt || '') + '">' + esc(j.prompt || '') + '</div>' +
     (j.status === 'completed'
@@ -3077,8 +3136,11 @@ $('jobs').addEventListener('click', e => {
     j.cancelled = true; j.status = 'cancelled'; save();
     say('已停止追蹤這支。上游若已經開始算，仍然會計費。');
   } else if (act === 'rerun') {
-    const p = JSON.parse(JSON.stringify(j.payload));
-    enqueue([p]); say('再排一支', true);
+    unsureResendOk(j).then(ok => {
+      if (!ok) return;
+      const p = JSON.parse(JSON.stringify(j.payload));
+      enqueue([p]); say('再排一支', true);
+    });
   } else if (act === 'tweak') {
     applyPayloadToForm(j.payload); say('參數載回表單了，改完再開拍', true);
   } else if (act === 'asr') {
@@ -3518,7 +3580,7 @@ $('assetFile').onchange = async e => {
     try { await uploadAsset(f); n++; }
     catch (err) { if (!upCancelled(err)) say('上傳資產失敗：' + err.message); }
   }
-  if (n) { say('上傳了 ' + n + ' 份資產，處理好會自動變成「可用」', true); refreshAssets(); }
+  if (n) { await refreshAssets(); if (window.__UPLOAD_SEEN__) window.__UPLOAD_SEEN__.announce(); else say('上傳了 ' + n + ' 份資產，處理好會自動變成「可用」', true); }
 };
 
 function castThumb(file) {
@@ -3557,8 +3619,12 @@ async function uploadCastFiles(files) {
   if (got.length) {
     await addCastRefs(got);
     if (typeof refreshAssets === 'function') refreshAssets();
-    say('加了 ' + got.length + ' 張參考'
-        + (waiting ? '，其中 ' + waiting + ' 張還在上游處理中，要等它可用才送得出去' : ''), true);
+    const c0 = cast.find(x => x.id === castCur);
+    const msg = (c0 ? '加了 ' + got.length + ' 張參考到角色 @' + c0.name + '（角色分頁的參考圖）'
+                    : '加了 ' + got.length + ' 張參考到還沒存的新角色：填角色名後按「存這張角色表」才會留下來')
+        + (waiting ? '，其中 ' + waiting + ' 張還在上游處理中，要等它可用才送得出去' : '');
+    if (window.__UPLOAD_SEEN__) window.__UPLOAD_SEEN__.tell(msg, () => { const el = document.getElementById('castRefs'); if (el) { el.scrollIntoView({ block: 'center' }); window.__UPLOAD_SEEN__.flash(el); } }, c0 ? 'good' : 'info');
+    else say(msg, true);
   }
   return got.length;
 }
@@ -4081,6 +4147,31 @@ function renderMerge() {
     '<span class="sec">' + capSeconds(j) + 's</span></div>').join('');
 }
 
+function showMerged(d) {
+  let box = document.getElementById('mergeOut');
+  if (!box) { box = document.createElement('div'); box.id = 'mergeOut'; box.className = 'mergeout'; $('mergeBar').append(box); }
+  box.textContent = '';
+  const v = document.createElement('video');
+  v.controls = true; v.preload = 'metadata'; v.playsInline = true; v.src = d.src;
+  v.style.cssText = 'display:block;width:100%;max-height:260px;margin-top:8px;background:#000;border-radius:6px';
+  box.append(v);
+  if (d.path) {
+    const where = document.createElement('div'); where.className = 'hint';
+    where.style.cssText = 'margin-top:6px;overflow-wrap:anywhere;word-break:break-all';
+    const code = document.createElement('code'); code.textContent = d.path;
+    where.append(document.createTextNode('已存到：'), code);
+    const desk = window.iamdirectorDesktop;
+    if (desk && typeof desk.revealPath === 'function') {
+      const rv = document.createElement('button'); rv.type = 'button';
+      rv.textContent = desk.platform === 'darwin' ? '在 Finder 中顯示' : '在資料夾中顯示';
+      rv.style.cssText = 'width:auto;margin-left:6px';
+      rv.onclick = () => desk.revealPath(d.path);
+      where.append(rv);
+    }
+    box.append(where);
+  }
+}
+
 $('mergeGo').onclick = async () => {
   const picked = [...document.querySelectorAll('#mergeList .mg:checked')]
     .map(el => jobByUid(el.dataset.uid)).filter(j => j && (j.file || j.src));
@@ -4094,7 +4185,8 @@ $('mergeGo').onclick = async () => {
     if (d.error) { say('合併失敗：' + JSON.stringify(d.error).slice(0, 220)); return; }
     say('合併好了：' + (d.file || d.src || '').split('/').pop() +
         (d.lossless === false ? '（重新編碼過）' : '（無損接合）'), true);
-    if (d.src) window.open(d.src, '_blank');
+    if (d.src && window.__STUDIO__ && window.__STUDIO__.local) showMerged(d);
+    else if (d.src) window.open(d.src, '_blank');
   } catch (e) { say('合併失敗：' + e); }
   finally { $('mergeGo').disabled = false; $('mergeGo').textContent = '合併勾選的'; }
 };
@@ -5080,8 +5172,9 @@ document.addEventListener('keydown', e => {
         }
         if (upBtn) { upBtn.disabled = false; upBtn.textContent = label || '上傳成資產'; }
         if (n) {
-          say('上傳了 ' + n + ' 份資產' + (bad ? '，' + bad + ' 份失敗' : '') + '，處理好會自動變成「可用」', true);
-          if (typeof window.refreshAssets === 'function') window.refreshAssets();
+          if (typeof window.refreshAssets === 'function') await window.refreshAssets();
+          if (window.__UPLOAD_SEEN__) window.__UPLOAD_SEEN__.announce({ bad });
+          else say('上傳了 ' + n + ' 份資產' + (bad ? '，' + bad + ' 份失敗' : '') + '，處理好會自動變成「可用」', true);
         }
       };
     }
@@ -6018,10 +6111,11 @@ document.addEventListener('keydown', e => {
       const files = [...(e.dataTransfer && e.dataTransfer.files || [])];
       if (!files.length) return;
       for (const f of files) {
-        try { say('上傳 ' + f.name + '…'); await window.uploadAsset(f); }
+        try { if (window.__UPLOAD_SEEN__) window.__UPLOAD_SEEN__.hint('上傳中：' + f.name + '…'); else say('上傳中：' + f.name + '…', true); await window.uploadAsset(f); }
         catch (err) { if (!upCancelled(err)) say(f.name + ' 上傳失敗：' + err.message); }
       }
       if (typeof window.refreshAssets === 'function') await window.refreshAssets();
+      if (window.__UPLOAD_SEEN__) window.__UPLOAD_SEEN__.announce();
     });
     drop.title = '把圖片、影片或音訊拖進來就會上傳成素材';
   }
@@ -8021,6 +8115,15 @@ document.addEventListener('keydown', e => {
       panY = (r.height - b.h * k) / 2 - b.y * k;
       applyView(); showCount();
     }
+    window.__CANVAS_FOCUS__ = key => {
+      const p = POS[key];
+      if (!p) return false;
+      const r = (b => ({ width: b.width / stageZ(top), height: b.height / stageZ(top) }))(top.getBoundingClientRect());
+      panX = r.width / 2 - (p.x + 66) * scale;
+      panY = r.height / 2 - (p.y + 40) * scale;
+      applyView();
+      return true;
+    };
     function zoom100() {
       const r = (b => ({ width: b.width / stageZ(top), height: b.height / stageZ(top) }))(top.getBoundingClientRect());
       zoomAt(1, r.width / 2, r.height / 2);
@@ -9104,6 +9207,7 @@ document.addEventListener('keydown', e => {
       c.className = 'cv-chip' + (dim ? ' dim' : '');
       c.draggable = !dim;
       c.title = title || '';
+      if (String(payload || '').indexOf('upl:') === 0) c.dataset.asset = String(payload).slice(4);
       const t = document.createElement('span');
       t.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
       t.textContent = label;
@@ -9188,15 +9292,16 @@ document.addEventListener('keydown', e => {
             window.__STUDIO__ ? '上傳的音檔還在處理中，好了才放得進時間軸' :
             '平台目前不提供取回素材位元組，所以音檔還不能預覽或放進 A1。\n' +
             '能放進 A1 的聲音來源是「成片」那一組（拖成片到 A1＝只取它的聲音）。', !ok));
+          grpAudio.body.lastChild.dataset.asset = a.id;
         });
       }
 
       if (grpImages) {
         grpImages.body.textContent = '';
         if (!imgs.length) grpImages.body.append(emptyNote('上傳的圖片會出現在這裡；拿來當參考圖或首尾幀，不能放進時間軸。'));
-        imgs.forEach(a => grpImages.body.append(chip('', String(a.name || a.id).slice(0, 16),
+        imgs.forEach(a => { const el = chip('', String(a.name || a.id).slice(0, 16),
           a.status === 'active' ? '圖片' : '處理中',
-          (a.name || a.id) + '\n圖片拿來當參考圖或首尾幀（左欄點它就填進去），不能放進時間軸', true)));
+          (a.name || a.id) + '\n圖片拿來當參考圖或首尾幀（左欄點它就填進去），不能放進時間軸', true); el.dataset.asset = a.id; grpImages.body.append(el); });
       }
 
       grpCaps.body.textContent = '';
@@ -10357,6 +10462,7 @@ document.addEventListener('keydown', e => {
       try {
         let shot;
         if (j0) {
+          if (!(await unsureResendOk(j0))) return;
           phRetry(j0);
           if (!(await waitJob(j0))) { say('第 ' + j0.shot + ' 鏡還是沒拍成，後面先不送'); return; }
           shot = j0.shot;
@@ -10657,7 +10763,7 @@ document.addEventListener('keydown', e => {
       if (!j) return;
       Object.assign(j, { status: 'queued', id: null, error: null, tries: 0, cancelled: false,
                          response: null, statusRaw: null, remote: null, startedAt: null });
-      delete j.staleConfirm; delete j.debt;
+      delete j.staleConfirm; delete j.debt; delete j.unsure;
       save(); pump();
       say('重新排入：' + (j.prompt || j.model || '').slice(0, 20), true);
     }
@@ -10703,7 +10809,7 @@ document.addEventListener('keydown', e => {
       const c = CLIPS[i];
       if (!c) return;
       const act = btn.dataset.act;
-      if (act === 'retry') phRetry(jobByUid(c.uid));
+      if (act === 'retry') { const rj = jobByUid(c.uid); unsureResendOk(rj).then(ok => { if (ok) phRetry(rj); }); }
       else if (act === 'topup') { if (typeof window.__OPEN_WALLET__ === 'function') window.__OPEN_WALLET__(); }
       else if (act === 'resume') chainResume(i);
       else if (act === 'tprev' || act === 'tnext') stepTake(i, act === 'tprev' ? -1 : 1);
@@ -10980,7 +11086,8 @@ document.addEventListener('keydown', e => {
       });
       draw();
       if (k) savePos();
-      if (n) say('上傳了 ' + n + ' 份素材' + (bad ? '，' + bad + ' 份失敗' : ''), true);
+      if (n && window.__UPLOAD_SEEN__) window.__UPLOAD_SEEN__.announce({ canvas: true, bad });
+      else if (n) say('上傳了 ' + n + ' 份素材' + (bad ? '，' + bad + ' 份失敗' : ''), true);
     });
 
     setTimeout(() => {
@@ -18586,6 +18693,7 @@ document.addEventListener('keydown', e => {
     b.audio.forEach(a => block(a.lane === 'A2' ? la2 : la1, a.at, a.dur, a.lane === 'A2' ? 'a2' : 'a1', a.lane + ' · ' + a.dur.toFixed(1) + 's'));
     b.cues.forEach(q => block(ls, q.start, q.end - q.start, '', q.text));
     const head = h('div', 'r7-head'); map.append(head);
+    if (window.__MEME__) window.__MEME__.mark(map, T, b, () => paint());
     mon.append(stage, ctl, map);
 
     const sheet = h('div', 'r7-sheet');
@@ -18680,6 +18788,7 @@ document.addEventListener('keydown', e => {
     s5e.append(g1, tl, en, nx, tg, ds, tgs, acts,
                h('div', 'r7-hint', '字卡疊在畫面上（片頭 2.5 秒在上方、片尾 3.5 秒在字幕上面），不改總長。這份資料跟著專案存。'));
     sheet.append(s1, s2, s3, s4, s5e);
+    const memeOne = () => { OPT.aspect = '9:16'; OPT.resolution = '1080p'; OPT.fps = 30; serSet({ fit: 'crop' }); submit(current()); };
     if (SIMPLE_X) {
       sheet.textContent = '';
       const q1 = sec('1', '要不要字幕？', h('span', 'r7-aside', b.cues.length ? '時間軸上有 ' + b.cues.length + ' 句' : '時間軸上還沒有字幕'));
@@ -18701,6 +18810,7 @@ document.addEventListener('keydown', e => {
       q2.append(endIn, h('div', 'r7-hint', '畫面：依作品比例（' + b.format.aspect + '）、1080p、24 fps。片尾的字會在最後 3.5 秒出現在畫面上。'));
       sheet.append(q1, q2, s3, s4);
     }
+    if (window.__MEME__) { const ms = window.__MEME__.section(b, T, () => paint(), memeOne); if (ms) sheet.append(ms); }
     if (S.snap.issues.length) {
       const ul = h('ul', 'r7-notes');
       S.snap.issues.forEach(i => ul.append(h('li', 'lv-' + i.lv, i.msg)));
@@ -18798,6 +18908,7 @@ document.addEventListener('keydown', e => {
         const m = location.pathname.match(/^\/w\/([0-9a-fA-F-]{36})/);
         if (m) S.snap.body = Object.assign({}, S.snap.body, { project_id: m[1] });
       }
+      if (window.__MEME__) S.snap.body = window.__MEME__.apply(S.snap.body);
       const post = (body) => fetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       r = await post(S.snap.body);
       try { d = await r.json(); } catch (e) {}
@@ -21654,6 +21765,10 @@ document.addEventListener('keydown', e => {
     '.sm-card .more{display:flex;gap:2px}',
     '.sm-card .more .sm-link{min-height:36px;font-size:var(--fs-s);color:var(--pencil);text-decoration:none}',
     '.sm-card .more .sm-link:hover{color:var(--paper)}',
+    '.sm-card .more{position:relative}',
+    '.sm-card .more .sm-link.far{margin-left:auto;min-width:36px;font-size:var(--fs-m)}',
+    '.sm-card .sm-morepop{position:absolute;right:0;bottom:100%;z-index:5;padding:6px;border:1px solid var(--edge2);border-radius:8px;background:var(--ink)}',
+    '.sm-card .sm-morepop .sm-btn{min-height:36px;white-space:nowrap}',
     '.sm-legend{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:18px;color:var(--faint);font-size:var(--fs-s)}',
     '.sm-legend i{display:inline-block;width:18px;height:6px;border-radius:3px;background:var(--edge2);margin-right:6px;vertical-align:middle}',
     '.sm-legend i.d{background:var(--good)}.sm-legend i.c{background:var(--rolling)}',
@@ -22036,7 +22151,21 @@ document.addEventListener('keydown', e => {
     if (window.__STUDIO__ && window.__STUDIO__.local && desk && desk.cloud) {
       const up = btn('sm-link', '上傳到雲端', () => cloudSyncWork(p, up));
       up.title = '把這部作品（分鏡、進度、成片、配音配樂）上傳到你的 iamdirector 帳號；兩邊都改過時會問你留哪一份';
-      more.append(up);
+      del.remove();
+      del.className = 'sm-btn danger';
+      const pop = h('div', 'sm-morepop'); pop.hidden = true; pop.setAttribute('role', 'menu');
+      pop.append(del);
+      const mm = btn('sm-link far', '⋯', e => {
+        e.stopPropagation();
+        pop.hidden = !pop.hidden; mm.setAttribute('aria-expanded', String(!pop.hidden));
+        if (!pop.hidden) setTimeout(() => document.addEventListener('click', function off(ev) {
+          if (!pop.contains(ev.target) && !mm.contains(ev.target)) { pop.hidden = true; mm.setAttribute('aria-expanded', 'false'); }
+          document.removeEventListener('click', off, true);
+        }, true));
+      });
+      mm.setAttribute('aria-label', '更多：刪掉這部作品'); mm.setAttribute('aria-haspopup', 'menu'); mm.setAttribute('aria-expanded', 'false');
+      mm.title = '更多';
+      more.append(up, mm, pop);
     }
     bd.append(row, segs, foot, more);
     c.append(th, bd);
@@ -22316,6 +22445,7 @@ document.addEventListener('keydown', e => {
         l.append(inp); fl.append(l);
       });
       body.append(nm, fl);
+      if (t.server) body.append(tplPreview(t));
       bar.append(h('span', 'dh-chip', t.beats.length + ' 鏡'), h('span', 'dh-chip', '約 ' + tplSec(t) + ' 秒'));
       main = btn('sm-main dh-go', '套用範本 →', function () { applyTemplate(this, false); });
       main.title = '照範本填好分鏡、建一部新作品，接著到第 3 步（分鏡）';
@@ -22420,6 +22550,12 @@ document.addEventListener('keydown', e => {
   }
 
   const TEMPLATES = [
+    { id: 'meme', kind: '短劇', name: '迷因短片・一鏡反轉', short: '迷因', tag: '新', voice: '只用環境音', bg: THUMBS[4], server: 'meme',
+      fields: [['setup', '前段情境（反轉之前）', '例：一隻狗和一隻貓乖乖坐在沙發上擺姿勢'], ['twist_at', '第幾秒反轉（2–13）', '例：9.6'],
+               ['chaos', '後段暴走（反轉之後）', '例：兩隻突然扭打成一團，抱枕亂飛'],
+               ['cap_setup', '前段字卡（選填）', '例：主人：來～拍一張'], ['cap_twist', '反轉後字卡（選填）', '例：寵物照的真相']],
+      optional: ['cap_setup', 'cap_twist'],
+      beats: [['一鏡到底', 15, '固定鏡頭：前段安靜 → 第 N 秒反轉 → 暴走到結尾', f => '', '固定鏡頭']] },
     { id: 'drama', kind: '短劇', name: '短劇・三幕反轉', short: '三幕反轉', tag: '最多人用', voice: '對白＋旁白', bg: THUMBS[0],
       fields: [['hero', '主角是誰', '例：失戀的女孩小晴'], ['where', '故事發生在哪', '例：深夜的末班公車'], ['twist', '結局的反轉', '例：一路陪她的貓其實是司機養的']],
       beats: [['開場鉤子', 4, '一個讓人想看下去的畫面', f => f.where + '，夜色裡只有一盞燈，畫面安靜得有點不對勁', '遠景・緩推'],
@@ -22490,11 +22626,69 @@ document.addEventListener('keydown', e => {
     return '【' + t.name + '】' + t.fields.map(([k, lab]) => lab + '：' + f[k]).join('；') + '。\n' +
       t.beats.map((b, i) => (i + 1) + '. ' + b[0] + '：' + b[3](f)).join('\n');
   }
+  function serverFields(t, f) {
+    const out = {};
+    t.fields.forEach(([k]) => { const v = String(f[k] || '').trim(); if (!v) return; out[k] = k === 'twist_at' ? Number(v) : v; });
+    return out;
+  }
+  async function serverPreview(t) {
+    return getJSON('/api/works/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'preview', template: t.server, fields: serverFields(t, tplFill(t)), dry_run: true }) });
+  }
+  function tplPreview(t) {
+    const box = h('div', 'sm-tprev'); box.id = 'smTplPreview';
+    box.style.cssText = 'margin-top:10px;display:grid;gap:6px';
+    const out = h('pre', 'sm-tprevout'); out.id = 'smTplPreviewOut';
+    out.style.cssText = 'white-space:pre-wrap;word-break:break-word;margin:0;padding:10px;border:1px solid var(--edge2);border-radius:8px;font-size:var(--fs-s);max-height:220px;overflow:auto';
+    out.hidden = true;
+    const pb = btn('sm-btn', '預覽提示詞', async function () {
+      const miss = t.fields.find(([k]) => !(t.optional || []).includes(k) && !String(TPL.f[t.id + '.' + k] || '').trim());
+      if (miss) { window.__ERR_AT__(this, '先填「' + miss[1] + '」', '還差一格'); return; }
+      this.disabled = true;
+      try {
+        const d = await serverPreview(t);
+        out.textContent = d.prompt + '\n\n— 不要出現（negative）：' + d.shot.negative_prompt +
+          '\n— ' + d.seconds + ' 秒・' + d.shot.aspect_ratio + '・' + d.shot.model +
+          (d.post.captions.length ? '\n— 字卡：' + d.post.captions.map(c => '「' + c.text + '」').join('、') + '（匯出時自動對齊反轉點）' : '');
+        out.hidden = false;
+      } catch (e) { window.__ERR_AT__(this, String(e.message || e), '預覽不了'); }
+      finally { this.disabled = false; }
+    });
+    pb.id = 'smTplPreviewBtn';
+    box.append(pb, out);
+    return box;
+  }
+  async function applyServerTemplate(b, t, f) {
+    b.disabled = true; const label = b.textContent; b.textContent = '建立中…';
+    try {
+      const fields = serverFields(t, f);
+      const pv = await serverPreview(t);
+      const r = await getJSON('/api/works/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: String(f.cap_twist || f.setup).slice(0, 16) + '・' + t.short, template: t.server, fields }) });
+      if (!r || !r.project_id) throw new Error('伺服器沒有回作品編號');
+      await loadProjects();
+      const id = r.project_id;
+      t.fields.forEach(([k]) => { delete TPL.f[t.id + '.' + k]; });
+      const w = work(id);
+      w.story = tplStory(t, f); w.aspect = '9:16'; w.step = 3; w.src = 'template';
+      w.tpl = { id: t.id, name: t.name, short: t.short, server: t.server, roles: t.beats.map(x => x[0]) };
+      w.split = w.story;
+      saveWorks(true);
+      VIEW = null;
+      await go('/w/' + encodeURIComponent(id));
+      setBoard(id, [{ prompt: pv.prompt, seconds: pv.seconds, zh: t.beats[0][0], camera: t.beats[0][4] }]);
+      render(true);
+    } catch (e) {
+      const m = '開不了新作品：' + (e.message || e);
+      if (!(window.__ERR_AT__ && window.__ERR_AT__(b, m, '沒有建立成功'))) say(m);
+    } finally { b.disabled = false; b.textContent = label; }
+  }
   async function applyTemplate(b, withAI) {
     const t = TEMPLATES.find(x => x.id === TPL.id); if (!t) return;
     const f = tplFill(t);
-    const miss = t.fields.find(([k]) => !f[k]);
+    const miss = t.fields.find(([k]) => !(t.optional || []).includes(k) && !f[k]);
     if (miss) { window.__ERR_AT__(b, '先填「' + miss[1] + '」', '還差一格'); const el = document.getElementById('smTpl_' + miss[0]); if (el) el.focus(); return; }
+    if (t.server) return applyServerTemplate(b, t, f);
     b.disabled = true; const label = b.textContent; b.textContent = '建立中…';
     try {
       let fp = f;
@@ -22572,7 +22766,7 @@ document.addEventListener('keydown', e => {
     det.append(h('h2', null, t.name), h('p', 'help', t.beats.length + ' 鏡・約 ' + tplSec(t) + ' 秒・' + t.voice));
     det.append(h('p', 'sm-lbl', '範本結構'));
     t.beats.forEach((x, i) => { const r = h('div', 'sm-srow'); r.append(h('span', 'no', String(i + 1)), h('b', null, x[0]), h('span', 'sec', x[1] + 's'), h('span', 'hint', x[2])); det.append(r); });
-    det.append(h('p', 'sm-lbl', '填 3 格就能開始'));
+    det.append(h('p', 'sm-lbl', t.server ? '填 3 格就能開始（字卡選填）' : '填 3 格就能開始'));
     t.fields.forEach(([k, lab, ph]) => {
       const l = h('label', 'sm-fl'); l.append(h('span', null, lab));
       const inp = h('input', 'in'); inp.id = 'smTpl_' + k; inp.placeholder = ph; inp.maxLength = 120;
@@ -22580,6 +22774,7 @@ document.addEventListener('keydown', e => {
       inp.oninput = () => { TPL.f[t.id + '.' + k] = inp.value; };
       l.append(inp); det.append(l);
     });
+    if (t.server) det.append(tplPreview(t));
     if (t.photo) {
       const l = h('div', 'sm-fl'); l.append(h('span', null, '產品照片（可選）'));
       const row = h('div', 'sm-photo');
@@ -22714,13 +22909,19 @@ document.addEventListener('keydown', e => {
     b.append(bh, bl);
     ph.append(a, b);
     host.append(ph);
+    host.dataset.iadDrop = 'cast';
+    const dz = h('div', 'sm-card2 sm-castdrop'); dz.dataset.iadDrop = 'cast';
+    dz.style.cssText = 'margin-top:16px;border:2px dashed var(--edge2);text-align:center;padding:18px';
+    dz.append(h('h3', null, '把角色參考圖拖到這裡'),
+              h('p', 'lead', '臉部特寫或全身照都可以，會存成一張新的角色表；之後在提示詞寫 @名字 就會帶上。'));
+    host.append(dz);
     const lib = (typeof cast !== 'undefined' && Array.isArray(cast)) ? cast : [];
     if (lib.length) {
       const box = h('div', 'sm-card2'); box.style.marginTop = '16px';
       box.append(h('h3', null, '角色庫裡已經有 ' + lib.length + ' 位'));
       const grid = h('div', 'sm-castl');
       lib.slice(0, 8).forEach(c => {
-        const cc = h('div', 'cc'); const face = h('div', 'face');
+        const cc = h('div', 'cc'); cc.dataset.cast = c.id; const face = h('div', 'face');
         const ref = (c.refs || [])[0];
         if (ref && ref.src) { const im = h('img'); im.src = ref.src; im.alt = ''; face.append(im); } else face.textContent = '沒有參考圖';
         cc.append(face, h('div', 'nm', '@' + c.name)); grid.append(cc);
@@ -23887,5 +24088,587 @@ document.addEventListener('keydown', e => {
     if (q) new MutationObserver(() => { if (MODE === 'simple') { const b = root.querySelector('.sm-pts b'); const n = q.querySelector('.num'); if (b && n) b.textContent = n.textContent.replace(/\s*點$/, ''); } })
       .observe(q, { childList: true, subtree: true, characterData: true });
   })();
+})();
+(function memeUI() {
+  const S = window.__STUDIO__;
+  if (!S) return;
+  const isLocal = () => !!S.local && !window.__MEME_FORCE_WEB__;
+  const WEB_WHY = '迷因字卡現在只有桌面版可用：網頁版的匯出服務還沒換上字卡字型，按了會失敗。請用桌面版（本機）匯出。';
+  const ONE_WHY = '一鍵匯出迷因只在桌面版：網頁版的匯出會扣點，要在上面的匯出按鈕報價後送出。';
+  const TIME = /^(twist|end)([+-]\d{1,2}(\.\d{1,3})?)?$/;
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
+  const pidNow = () => { const m = location.pathname.match(/^\/w\/([0-9a-fA-F-]{36})/); return m ? m[1] : null; };
+  const k29 = pid => String(pid).replace(/-/g, '').slice(0, 29);
+  const getJ = async (url, body) => { const r = await fetch(url, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); let d = {}; try { d = await r.json(); } catch (_) {} return { ok: r.ok, status: r.status, d }; };
+  const ST = {};
+  const save = pid => { const v = ST[pid]; if (!v) return; const { loaded, busy, ...keep } = v; getJ('/api/store?key=mm_' + k29(pid), { value: keep }).catch(() => {}); };
+
+  async function load(pid, repaint) {
+    if (ST[pid] && (ST[pid].loaded || ST[pid].busy)) return ST[pid];
+    const st = ST[pid] = Object.assign({ on: false, captions: [], flash: { on: false, start: 'twist-1', end: 'twist-0.85' }, twist: {} }, ST[pid] || {}, { busy: true });
+    const saved = await getJ('/api/store?key=mm_' + k29(pid));
+    if (saved.ok && saved.d && saved.d.value && typeof saved.d.value === 'object') Object.assign(st, saved.d.value);
+    else {
+      const meta = await getJ('/api/store?key=tp_' + k29(pid));
+      const m = meta.ok && meta.d && meta.d.value;
+      if (m && m.template) {
+        const pv = await getJ('/api/works/create', { name: 'preview', template: m.template, fields: m.fields || {}, dry_run: true });
+        if (pv.ok) {
+          const p = pv.d.post || {};
+          st.on = true;
+          st.captions = (p.captions || []).map(c => ({ text: c.text, start: c.start, end: c.end, pos: c.pos || 'top', style: c.style || 'meme' }));
+          const fx = (p.effects || [])[0];
+          if (fx) st.flash = { on: true, start: fx.start, end: fx.end };
+          st.twist.hint = p.twist && p.twist.hint;
+        }
+      }
+    }
+    st.loaded = true; st.busy = false;
+    if (repaint) repaint();
+    return st;
+  }
+  async function detect(pid, job, repaint) {
+    const st = ST[pid];
+    if (!st || !job || !isLocal() || st.twist.detecting) return;
+    st.twist.detecting = true;
+    const r = await getJ('/api/twist?job=' + encodeURIComponent(job));
+    st.twist.detecting = false;
+    st.twist.detected = r.ok ? r.d.at : null;
+    st.twist.job = job;
+    st.twist.why = r.ok ? (r.d.at == null ? '沒偵測到明顯的反轉' : '') : ((r.d && r.d.error) || '量不到');
+    if (!st.twist.manual) st.twist.at = st.twist.detected != null ? st.twist.detected : (st.twist.hint != null ? st.twist.hint : null);
+    if (repaint) repaint();
+  }
+  const firstJob = b => (b.video && b.video[0] && b.video[0].job) || null;
+
+  function mark(map, T, b, repaint) {
+    const pid = pidNow(); const st = pid && ST[pid];
+    if (!st || !st.on || st.twist.at == null || !T.total) return;
+    const m = el('div', 'r7-twist'); m.id = 'r7Twist';
+    const lab = el('span', 'lab', '▼ 反轉 ' + Number(st.twist.at).toFixed(2) + 's');
+    m.append(lab);
+    const place = at => { const k = Math.min(1, Math.max(0, at / T.total)); m.style.left = 'calc(34px + (100% - 34px) * ' + k + ')';
+      m.classList.toggle('end', k > 0.8); lab.textContent = (k > 0.8 ? '反轉 ' + at.toFixed(2) + 's ▼' : '▼ 反轉 ' + at.toFixed(2) + 's'); };
+    place(Number(st.twist.at));
+    m.title = isLocal() ? '拖動微調反轉點（寫進 twist.at，匯出時字卡照它對齊）' : WEB_WHY;
+    if (isLocal()) {
+      m.addEventListener('pointerdown', e => {
+        e.preventDefault(); e.stopPropagation();
+        m.setPointerCapture(e.pointerId);
+        const r = map.getBoundingClientRect();
+        const at = ev => Math.round(Math.min(T.body, Math.max(0, (ev.clientX - r.left - 34) / Math.max(1, r.width - 34) * T.total)) * 100) / 100;
+        const move = ev => { st.twist.at = at(ev); st.twist.manual = true; place(st.twist.at); };
+        const up = ev => { m.removeEventListener('pointermove', move); m.removeEventListener('pointerup', up); move(ev); save(pid); repaint(); };
+        m.addEventListener('pointermove', move); m.addEventListener('pointerup', up);
+      });
+      m.addEventListener('click', e => e.stopPropagation());
+    }
+    map.append(m);
+  }
+
+  function section(b, T, repaint, oneClick) {
+    const pid = pidNow();
+    if (!pid) return null;
+    const st = ST[pid];
+    if (!st || !st.loaded) { load(pid, repaint); return null; }
+    if (st.on && isLocal() && st.twist.job !== firstJob(b) && firstJob(b) && !st.twist.detecting) detect(pid, firstJob(b), repaint);
+    const s = el('section', 'r7-sec r7-meme'); s.id = 'r7Meme';
+    const hd = el('div', 'r7-sh'); hd.append(el('span', 'no', '06'), el('h4', null, '迷因字卡'));
+    const sw = el('label', 'r7-sw'); const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!st.on; cb.id = 'r7MemeOn';
+    sw.append(cb, el('span', 'tr'), el('span', null, st.on ? '燒進畫面' : '不加'));
+    cb.onchange = () => { st.on = cb.checked; save(pid); repaint(); };
+    hd.append(sw); s.append(hd);
+    const web = !isLocal();
+    if (web) { const n = el('div', 'r7-hint r7-meme-web', WEB_WHY); n.id = 'r7MemeWeb'; s.append(n); }
+    const dis = web || !st.on;
+    const list = el('div', 'r7-meme-rows');
+    st.captions.forEach((c, i) => {
+      const row = el('div', 'r7-meme-row');
+      const tx = el('input', 'r7-in'); tx.value = c.text; tx.maxLength = 40; tx.placeholder = '字卡文字（40 字以內）'; tx.setAttribute('aria-label', '第 ' + (i + 1) + ' 段字卡');
+      const t0 = el('input', 'r7-in t'); t0.value = String(c.start); t0.setAttribute('aria-label', '開始'); t0.title = '秒數，或 twist、twist+0.3、end-1';
+      const t1 = el('input', 'r7-in t'); t1.value = String(c.end); t1.setAttribute('aria-label', '結束'); t1.title = t0.title;
+      const pos = el('select', 'r7-in'); [['top', '上'], ['middle', '中'], ['bottom', '下']].forEach(([v, l]) => { const o = el('option', null, l); o.value = v; pos.append(o); }); pos.value = typeof c.pos === 'string' ? c.pos : 'top';
+      const sty = el('select', 'r7-in'); [['meme', '白字黑邊'], ['memebox', '黑字白底']].forEach(([v, l]) => { const o = el('option', null, l); o.value = v; sty.append(o); }); sty.value = c.style || 'meme';
+      const del = el('button', 'r7-dl ghost', '✕'); del.type = 'button'; del.setAttribute('aria-label', '刪掉這段字卡');
+      const tv = v => { v = v.trim(); return /^\d+(\.\d+)?$/.test(v) ? Number(v) : v; };
+      const put = () => {
+        const bad = [t0, t1].find(x => !(/^\d+(\.\d+)?$/.test(x.value.trim()) || TIME.test(x.value.trim())));
+        [t0, t1].forEach(x => x.classList.toggle('bad', x === bad));
+        if (bad) return;
+        Object.assign(c, { text: tx.value, start: tv(t0.value), end: tv(t1.value), pos: pos.value, style: sty.value }); save(pid);
+      };
+      [tx, t0, t1, pos, sty].forEach(x => { x.disabled = dis; x.onchange = put; x.oninput = x.tagName === 'INPUT' ? put : null; });
+      del.disabled = dis; del.onclick = () => { st.captions.splice(i, 1); save(pid); repaint(); };
+      row.append(tx, t0, t1, pos, sty, del);
+      list.append(row);
+    });
+    const add = el('button', 'r7-dl ghost', '＋ 加一段字卡'); add.type = 'button'; add.disabled = dis || st.captions.length >= 20;
+    add.onclick = () => { st.captions.push({ text: '', start: 'twist', end: 'end', pos: 'top', style: 'meme' }); save(pid); repaint(); };
+    const fl = el('label', 'r7-sw'); const fcb = el('input'); fcb.type = 'checkbox'; fcb.checked = !!st.flash.on; fcb.disabled = dis;
+    fl.append(fcb, el('span', 'tr'), el('span', null, '白色閃光（' + st.flash.start + ' → ' + st.flash.end + '）'));
+    fcb.onchange = () => { st.flash.on = fcb.checked; save(pid); repaint(); };
+    const tw = el('div', 'r7-hint r7-meme-twist'); tw.id = 'r7MemeTwist';
+    const at = st.twist.at;
+    tw.textContent = st.twist.detecting ? '量反轉點中…' :
+      at == null ? '還沒有反轉點：字卡用了 twist 的話要先拖時間軸上的 ▼，或在上面填秒數' :
+      '反轉點 ' + Number(at).toFixed(2) + ' 秒（' + (st.twist.manual ? '你拖過的' : st.twist.detected != null ? '自動偵測' : '照提示詞的秒數：' + (st.twist.why || '沒偵測到')) + '）——拖時間軸上的 ▼ 微調';
+    const redo = el('button', 'r7-dl ghost', '重新偵測'); redo.type = 'button'; redo.disabled = web || !firstJob(b);
+    redo.onclick = () => { st.twist.manual = false; st.twist.job = null; detect(pid, firstJob(b), repaint); };
+    const one = el('button', 'r7-go r7-meme-go', '一鍵匯出迷因（9:16 1080p）'); one.type = 'button'; one.id = 'r7MemeGo';
+    const oneWhy = web ? ONE_WHY : !st.on ? '先打開「燒進畫面」' : !firstJob(b) ? 'V1 上要有一支拍好的片' : '';
+    one.disabled = !!oneWhy; if (oneWhy) one.title = oneWhy;
+    one.onclick = () => oneClick();
+    const why = el('div', 'r7-hint', oneWhy); why.id = 'r7MemeWhy'; why.hidden = !oneWhy;
+    s.append(list, add, fl, tw, redo, one, why);
+    return s;
+  }
+
+  function apply(body) {
+    const pid = pidNow(); const st = pid && ST[pid];
+    if (!st || !st.on || !isLocal()) return body;
+    const caps = st.captions.filter(c => String(c.text || '').trim()).map(c => ({ text: String(c.text).trim(), start: c.start, end: c.end, pos: c.pos || 'top', style: c.style || 'meme' }));
+    const out = Object.assign({}, body, { captions: caps, effects: st.flash.on ? [{ type: 'white_flash', start: st.flash.start, end: st.flash.end }] : [],
+                                          twist: st.twist.at != null ? { at: Number(st.twist.at) } : { auto: true } });
+    return out;
+  }
+
+  const css = document.createElement('style');
+  css.textContent = '.r7-twist{position:absolute;top:0;bottom:0;width:0;border-left:2px solid var(--grease,#e8a33d);cursor:ew-resize;z-index:3}' +
+    '.r7-twist .lab{position:absolute;top:-16px;left:-6px;white-space:nowrap;font:600 var(--fs-s,12px)/1 var(--mono,monospace);color:var(--grease,#e8a33d)}' +
+    '.r7-meme-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 56px 96px 36px;gap:6px;margin:8px 0}' +
+    '.r7-meme-row > :first-child{grid-column:1 / -1}' +
+    '.r7-twist.end .lab{left:auto;right:4px}' +
+    '.r7-meme-row .r7-in.bad{outline:2px solid var(--ng,#c0392b)}' +
+    '.r7-meme-go{margin-top:10px}';
+  document.head.append(css);
+  window.__MEME__ = { load, section, mark, apply, state: pid => ST[pid || pidNow()], WEB_WHY, ONE_WHY };
+})();
+(function uploadSeen() {
+  const S = window.__STUDIO__;
+  if (!S || typeof window.uploadAsset !== 'function') return;
+  const LOCAL = !!S.local;
+  const KEY = 'studio-recent-uploads', LEDGER = 'studio-upload-payers';
+  const TTL = 24 * 3600e3, POLL_MS = 3000, POLL_MAX = 120000;
+  const GRP = { image: ['images', '圖片素材'], audio: ['audio', '音訊素材'], video: ['takes', '成片'] };
+  const PAYER_LABEL = { own_key: '用我的 AppleToken 金鑰', points: '用本站點數' };
+  const kindOf = m => /video/i.test(m || '') ? 'video' : /audio/i.test(m || '') ? 'audio' : 'image';
+  const payerNow = () => { try { const P = window.__STUDIO_PAYER__; return (P && P.effective) ? P.effective('video') : null; } catch (_) { return null; } };
+  const readLS = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || 'null') || d; } catch (_) { return d; } };
+  const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} };
+
+  let recent = readLS(KEY, {});
+  const now0 = Date.now();
+  Object.keys(recent).forEach(k => { if (!recent[k] || !recent[k].a || now0 - recent[k].t > TTL) delete recent[k]; });
+  let ledger = readLS(LEDGER, []).filter(x => x && now0 - x.t < 30 * 24 * 3600e3);
+  const real = new Set();
+  let batch = [];
+  const polls = {};
+
+  const ofetch = window.fetch;
+  window.fetch = async function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    const res = await ofetch.apply(this, arguments);
+    let u = null;
+    try { u = new URL(url, location.href); } catch (_) { return res; }
+    if (u.origin !== location.origin) return res;
+    try {
+      if (u.pathname === '/api/assets/delete' && method === 'POST' && res.ok && init && typeof init.body === 'string') {
+        const id = (JSON.parse(init.body) || {}).id;
+        if (id && recent[id]) { delete recent[id]; writeLS(KEY, recent); }
+      }
+      if (u.pathname === '/api/assets' && method === 'GET' && res.ok) {
+        const d = await res.clone().json();
+        if (d && Array.isArray(d.data)) {
+          d.data.forEach(a => { if (a && a.id) { real.add(a.id); if (recent[a.id]) delete recent[a.id]; } });
+          writeLS(KEY, recent);
+          const cur = payerNow();
+          const extra = Object.values(recent).map(r => r.a)
+            .filter(a => !real.has(a.id) && (LOCAL || !recent[a.id].payer || !cur || recent[a.id].payer === cur));
+          paintPayerNote(cur);
+          if (extra.length) {
+            return new Response(JSON.stringify(Object.assign({}, d, { data: extra.concat(d.data) })),
+              { status: res.status, headers: { 'Content-Type': 'application/json' } });
+          }
+        }
+      }
+    } catch (_) {}
+    return res;
+  };
+
+  function remember(d, file) {
+    const id = d.id || String(d.reference || '').replace(/^asset:\/\//, '');
+    if (!id) return null;
+    const mime = d.mime || (file && file.type) || d.type || 'image/png';
+    const a = { id, object: 'asset', name: d.name || (file && file.name) || id, type: d.type || kindOf(mime), mime,
+                status: d.status || 'processing', reference: d.reference || ('asset://' + id),
+                tags: Array.isArray(d.tags) ? d.tags : [] };
+    const payer = LOCAL ? 'own_key' : payerNow();
+    if (!real.has(id)) { recent[id] = { a, t: Date.now(), payer }; writeLS(KEY, recent); }
+    ledger.push({ id, payer, t: Date.now() }); ledger = ledger.slice(-200); writeLS(LEDGER, ledger);
+    try { if (!ASSETS.some(x => x.id === id)) ASSETS.unshift(a); } catch (_) {}
+    batch.push({ id, name: a.name, kind: kindOf(mime) });
+    poll(id);
+    return a;
+  }
+
+  function poll(id) {
+    if (polls[id]) return;
+    const t0 = Date.now();
+    polls[id] = setInterval(async () => {
+      if (real.has(id) || !recent[id]) { clearInterval(polls[id]); delete polls[id]; return; }
+      if (Date.now() - t0 > POLL_MAX) {
+        clearInterval(polls[id]); delete polls[id];
+        if (recent[id]) { recent[id].a.status = 'unlisted'; writeLS(KEY, recent); }
+      }
+      try { if (typeof window.refreshAssets === 'function') await window.refreshAssets(); } catch (_) {}
+    }, POLL_MS);
+  }
+
+  const oup = window.uploadAsset;
+  window.uploadAsset = async function (file) {
+    const d = await oup.apply(this, arguments);
+    try { if (d) remember(d, file); } catch (_) {}
+    return d;
+  };
+
+  const st = document.createElement('style');
+  st.textContent = '@keyframes iadFlash{0%,100%{box-shadow:0 0 0 0 rgba(91,200,216,0)}30%{box-shadow:0 0 0 4px rgba(91,200,216,.9)}}' +
+    '.iad-flash{animation:iadFlash .8s ease-out 3}' +
+    '#alert .iad-look{margin-left:10px;width:auto;min-height:28px;padding:2px 10px;border-radius:6px;cursor:pointer;' +
+    'background:rgba(255,255,255,.14);color:inherit;border:1px solid currentColor;font:inherit}' +
+    '.iad-payer-note{margin:4px 8px;font-size:var(--fs-s,12px);line-height:1.5;color:var(--grease,#e8a33d)}';
+  document.head.append(st);
+
+  function flash(el) {
+    if (!el) return;
+    el.classList.remove('iad-flash'); void el.offsetWidth; el.classList.add('iad-flash');
+    setTimeout(() => el.classList.remove('iad-flash'), 2600);
+  }
+  function hint(msg) {
+    const el = document.getElementById('alert');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = 'alert show info';
+    try { clearTimeout(alertTimer); alertTimer = setTimeout(() => { el.className = 'alert'; }, 7000); } catch (_) {}
+  }
+  function tell(msg, look, kind) {
+    batch = [];
+    if (kind === 'info') hint(msg); else say(msg, true);
+    const el = document.getElementById('alert');
+    if (!el) return;
+    if (look) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'iad-look'; b.textContent = '去看看';
+      b.onclick = () => { try { look(); } catch (_) {} };
+      el.append(b);
+    }
+    if (kind !== 'info') { try { clearTimeout(alertTimer); alertTimer = setTimeout(() => { el.className = 'alert'; }, 12000); } catch (_) {} }
+  }
+  function openGroup(kind) {
+    const g = document.querySelector('.cv-pool details[data-grp="' + (GRP[kind] || GRP.image)[0] + '"]');
+    if (g && !g.open) g.open = true;
+    return g;
+  }
+  function reveal(id) {
+    const r = recent[id] || {};
+    const kind = kindOf((r.a && r.a.mime) || ((ASSETS.find(x => x.id === id) || {}).mime));
+    const g = openGroup(kind);
+    try { if (typeof window.__POOL_DRAW__ === 'function') window.__POOL_DRAW__(); } catch (_) {}
+    const chip = document.querySelector('.cv-pool [data-asset="' + CSS.escape(id) + '"]');
+    if (chip) { chip.scrollIntoView({ block: 'nearest' }); flash(chip); } else if (g) flash(g);
+    const node = document.querySelector('.cv-n[data-id="' + CSS.escape('a:' + id) + '"]');
+    if (node && node.checkVisibility()) { if (typeof window.__CANVAS_FOCUS__ === 'function') window.__CANVAS_FOCUS__('a:' + id); flash(node); }
+    const fig = [...document.querySelectorAll('#assetBox figure')].find(f => f.dataset.ref === 'asset://' + id);
+    if (fig && fig.checkVisibility()) { fig.scrollIntoView({ block: 'nearest' }); flash(fig); }
+    return { chip: !!chip, node: !!node, fig: !!(fig && fig.checkVisibility()) };
+  }
+  function where(kind) {
+    const store = LOCAL ? '你的 AppleToken 素材庫（原檔也留一份在這台電腦）'
+                        : '素材庫（' + (PAYER_LABEL[payerNow()] || '目前的付款方') + '那個帳戶）';
+    return store + '，在左下「素材 › ' + (GRP[kind] || GRP.image)[1] + '」';
+  }
+  function announce(opts) {
+    opts = opts || {};
+    const items = batch.splice(0);
+    if (!items.length) return null;
+    const last = items[items.length - 1];
+    const names = items.length === 1 ? '「' + last.name + '」' : ' ' + items.length + ' 個檔案';
+    const canvasOn = !!document.querySelector('.cv-n[data-id="' + CSS.escape('a:' + last.id) + '"]');
+    const msg = '已上傳' + names + '到' + where(last.kind) +
+      (opts.canvas ? '；畫布上放在你放開的地方' : canvasOn ? '；畫布上也看得到' : '') +
+      (opts.bad ? '（另有 ' + opts.bad + ' 份失敗）' : '');
+    items.forEach(it => openGroup(it.kind));
+    try { if (typeof window.__POOL_DRAW__ === 'function') window.__POOL_DRAW__(); } catch (_) {}
+    items.forEach(it => { const c = document.querySelector('.cv-pool [data-asset="' + CSS.escape(it.id) + '"]'); if (c) flash(c); });
+    tell(msg, () => reveal(last.id));
+    return msg;
+  }
+
+  function paintPayerNote(cur) {
+    if (LOCAL || !cur) return;
+    const pool = document.querySelector('.cv-pool');
+    if (!pool) return;
+    const other = ledger.filter(x => x.payer && x.payer !== cur && !real.has(x.id));
+    const ids = [...new Set(other.map(x => x.id))];
+    let note = pool.querySelector('.iad-payer-note');
+    if (!ids.length) { if (note) note.remove(); return; }
+    if (!note) { note = document.createElement('div'); note.className = 'iad-payer-note'; note.id = 'iadPayerNote'; pool.prepend(note); }
+    const otherPayer = other[other.length - 1].payer;
+    note.textContent = '你用「' + (PAYER_LABEL[otherPayer] || otherPayer) + '」上傳的 ' + ids.length + ' 份素材不在這裡：' +
+      '這裡列的是「' + (PAYER_LABEL[cur] || cur) + '」那個帳戶的素材，切回去就看得到。';
+  }
+
+  const hasFiles = e => { const t = e.dataTransfer; return !!t && Array.prototype.indexOf.call(t.types || [], 'Files') >= 0; };
+  const NATIVE = '#assetBox, .castbar, .cv-top';
+  function hintFor(t) {
+    const simple = window.__SIMPLE__ && window.__SIMPLE__.mode === 'simple' && !document.body.classList.contains('sm-xon');
+    if (t && t.closest('.tl, .tl-lane')) return '時間軸不直接收檔案：先拖到中間的畫布或左下「素材」，再從那裡拖上時間軸。';
+    if (simple && !/^\/w\//.test(location.pathname)) return '首頁不收檔案：先打開一部作品，到第 2 步「角色」把參考圖拖進來。';
+    if (simple) return '這一步不收檔案：角色參考圖拖到第 2 步「角色」；其他素材按「展開進階」拖到畫布或左下「素材」。';
+    return '這裡不收檔案：拖到中間的畫布、左下「素材」，或左欄「角色」分頁的角色列。';
+  }
+  window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); }, true);
+  window.addEventListener('drop', e => {
+    if (!hasFiles(e)) return;
+    const t = e.target instanceof Element ? e.target : null;
+    if (t && t.closest(NATIVE)) return;
+    e.preventDefault(); e.stopPropagation();
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    if (t && t.closest('.cv-pool')) return poolUpload(files);
+    if (t && t.closest('[data-iad-drop="cast"]')) return castStepUpload(files);
+    hint(hintFor(t));
+  }, true);
+
+  async function poolUpload(files) {
+    let bad = 0;
+    for (const f of files) {
+      try { hint('上傳中：' + f.name + '…'); await window.uploadAsset(f); }
+      catch (err) { if (!upCancelled(err)) { bad++; say('「' + f.name + '」上傳失敗：' + ((err && err.message) || err)); } }
+    }
+    try { if (typeof window.refreshAssets === 'function') await window.refreshAssets(); } catch (_) {}
+    announce({ bad });
+  }
+
+  async function castStepUpload(files) {
+    const imgs = files.filter(f => /^image\//.test(f.type || ''));
+    if (!imgs.length) { say('角色參考圖要是圖片檔'); return; }
+    const refs = [];
+    for (const f of imgs) {
+      try {
+        hint('上傳中：' + f.name + '…');
+        const d = await window.uploadAsset(f);
+        refs.push({ ref: d.reference || ('asset://' + d.id), src: await castThumb(f), role: refs.length ? 'body' : 'face' });
+      } catch (err) { if (!upCancelled(err)) say('「' + f.name + '」上傳失敗：' + ((err && err.message) || err)); }
+    }
+    batch = [];
+    if (!refs.length) return;
+    const names = new Set(cast.map(c => c.name));
+    let n = cast.length + 1, name = '角色' + n;
+    while (names.has(name)) name = '角色' + (++n);
+    const id = uid();
+    cast.unshift({ id, name, desc: '', refs });
+    saveCast();
+    try { if (window.__SIMPLE__ && window.__SIMPLE__.go) await window.__SIMPLE__.go(location.pathname); } catch (_) {}
+    tell('已把 ' + refs.length + ' 張參考圖存成角色 @' + name + '：在這一頁的角色庫，進階「角色」分頁也看得到（素材也留在左下「素材 › 圖片素材」）。' +
+         '在提示詞裡寫 @' + name + ' 就會帶上。',
+         () => { const el = document.querySelector('.sm-castl [data-cast="' + CSS.escape(id) + '"]') || document.querySelector('.sm-castl'); if (el) { el.scrollIntoView({ block: 'center' }); flash(el); } });
+  }
+
+  window.__UPLOAD_SEEN__ = { announce, tell, hint, flash, reveal, recent: () => Object.assign({}, recent) };
+})();
+(function approvalsUI() {
+  const S = window.__STUDIO__;
+  if (!S) return;
+  const LOCAL = !!S.local;
+  const WEB = String(S.web_origin || '').replace(/\/+$/, '');
+  const ID_RE = /^apv_[A-Za-z0-9]{16,32}$/;
+  const el = (tag, css, text) => { const x = document.createElement(tag); if (css) x.style.cssText = css; if (text != null) x.textContent = text; return x; };
+  const btn = (text, fn, primary) => {
+    const b = el('button', 'width:auto;min-height:36px;padding:6px 14px;border-radius:8px;cursor:pointer;' +
+      (primary ? 'background:var(--paper,#eee);color:var(--ink,#111);border:0;font-weight:600' : 'background:none;color:inherit;border:1px solid var(--edge2,#555)'), text);
+    b.type = 'button'; b.onclick = fn; return b;
+  };
+  const getJ = async (url, body) => {
+    const r = await fetch(url, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let d = {}; try { d = await r.json(); } catch (_) {}
+    return { ok: r.ok, status: r.status, d };
+  };
+  const errText = d => (d && (typeof d.error === 'string' ? d.error : d.error && d.error.message)) || '';
+  const STATUS = { pending: '等你核准', approved: '已核准，等 Agent 送出', rejected: '已拒絕', expired: '已過期（要重新報價）',
+                   submitted: '已送出', failed: '送件失敗' };
+
+  let ov = null, body = null;
+  function shell(title) {
+    if (!ov) {
+      ov = el('div', 'position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px');
+      ov.id = 'apvOverlay'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-labelledby', 'apvTitle');
+      const box = el('div', 'width:min(560px,100%);max-height:90vh;overflow:auto;background:var(--ink,#141414);color:var(--paper,#eee);' +
+        'border:1px solid var(--edge2,#444);border-radius:14px;padding:20px 22px;box-shadow:0 20px 60px rgba(0,0,0,.5)');
+      const head = el('div', 'display:flex;align-items:center;gap:10px;margin-bottom:12px');
+      const h = el('h2', 'margin:0;font-size:18px;flex:1'); h.id = 'apvTitle';
+      const x = btn('關閉', close); x.setAttribute('aria-label', '關閉核准卡');
+      head.append(h, x);
+      body = el('div'); body.id = 'apvBody';
+      box.append(head, body);
+      ov.append(box);
+      ov.addEventListener('click', e => { if (e.target === ov) close(); });
+      document.addEventListener('keydown', e => { if (e.key === 'Escape' && ov && ov.isConnected) close(); });
+    }
+    ov.querySelector('#apvTitle').textContent = title;
+    body.textContent = '';
+    if (!ov.isConnected) document.body.append(ov);
+    return body;
+  }
+  function close() {
+    if (ov) ov.remove();
+    if (location.pathname.startsWith('/approve/')) history.replaceState(null, '', '/projects');
+    paintPill();
+  }
+
+  function row(k, v, strong) {
+    const r = el('div', 'display:flex;gap:12px;padding:6px 0;border-bottom:1px solid var(--edge2,#333)');
+    r.append(el('span', 'flex:none;width:72px;color:var(--faint,#999)', k), el(strong ? 'b' : 'span', 'flex:1;min-width:0;overflow-wrap:anywhere', v));
+    return r;
+  }
+
+  async function openCard(id) {
+    const b = shell('核准卡');
+    if (!ID_RE.test(String(id || ''))) { b.append(el('p', null, '這不是核准卡的 id。')); return; }
+    b.append(el('p', 'color:var(--faint,#999)', '讀取中…'));
+    const r = await getJ('/api/approvals?id=' + encodeURIComponent(id));
+    b.textContent = '';
+    if (r.status === 404 && LOCAL) {
+      b.append(el('p', null, '這張卡不在這台電腦上，是網頁版（雲端）建的。請到網頁核准' + (WEB ? '：' : '（登入網頁版之後打開「核准卡」）。')));
+      const desk = window.iamdirectorDesktop;
+      if (WEB) {
+        const a = el('a', 'color:inherit;text-decoration:underline', WEB + '/approve/' + id);
+        a.href = WEB + '/approve/' + id; a.target = '_blank'; a.rel = 'noopener';
+        b.append(a);
+      } else if (desk && desk.cloud && typeof desk.cloud.openWeb === 'function') {
+        b.append(btn('在瀏覽器開啟雲端版', () => desk.cloud.openWeb(), true));
+      }
+      return;
+    }
+    if (!r.ok) { b.append(el('p', null, errText(r.d) || ('讀不到這張卡（HTTP ' + r.status + '）'))); return; }
+    const c = r.d, s = c.summary || {};
+    const st = el('p', 'margin:0 0 10px;font-weight:600', '狀態：' + (STATUS[c.status] || c.status));
+    st.id = 'apvStatus';
+    b.append(st,
+      row('付款方', c.payer_text, true),
+      row('金額', (c.amount == null ? '—' : c.amount + ' ' + c.unit) + (s.open_ended ? '（帶參考影片，實際可能較高）' : ''), true),
+      row('模型', s.model || '—', true),
+      row('秒數', s.seconds != null ? s.seconds + ' 秒' : '—', true),
+      row('比例', s.aspect_ratio || '—'),
+      row('內容', s.prompt || '—'),
+      row('期限', c.expires_at ? new Date(c.expires_at).toLocaleString() : '—'));
+    const note = el('p', 'min-height:1.4em;margin:10px 0 0;color:var(--grease,#f09a88)'); note.id = 'apvNote';
+    b.append(note);
+    if (c.status === 'pending') {
+      const acts = el('div', 'display:flex;gap:10px;justify-content:flex-end;margin-top:12px');
+      const no = btn('拒絕', () => decide(false), false);
+      const yes = btn('核准，讓 Agent 送出', () => decide(true), true);
+      yes.id = 'apvApprove'; no.id = 'apvReject';
+      async function decide(ok) {
+        yes.disabled = no.disabled = true; note.textContent = '';
+        const d = await getJ('/api/approvals/decide', { id, approve: ok });
+        if (!d.ok) { note.textContent = errText(d.d) || ('沒有完成（HTTP ' + d.status + '）'); yes.disabled = no.disabled = false; return; }
+        openCard(id);
+      }
+      acts.append(no, yes);
+      b.append(acts, el('p', 'margin:10px 0 0;font-size:12px;color:var(--faint,#999)',
+        '核准之後 Agent 才能送出這一支（只能送一次）。失敗不會自動重抽，要重做會再出一張新卡給你核准。'));
+    }
+    b.append(limitsBox());
+  }
+
+  async function openList() {
+    const b = shell('核准卡');
+    const r = await getJ('/api/approvals?status=pending');
+    if (!r.ok) { b.append(el('p', null, errText(r.d) || ('讀不到核准卡（HTTP ' + r.status + '）'))); return; }
+    const items = r.d.items || [];
+    b.append(el('p', 'margin:0 0 8px', items.length ? '等你核准的卡：' : '沒有等你核准的卡。'));
+    items.forEach(c => {
+      const it = btn(c.text, () => openCard(c.id));
+      it.style.cssText += ';display:block;width:100%;text-align:left;margin:4px 0';
+      b.append(it);
+    });
+    b.append(limitsBox());
+  }
+
+  function limitsBox() {
+    const box = el('details', 'margin-top:16px;border-top:1px solid var(--edge2,#333);padding-top:10px');
+    box.id = 'apvLimits';
+    box.append(el('summary', 'cursor:pointer', LOCAL ? '上限與 Agent 連線' : '上限'));
+    const keys = LOCAL ? [['per_job_upstream', '單支上限（AppleToken 額度）'], ['daily_upstream', '每日上限（AppleToken 額度）']]
+                       : [['per_job_points', '單支上限（點）'], ['daily_points', '每日上限（點）'],
+                          ['per_job_upstream', '單支上限（自帶金鑰，AppleToken 額度）'], ['daily_upstream', '每日上限（自帶金鑰，AppleToken 額度）']];
+    const form = el('div', 'display:grid;gap:8px;margin-top:8px');
+    const used = el('p', 'margin:0;font-size:12px;color:var(--faint,#999)');
+    const msg = el('p', 'margin:0;min-height:1.2em;font-size:12px');
+    const inputs = {};
+    keys.forEach(([k, label]) => {
+      const l = el('label', 'display:flex;gap:8px;align-items:center'); const i = el('input', 'width:120px'); i.inputMode = 'decimal'; i.placeholder = '不設';
+      i.id = 'apv_' + k; inputs[k] = i;
+      l.append(el('span', 'flex:1', label), i); form.append(l);
+    });
+    const save = btn('儲存上限', async () => {
+      const bodyL = {}; keys.forEach(([k]) => { bodyL[k] = inputs[k].value.trim() || null; });
+      const r = await getJ('/api/approvals/limits', bodyL);
+      msg.textContent = r.ok ? '已儲存。超過上限的卡會被擋下。' : (errText(r.d) || '存不下來');
+      if (r.ok) fill(r.d);
+    });
+    form.append(save, used, msg);
+    box.append(form);
+    function fill(d) {
+      keys.forEach(([k]) => { inputs[k].value = d[k] == null ? '' : d[k]; });
+      used.textContent = '今天已核准：' + (LOCAL ? (d.used_today_upstream || '0') + ' AppleToken 額度'
+        : (d.used_today_points || '0') + ' 點、' + (d.used_today_upstream || '0') + ' AppleToken 額度') + '（以台北時間的日曆日計）';
+    }
+    getJ('/api/approvals/limits').then(r => { if (r.ok) fill(r.d); else msg.textContent = errText(r.d); });
+    if (LOCAL) {
+      const mc = el('div', 'margin-top:14px;font-size:13px;line-height:1.6');
+      mc.id = 'apvMcp';
+      getJ('/api/local/mcp').then(r => {
+        if (!r.ok) return;
+        mc.textContent = '';
+        mc.append(el('div', null, '本機 MCP：' + r.d.url),
+                  el('div', 'overflow-wrap:anywhere', '連線檔（網址＋權杖，只有你看得到）：' + r.d.file),
+                  el('div', null, '目前權杖末四碼：' + (r.d.token_tail || '—')));
+        const re = btn('重新產生權杖', async () => {
+          const g = await getJ('/api/local/mcp-token', {});
+          mc.append(el('div', null, g.ok ? g.d.message : (errText(g.d) || '沒有完成')));
+          if (g.ok) mc.querySelector('div:nth-child(3)').textContent = '目前權杖末四碼：' + g.d.token_tail;
+        });
+        re.style.marginTop = '6px';
+        mc.append(re);
+      });
+      box.append(mc);
+    }
+    return box;
+  }
+
+  let pill = null;
+  async function paintPill() {
+    const r = await getJ('/api/approvals?status=pending').catch(() => null);
+    const n = r && r.ok ? (r.d.items || []).length : 0;
+    if (!n) { if (pill) pill.hidden = true; return; }
+    if (!pill) {
+      pill = btn('', openList, true);
+      pill.id = 'apvPill';
+      pill.style.cssText += ';position:fixed;left:16px;bottom:16px;z-index:8000;box-shadow:0 6px 20px rgba(0,0,0,.4)';
+      document.body.append(pill);
+    }
+    pill.hidden = false;
+    pill.textContent = '核准卡 · ' + n + ' 張等你核准';
+  }
+
+  window.__APPROVALS__ = { open: openCard, list: openList, refresh: paintPill };
+  const m = location.pathname.match(/^\/approve\/(apv_[A-Za-z0-9]{16,32})$/);
+  if (m) openCard(m[1]);
+  const desk = window.iamdirectorDesktop;
+  if (desk && typeof desk.onOpenApproval === 'function') desk.onOpenApproval(id => openCard(String(id || '')));
+  paintPill();
+  setInterval(() => { if (!document.hidden) paintPill(); }, 20000);
 })();
 </script>
