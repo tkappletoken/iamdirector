@@ -2,6 +2,11 @@ import re
 
 MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,79}$")
 STYLES = ("meme", "memebox")
+RESOLUTIONS = ("720p", "1080p")
+_NAME = re.compile(r"\b[A-Z][a-z]{1,}\b")
+_COMMON = {"The", "A", "An", "At", "In", "On", "For", "Then", "When", "They", "He", "She", "It", "We", "His", "Her",
+           "Their", "This", "That", "After", "Before", "Suddenly", "Both", "Two", "One", "First", "Finally", "And", "But",
+           "Static", "Only", "Photorealistic", "Characters", "Everything", "With", "While", "As", "Its", "Our", "There"}
 
 class TemplateError(Exception):
     def __init__(self, code, msg):
@@ -15,14 +20,17 @@ MEME = {
     "aspect_ratio": "9:16",
     "seconds": (11, 15),
     "model": "gputw/minimax-h3",
-    "negative_prompt": ("humans, hands, extra animals, text, watermark, subtitles, camera movement, "
+    "negative_prompt": ("humans, hands, extra animals, collar, leash, text, watermark, subtitles, camera movement, "
                         "camera shake, zoom, cuts, scene change, music"),
+    "resolution": "720p",
     "fields": {
         "setup": "前段情境（反轉之前，畫面上在做什麼）",
         "twist_at": "第幾秒反轉",
         "chaos": "後段暴走的內容（反轉之後到結尾）",
         "seconds": "總長 11–15 秒（預設 15）",
-        "characters": "角色外觀描述（選填；例如 Dudu 與 Nini 的固定描述）",
+        "characters": "角色外觀描述（選填，300 字以內；例如「Dudu: a fluffy cream-colored toy poodle; Nini: an orange tabby cat」）",
+        "resolution": "解析度（720p 或 1080p，預設 720p；這個模型照解析度計價）",
+        "extra_negative": "追加的 negative（選填，200 字以內；接在範本內建的那一份後面，內建的刪不掉）",
         "cap_setup": "前段字卡（選填，40 字以內）",
         "cap_twist": "反轉之後的字卡（選填，40 字以內）",
         "flash_before": "反轉前幾秒閃一下白光（選填，0.3–3 秒；例如拍照的閃光）",
@@ -66,7 +74,11 @@ def meme(fields):
     if fields.get("twist_at") is None:
         raise TemplateError(400, "twist_at 要填（%s）" % MEME["fields"]["twist_at"])
     twist_at = _num(fields, "twist_at", 2, seconds - 2)
-    chars = _text(fields, "characters", 600)
+    chars = _text(fields, "characters", 300)
+    res = fields.get("resolution") or MEME["resolution"]
+    if res not in RESOLUTIONS:
+        raise TemplateError(400, "resolution 只能是 %s" % "／".join(RESOLUTIONS))
+    extra_neg = _text(fields, "extra_negative", 200).strip(" ,，")
     flash = _num(fields, "flash_before", 0.3, 3)
     style = fields.get("style") or "meme"
     if style not in STYLES:
@@ -86,8 +98,15 @@ def meme(fields):
         "Only natural ambient sound from the scene, no music, no speech.",
         "Photorealistic, funny viral video, no text.") if x)
 
+    negative = MEME["negative_prompt"] + (", " + extra_neg if extra_neg else "")
     shot = {"model": model, "prompt": prompt, "seconds": seconds, "aspect_ratio": MEME["aspect_ratio"],
-            "negative_prompt": MEME["negative_prompt"], "generate_audio": True}
+            "resolution": res, "negative_prompt": negative, "generate_audio": True}
+    warnings = []
+    if not chars:
+        names = sorted({w for w in _NAME.findall(setup + " " + chaos) if w not in _COMMON})
+        if names:
+            warnings.append("提示詞裡有名字（%s），但 characters 是空的：模型不知道這些名字長什麼樣子，"
+                            "請在 characters 寫外觀描述（例如 Dudu: a fluffy cream-colored toy poodle）" % "、".join(names))
     captions = []
     c1, c2 = _text(fields, "cap_setup", 40), _text(fields, "cap_twist", 40)
     if c1:
@@ -100,7 +119,8 @@ def meme(fields):
     post = {"captions": captions, "effects": effects, "twist": {"auto": True, "hint": twist_at},
             "format": {"aspect": "9:16", "resolution": "1080p", "fps": 30, "fit": "crop"}}
     return {"template": "meme", "fields": dict(fields), "shot": shot, "post": post,
-            "prompt": prompt, "seconds": seconds}
+            "prompt": prompt, "seconds": seconds, "negative_prompt": negative, "builtin_negative": MEME["negative_prompt"],
+            "warnings": warnings}
 
 def build(template, fields):
     t = TEMPLATES.get(template)

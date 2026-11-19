@@ -298,8 +298,10 @@ class Registry:
             "建一部作品：新的專案＋它自己的分鏡（主線打開就看得到）。**免費**。"
             "shots 是 [{prompt, seconds?}]（1–30 鏡）；或給 script（「Shot 1｜0-3s …」那種腳本）讓伺服器拆鏡；"
             "或給 template='meme'（迷因短片：一鏡到底、固定鏡頭、9:16、11–15 秒）＋fields"
-            "（setup 前段情境、twist_at 第幾秒反轉、chaos 後段暴走；選填 seconds、characters、cap_setup、cap_twist、"
-            "flash_before、style＝meme／memebox）。範本的 negative 與「只用環境音」由伺服器寫，報價用 quote_work。",
+            "（setup 前段情境、twist_at 第幾秒反轉、chaos 後段暴走；選填 seconds、resolution＝720p／1080p（預設 720p）、"
+            "characters＝角色外觀描述（提示詞裡用到名字就要寫，不然模型不知道長什麼樣子）、extra_negative＝追加的 negative"
+            "（接在內建的後面，內建的刪不掉）、cap_setup、cap_twist、flash_before、style＝meme／memebox）。"
+            "範本的 negative 與「只用環境音」由伺服器寫，報價用 quote_work；回應的 warnings 要看。",
             _obj({"name": {"type": "string", "minLength": 1},
                   "shots": {"type": "array", "items": {"type": "object"}},
                   "script": {"type": "string"}, "model": {"type": "string"},

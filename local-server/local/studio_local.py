@@ -771,7 +771,8 @@ class Handler(BaseHTTPRequestHandler):
                 meta = {"template": tp["template"], "fields": tp["fields"]}
                 if body.get("dry_run"):
                     return self._json(200, {"template": tp["template"], "prompt": tp["prompt"], "seconds": tp["seconds"],
-                                            "shot": tp["shot"], "post": tp["post"]})
+                                            "shot": tp["shot"], "post": tp["post"], "negative_prompt": tp["negative_prompt"],
+                                            "builtin_negative": tp["builtin_negative"], "warnings": tp["warnings"]})
                 return self._store(studio_store.create_work, body.get("name"),
                                    [{"prompt": tp["prompt"], "seconds": tp["seconds"]}], meta)
             shots = body.get("shots")
@@ -782,7 +783,19 @@ class Handler(BaseHTTPRequestHandler):
             tp = self._work_template(body.get("project_id"))
             if not isinstance(tp, dict):
                 return tp
-            return self._generate(dict(tp["shot"], require_confirmation=True, approval_card=True))
+            sent = {}
+
+            def capture(code, obj):
+                sent["code"], sent["obj"] = code, obj
+            self._json = capture
+            try:
+                self._generate(dict(tp["shot"], require_confirmation=True, approval_card=True))
+            finally:
+                del self._json
+            out = sent.get("obj") if isinstance(sent.get("obj"), dict) else {"data": sent.get("obj")}
+            out = dict(out, negative_prompt=tp["negative_prompt"], builtin_negative=tp["builtin_negative"],
+                       warnings=tp["warnings"], resolution=tp["shot"]["resolution"], aspect_ratio=tp["shot"]["aspect_ratio"])
+            return self._json(sent.get("code", 500), out)
         if path == "/api/works/export":
             return self._work_export(body)
         if path == "/api/local/mcp-token":
