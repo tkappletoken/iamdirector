@@ -123,11 +123,13 @@ function copyServer() {
 function smoke(pyDir, serverDir) {
   const py = process.platform === 'win32' ? path.join(pyDir, 'python.exe') : path.join(pyDir, 'bin', 'python3');
   execFileSync(py, ['-I', '-B', '-c',
-    'import sys; sys.path[:0]=[sys.argv[1]+"/local", sys.argv[1]]; import studio_local; print("ok")', serverDir],
+    'import sys; sys.path[:0]=[sys.argv[1]+"/local", sys.argv[1]]; import studio_local; print("ok")'
+    // studio_local loads these lazily (export, cast refs): import them here so a missing file fails the build
+    + '; import postblocks, cast_refs, shot_controls; print("lazy modules ok")', serverDir],
   { stdio: 'inherit' });
   execFileSync(py, ['-I', '-B', '-c', [
     'import sys; sys.path.insert(0, sys.argv[1] + "/cli")',
-    'from appletoken.core import Client; from appletoken.core.session import Session',
+    'from appletoken.core import Client, model_caps; from appletoken.core.session import Session',
     'from appletoken.mcp import tools as t',
     's = Session("x" * 40, base_url="http://127.0.0.1:1", kind="token", register=False)',
     'r = t.Registry(s, allow_spend=True, remote=True, local=True, client=Client(s))',
