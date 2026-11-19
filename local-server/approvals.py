@@ -503,6 +503,17 @@ def decide_batch(conn, user_id, bid, approve, now=None):
             _mark_approved(conn, user_id, c["id"], c, "human")
     return batch_cards(conn, user_id, bid)
 
+def reapply_auto(conn, user_id, cards, now=None):
+    lim = limits_get(conn, user_id)
+    if not (auto_ready(lim, "points") or auto_ready(lim, "upstream")):
+        return cards
+    done = {}
+    for c in sorted([c for c in cards if c and c.get("status") == "pending"], key=lambda c: str(c.get("created_at") or "")):
+        got = try_auto(conn, user_id, c, now)
+        if got:
+            done[c["id"]] = got
+    return [done.get(c["id"], c) for c in cards]
+
 def claim_for_submit(conn, user_id, cid, expect_amount=None, now=None):
     card = get(conn, user_id, cid)
     if not card:

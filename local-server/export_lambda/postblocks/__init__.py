@@ -9,6 +9,9 @@ from .concat import Concat
 from .disclosure import Disclosure
 from .encode import Encode
 from .fit import Fit
+from .format import Format
+from .transition import Transition
+from .seam_check import SeamCheck
 from .fps import Fps
 from .meme_captions import MemeCaptions
 from .mix import Mix
@@ -22,7 +25,7 @@ from .video_fade import VideoFade
 from .music_duck import MusicDuck
 from .loudness import Loudness
 
-REGISTRY = {b.id: b for b in (TwistDetect, ClipTrim, Fps, Fit, Concat, PadBlack, WhiteFlash, MemeCaptions, VideoFade,
+REGISTRY = {b.id: b for b in (TwistDetect, SeamCheck, Format, ClipTrim, Fps, Fit, Transition, Concat, PadBlack, WhiteFlash, MemeCaptions, VideoFade,
                               Disclosure, Subtitles, Titles, AudioClip, AudioFade, MusicDuck, Mix, Loudness, Encode)}
 
 ENGINES = ("legacy", "blocks", "shadow")
@@ -39,6 +42,7 @@ def pipeline_from_spec(spec, container="mp4"):
     fmt = spec["format"]
     blocks = [
         {"use": "twist_detect", "params": {"twist": dict(spec.get("twist") or {})}},
+        {"use": "format", "params": {"aspect": fmt["aspect"], "resolution": fmt["resolution"]}},
         {"use": "clip_trim", "params": {}},
         {"use": "fps", "params": {"fps": fmt["fps"]}},
         {"use": "fit", "params": {"mode": "crop" if fmt.get("fit") == "crop" else "pad"}},
@@ -85,3 +89,21 @@ def compile_spec(spec, files, probes, caps, workdir, strict=True, fontsdir=None,
     pipe = normalize(pipeline_from_spec(spec, container))
     return compile_pipeline(pipe, files, probes, caps, workdir, strict=strict, fontsdir=fontsdir,
                             container=container, caption_fontsdir=caption_fontsdir)
+
+def analyze_spec(spec, files, detect, body, pipeline=None):
+    params = {}
+    for b in clean_user(pipeline or []):
+        if b["use"] == "twist_detect":
+            params = b.get("params") or {}
+    blk = TwistDetect()
+    p = blk.check(params)
+    custom = any(p.get(k) != v for k, v in TwistDetect.DEFAULTS.items())
+    caps, effs, at = blk.analyze(p, spec, files, detect, body)
+    return caps, effs, at, blk.warnings, custom
+
+def seam_reports(pipeline, spec, files, ffmpeg):
+    for b in clean_user(pipeline or []):
+        if b["use"] == "seam_check" and b.get("on", True):
+            cls = REGISTRY["seam_check"]
+            return cls().measure(cls().check(b.get("params") or {}), spec, files, ffmpeg)
+    return None

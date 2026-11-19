@@ -1,5 +1,6 @@
 import argparse
 import base64
+import datetime
 import hashlib
 import hmac
 import json
@@ -42,6 +43,7 @@ def sha256_file(path):
             h.update(chunk)
     return h.hexdigest()
 import approvals
+import cast_refs
 import templates
 import twist
 import page_strip
@@ -58,6 +60,16 @@ TIMEOUT = 15
 GENERATE_TIMEOUT = 120
 IMAGE_TIMEOUT = 610
 IMAGE_TIMEOUTS_KEPT = 50
+IMAGE_RECOVER_SLACK = 30
+IMAGE_RECOVER_KEPT = 50
+IMG_ID = re.compile(r"^img_[0-9a-f]{1,64}$")
+
+def image_recover_mode():
+    v = os.environ.get("IMAGE_RECOVER", "off").strip().lower()
+    return v if v in ("shadow", "on") else "off"
+
+def _dropped(e):
+    return e.code == 502 and isinstance(e.body, str) and e.body.startswith("連不上 Gateway")
 CONCAT_MAX = 30
 CONCAT_NAME = re.compile(r"(?:^|/)download\?id=([A-Za-z0-9_-]{1,64})$")
 CONCAT_FILE = re.compile(r"([A-Za-z0-9_-]{1,64})\.mp4")
@@ -74,7 +86,8 @@ QUOTE_TTL = 3600
 BODY_MAX = 512 * 1024
 DRAIN_MAX = 64 * 1024 * 1024
 BODY_LIMITS = {"/api/assets": 24 * 1024 * 1024, "/api/image-generate": 24 * 1024 * 1024,
-               "/api/export": 24 * 1024 * 1024, "/api/local/work-import": 2 * 1024 * 1024}
+               "/api/export": 24 * 1024 * 1024, "/api/local/work-import": 2 * 1024 * 1024,
+               "/api/qc": 3 * 1024 * 1024}
 MEDIA_MAX = 4 * 1024 ** 3
 MEDIA_MIME = re.compile(r"^(video/(mp4|quicktime|webm)|audio/(mpeg|mp3|mp4|aac|wav|x-wav|wave|flac|ogg)"
                         r"|image/(png|jpeg|webp|gif))$")
@@ -116,6 +129,7 @@ LOCAL_API = (
     "/api/works/quote", "/api/works/export", "/api/twist",
     "/api/local/engine",
     "/api/blocks", "/api/pipeline/preview",
+    "/api/local/agent-scope",
 )
 
 AGENT_ALLOWED = {
@@ -128,14 +142,25 @@ AGENT_ALLOWED = {
     ("POST", "/api/works/quote"), ("POST", "/api/works/export"), ("GET", "/api/twist"), ("GET", "/api/export/status"),
     ("GET", "/api/blocks"), ("POST", "/api/pipeline/preview"),
 }
+AGENT_SCOPES = ("basic", "full")
+AGENT_FULL = {
+    ("POST", "/api/storyboard/quote"), ("POST", "/api/storyboard"),
+    ("POST", "/api/audio/speech"), ("POST", "/api/audio/music"), ("GET", "/api/audio/music-status"),
+    ("GET", "/api/audio/music-content"), ("GET", "/api/audio/content"),
+    ("POST", "/api/image-generate"), ("POST", "/api/image"), ("POST", "/api/qc"),
+    ("POST", "/api/qc/rate"),
+}
+SPEND_TTL = 30 * 60
 MCP_PACKAGE_FILES = (
     "cli/appletoken/__init__.py",
     "cli/appletoken/core/__init__.py", "cli/appletoken/core/api.py", "cli/appletoken/core/errors.py",
+    "cli/appletoken/core/model_caps.py",
     "cli/appletoken/core/http.py", "cli/appletoken/core/poll.py", "cli/appletoken/core/preflight.py",
     "cli/appletoken/core/redact.py", "cli/appletoken/core/session.py",
     "cli/appletoken/mcp/__init__.py", "cli/appletoken/mcp/activity.py", "cli/appletoken/mcp/tools.py",
 )
 AGENT_TOKEN_PREFIX = "iadl_"
+_AGENT_NO_CONFIRM = "本機的 Agent 不能直接確認：這張報價已經附了核准卡，使用者核准後用 submit_approved 送出"
 MCP_FILE = "mcp.json"
 JOB_ID_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _LATER = "本機模式還沒有這一項（之後的版本會補上）"
@@ -211,6 +236,7 @@ class State:
         self.desktop = None
         self._page = None
         self.audio = {}
+        self.spend = {}
         self.media = os.path.join(data_dir, "media")
         os.makedirs(self.media, mode=0o700, exist_ok=True)
         self.exports_root = os.path.join(data_dir, "exports")
@@ -286,6 +312,39 @@ class State:
         env = os.environ.get("POSTBLOCKS_ENGINE", "").strip().lower() or None
         return {"engine": self.engine_now(), "setting": self.engine_setting(), "env": env,
                 "choices": list(ENGINE_CHOICES)}
+
+    def agent_scope_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "agent_scope.json"), encoding="utf-8") as f:
+                v = json.load(f).get("scope")
+            return v if v in AGENT_SCOPES else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def set_agent_scope(self, value):
+        path = os.path.join(self.data_dir, "agent_scope.json")
+        try:
+            if value is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"scope": value}, f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
+
+    def agent_scope_now(self):
+        v = self.agent_scope_setting()
+        env = os.environ.get("STUDIO_LOCAL_AGENT_SCOPE", "").strip().lower()
+        return v or (env if env in AGENT_SCOPES else "basic")
+
+    def agent_scope_info(self):
+        env = os.environ.get("STUDIO_LOCAL_AGENT_SCOPE", "").strip().lower() or None
+        return {"scope": self.agent_scope_now(), "setting": self.agent_scope_setting(), "env": env,
+                "choices": list(AGENT_SCOPES), "full_adds": sorted("%s %s" % x for x in AGENT_FULL)}
 
     def set_key(self, key):
         with self.lock:
@@ -464,7 +523,8 @@ class Handler(BaseHTTPRequestHandler):
             self.who = "agent"
         else:
             return self._plain(401, "missing local token")
-        if (self.command if self.command != "HEAD" else "GET", path) not in AGENT_ALLOWED:
+        allowed = AGENT_ALLOWED | AGENT_FULL if st.agent_scope_now() == "full" else AGENT_ALLOWED
+        if (self.command if self.command != "HEAD" else "GET", path) not in allowed:
             return self._json(403, {"error": "本機的 Agent 只能報價、查詢、建作品和送出已核准的卡；"
                                              "核准、設上限、換金鑰要你本人在 App 裡操作"})
         return True
@@ -644,6 +704,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._local_result(one("id"))
         if path == "/api/local/engine":
             return self._json(200, st.engine_info())
+        if path == "/api/local/agent-scope":
+            return self._json(200, st.agent_scope_info())
         if path == "/api/blocks":
             import postblocks
             return self._json(200, postblocks.catalog())
@@ -796,6 +858,17 @@ class Handler(BaseHTTPRequestHandler):
             if not st.set_engine(v):
                 return self._json(500, {"error": "設定寫不進本機資料夾"})
             return self._json(200, st.engine_info())
+        if path == "/api/local/agent-scope":
+            v = body.get("scope")
+            if v is not None and v not in AGENT_SCOPES:
+                return self._json(400, {"error": "scope 只能是 %s，或 null（回到預設）" % "／".join(AGENT_SCOPES)})
+            if not st.set_agent_scope(v):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            return self._json(200, st.agent_scope_info())
+        if path == "/api/qc" and st.agent_scope_now() == "full":
+            return self._qc(body)
+        if path == "/api/qc/rate" and st.agent_scope_now() == "full":
+            return self._qc_rate(body)
         if path == "/api/payer/choice":
             return self._json(200, self._payer_state())
         if path == "/api/estimate":
@@ -1009,11 +1082,26 @@ class Handler(BaseHTTPRequestHandler):
             out = dict(out, stale=True)
         return self._json(200, out)
 
+    def _cast_prepare(self, body):
+        if body.get("cast") is None and "cast_shot" not in body and "controls" not in body:
+            return body, None, None
+        return cast_refs.prepare(body, lambda: self.state.db.run(
+            lambda c, u: studio_store.kv_get(c, u, cast_refs.STORE_KEY))["value"])
+
+    def _cast_shadow(self, shadow, got, path):
+        try:
+            pl = dict(shadow, require_confirmation=True) if path == "/videos/generations" else shadow
+            q = self.state.call(path, payload=pl, timeout=GENERATE_TIMEOUT)
+        except Exception as e:
+            return cast_refs.shadow_log(got, None, err=type(e).__name__)
+        return cast_refs.shadow_log(got, q)
+
     def _estimate(self, body):
         body = dict(body)
         body.pop("payer", None)
         if upstream.bad_seconds(body):
             return self._json(400, {"error": upstream.SECONDS_HINT})
+        body, shadow, cast_info = self._cast_prepare(body)
         try:
             r = self.state.call("/quote", payload=body)
         except ConsoleError as e:
@@ -1025,6 +1113,10 @@ class Handler(BaseHTTPRequestHandler):
         out["payer"] = "own_key"
         if body.get("include_video_url") or upstream.has_video_ref(body):
             out["open_ended"] = True
+        if cast_info is not None:
+            if shadow is not None:
+                cast_info["shadow"] = self._cast_shadow(shadow, r, "/quote")
+            out["cast_refs"] = cast_info
         return self._json(200, out)
 
     def _generate(self, body):
@@ -1044,12 +1136,15 @@ class Handler(BaseHTTPRequestHandler):
             want_card = True
         if upstream.bad_seconds(body):
             return self._json(400, {"error": upstream.SECONDS_HINT})
+        body, shadow, cast_info = self._cast_prepare(body)
         want_sheet = bool(body.get("require_confirmation"))
         try:
             sheet = st.call("/videos/generations", payload=dict(body, require_confirmation=True),
                             timeout=GENERATE_TIMEOUT)
         except ConsoleError as e:
             return self._err(e)
+        if shadow is not None:
+            cast_info["shadow"] = self._cast_shadow(shadow, sheet, "/videos/generations")
         if not (isinstance(sheet, dict) and sheet.get("quote_id") and isinstance(sheet.get("estimate"), dict)):
             out = dict(sheet) if isinstance(sheet, dict) else {"data": sheet}
             out["payer"] = "own_key"
@@ -1070,6 +1165,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
         if want_sheet:
             out = dict(sheet, payer="own_key", provider="appletoken")
+            if cast_info is not None:
+                out["cast_refs"] = cast_info
             if want_card:
                 out["approval"] = self._card_for_quote(qid, cost, open_ended, body, sheet)
             if open_ended:
@@ -1148,6 +1245,152 @@ class Handler(BaseHTTPRequestHandler):
             return {"enabled": False, "error": "核准卡建不起來（%s），請重新報價" % type(e).__name__}
         return dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
 
+    def _agent_card(self, kind, ref, cost, ttl, summary):
+        charge = {"id": None, "quote_ref": ref, "kind": kind, "payer": "own_key", "points": None, "upstream_cost": cost}
+        exp = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=ttl)
+        summ = {k: v for k, v in (summary or {}).items() if v not in (None, "")}
+        try:
+            def go(c, u):
+                card = approvals.create(c, user_id=u, charge=charge, summary=summ, expires_at=exp)
+                return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
+            card = self.state.db.run(go)
+        except Exception as e:
+            return {"enabled": False, "error": "核准卡建不起來（%s），請重新報價" % type(e).__name__}
+        return dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
+
+    def _spend_hold(self, kind, body, cost=None, summary=None):
+        st = self.state
+        if not st.key():
+            return self._json(409, NO_KEY)
+        ref = "sp_" + secrets.token_hex(12)
+        with st.lock:
+            now = time.monotonic()
+            for k in [k for k, v in st.spend.items() if now - v["t"] > SPEND_TTL]:
+                st.spend.pop(k, None)
+            st.spend[ref] = {"kind": kind, "body": body, "t": now, "status": "quoted"}
+        summ = summary or {"model": body.get("model"), "prompt": str(body.get("prompt") or "")[:280],
+                           "n": body.get("n")}
+        return self._json(200, {"object": "%s.confirmation" % kind, "status": "needs_confirmation", "quote_id": ref,
+                                "kind": kind, "payer": "own_key", "expires_in": SPEND_TTL,
+                                "estimate": {"upstream_cost": str(cost) if cost is not None else None},
+                                "approval": self._agent_card(kind, ref, cost, SPEND_TTL, summ),
+                                "note": "要使用者核准這張卡（或在預先授權上限內），再用 submit_approved 送出"})
+
+    def _spend_run(self, ref, kind):
+        st = self.state
+        with st.lock:
+            got = st.spend.get(ref)
+            if got is None or got["kind"] != kind or time.monotonic() - got["t"] > SPEND_TTL:
+                return self._json(409, {"error": "找不到這張請求（或它已逾時、App 重開過），請重新報價"})
+            if got["status"] != "quoted":
+                return self._json(409, {"error": "這張請求已經送出過了，不能再送一次"})
+            got["status"] = "sent"
+        body = got["body"]
+        if kind == "image":
+            return self._image_generate(body)
+        if kind == "cast_image":
+            return self._cast_image(body)
+        return self._qc_send(body)
+
+    def _qc_frames(self, jid):
+        st = self.state
+        if not (st.ffmpeg and st.ffprobe):
+            return None, "no_ffmpeg"
+        try:
+            path = os.path.join(st.media, self._cache_job(jid))
+        except ConsoleError:
+            return None, "no_video"
+        env = st.openh264_env()
+        try:
+            r = subprocess.run([st.ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
+                               capture_output=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+            dur = float((json.loads(r.stdout or b"{}").get("format") or {}).get("duration") or 0)
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            dur = 0
+        if dur <= 0:
+            return None, "no_duration"
+        frames = []
+        for t in (0.15, 0.5, 0.9):
+            try:
+                r = subprocess.run([st.ffmpeg, "-nostdin", "-loglevel", "error", "-ss", "%.3f" % (dur * t), "-i", path,
+                                    "-frames:v", "1", "-vf", "scale=512:512:force_original_aspect_ratio=decrease",
+                                    "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
+                                   capture_output=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+            except (OSError, subprocess.SubprocessError):
+                return None, "ffmpeg_failed"
+            if r.returncode != 0 or not r.stdout:
+                return None, "ffmpeg_failed"
+            f = "data:image/jpeg;base64," + base64.b64encode(r.stdout).decode()
+            if len(f) > qc.MAX_FRAME_BYTES:
+                return None, "frame_too_big"
+            frames.append(f)
+        return frames, None
+
+    def _qc(self, body):
+        body = dict(body) if isinstance(body, dict) else {}
+        auto = None
+        if "frames" not in body and isinstance(body.get("job"), str) and qc.JOB.match(body["job"]):
+            frames, why = self._qc_frames(body["job"])
+            if frames:
+                body["frames"], auto = frames, "ok"
+            else:
+                sys.stderr.write("[qc] frames_auto=%s\n" % why)
+                auto = why
+        try:
+            job, frames, expect = qc.check_request(body)
+            cuts = qc.allow_cuts_of(body)
+        except qc.QCError as e:
+            out = {"error": e.message}
+            if auto:
+                out["frames_auto"] = auto
+            return self._json(e.code, out)
+        send = {"job": job, "frames": frames, "expect": expect, "allow_cuts": cuts}
+        if not self._human() and not getattr(self, "_via_card", False):
+            cap = None
+            try:
+                listing, _ = self.state.models_cached()
+                cap = qc.price_cap(qc.find_entry(listing, qc.MODEL), len(frames))
+            except ConsoleError:
+                pass
+            return self._spend_hold("qc", send, cap, {"model": qc.MODEL, "prompt": "驗片 %s（%d 格）" % (job, len(frames))})
+        return self._qc_send(send)
+
+    def _qc_rate(self, body):
+        try:
+            job, score, tags, comment = qc.check_rating(body)
+        except qc.QCError as e:
+            return self._json(e.code, {"error": e.message})
+        send = {"request_id": job, "score": score, "tags": list(tags or [])}
+        if comment:
+            send["comment"] = comment
+        try:
+            got = self.state.call("/ratings", payload=send)
+        except ConsoleError as e:
+            return self._err(e)
+        return self._json(200, {"job": job, "payer": "own_key", "rating": got})
+
+    def _qc_send(self, send):
+        st = self.state
+        if not st.key():
+            return self._json(409, NO_KEY)
+        try:
+            resp = st.call("/chat/completions", payload=qc.chat_payload(send["frames"], send["expect"],
+                                                                        allow_cuts=send["allow_cuts"]),
+                           timeout=GENERATE_TIMEOUT)
+        except ConsoleError as e:
+            return self._err(e, payer="own_key")
+        v = qc.parse_verdict(resp)
+        out = {"job": send["job"], "payer": "own_key", "model": qc.MODEL, "verdict": v}
+        if v.get("ok"):
+            out["rating"] = qc.to_rating(v)
+        usage = resp.get("usage") if isinstance(resp, dict) and isinstance(resp.get("usage"), dict) else None
+        if usage:
+            out["usage"] = {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
+        actual = qc.charged_of(resp)
+        if actual is not None:
+            out["upstream_cost"] = str(actual)
+        return self._json(200, out)
+
     def _approvals_run(self, fn):
         try:
             return self._json(200, self.state.db.run(fn))
@@ -1164,7 +1407,8 @@ class Handler(BaseHTTPRequestHandler):
                 return approvals.public(card, self._card_link(card["id"]))
             if status and status not in approvals.STATUSES:
                 raise approvals.ApprovalError(400, "status 不合法")
-            return {"items": [approvals.public(x, self._card_link(x["id"])) for x in approvals.list_cards(c, u, status or None)]}
+            items = approvals.reapply_auto(c, u, approvals.list_cards(c, u, status or None))
+            return {"items": [approvals.public(x, self._card_link(x["id"])) for x in items]}
         return self._approvals_run(go)
 
     def _approvals_batch_get(self, bid):
@@ -1217,8 +1461,18 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json = capture
         self._via_card = True
+        kind = card.get("kind") or "video"
         try:
-            self._confirm(card["quote_ref"], True)
+            if kind == "video":
+                self._confirm(card["quote_ref"], True)
+            elif kind == "storyboard":
+                self._storyboard({"quote_id": card["quote_ref"], "confirm": True})
+            elif kind in ("tts", "music"):
+                self._audio_confirm(card["quote_ref"], True, kind)
+            elif kind in ("image", "cast_image", "qc"):
+                self._spend_run(card["quote_ref"], kind)
+            else:
+                capture(409, {"error": "本機不認得這種核准卡（%s）" % kind})
         finally:
             del self._json
             self._via_card = False
@@ -1304,7 +1558,14 @@ class Handler(BaseHTTPRequestHandler):
         ov = body.get("overrides") or {}
         if not isinstance(ov, dict) or any(k not in ("captions", "effects", "twist") for k in ov):
             return self._json(400, {"error": "overrides 只收 captions／effects／twist"})
+        if ov.get("captions") == "none":
+            ov = {k: v for k, v in ov.items() if k != "captions"}
+            body = dict(body, captions="none")
         post.update(ov)
+        if "captions" in body:
+            if body["captions"] != "none":
+                return self._json(400, {"error": "captions 只能是 \"none\"（不燒字卡）；要改字卡內容請用 overrides.captions"})
+            post["captions"] = []
         req = {"project_id": body.get("project_id"), "format": post["format"],
                "video": [{"job": jid, "in": 0, "out": float(tp["seconds"])}], "audio": [{"lane": "A1", "job": jid, "at": 0, "in": 0,
                "dur": float(tp["seconds"])}], "cues": [], "subtitles": "none", "disclosure": {"on": False},
@@ -1429,14 +1690,21 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         body = dict(body)
         body.pop("payer", None)
+        if not self._human() and not getattr(self, "_via_card", False):
+            return self._spend_hold("image", body)
         started = int(time.time())
         try:
             send = self._inline(dict(body))
             r = st.call("/images/generations", payload=send, timeout=IMAGE_TIMEOUT)
         except ConsoleError as e:
-            if e.timed_out or e.code == 504:
-                return self._image_lost(body, started)
-            return self._err(e)
+            lost = e.timed_out or e.code == 504
+            if lost or _dropped(e):
+                got, outcome = self._image_recover(body, started)
+                if got is None:
+                    return self._image_lost(body, started, outcome) if lost or outcome else self._err(e)
+                r = dict(got, recovered=True)
+            else:
+                return self._err(e)
         out = dict(r) if isinstance(r, dict) else {"data": r}
         out["payer"] = "own_key"
         return self._json(200, out)
@@ -1446,6 +1714,8 @@ class Handler(BaseHTTPRequestHandler):
         prompt = body.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             return self._json(400, {"error": "先寫外觀描述，或寫要生什麼"})
+        if not self._human() and not getattr(self, "_via_card", False):
+            return self._spend_hold("cast_image", dict(body))
         n = body.get("n") if isinstance(body.get("n"), int) and 1 <= body.get("n") <= 4 else 1
         model = body.get("model") if isinstance(body.get("model"), str) and body["model"].strip() else CAST_IMAGE_DEFAULT
         name = str(body.get("name") or "ref").strip()[:60] or "ref"
@@ -1454,9 +1724,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             r = st.call("/images/generations", payload=send, timeout=IMAGE_TIMEOUT)
         except ConsoleError as e:
-            if e.timed_out or e.code == 504:
-                return self._image_lost(send, started)
-            return self._err(e)
+            lost = e.timed_out or e.code == 504
+            if lost or _dropped(e):
+                r, outcome = self._image_recover(send, started)
+                if r is None:
+                    return self._image_lost(send, started, outcome) if lost or outcome else self._err(e)
+            else:
+                return self._err(e)
         items = r.get("data") if isinstance(r, dict) else None
         if not isinstance(items, list) or not items:
             return self._json(502, {"error": "上游沒有回圖片"})
@@ -1608,7 +1882,59 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(work, ignore_errors=True)
         return self._json(200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": lossless, "path": kept})
 
-    def _image_lost(self, body, started):
+    def _image_find(self, model, since, until, client_ref=None):
+        names = {model}
+        if upstream.needs_ref(model):
+            try:
+                names.add(upstream.ref_from_catalog(model, self.state.models_cached()[0]))
+            except ConsoleError:
+                pass
+        try:
+            got = self.state.call("/usage?limit=100", timeout=TIMEOUT)
+        except ConsoleError:
+            return "error", None
+        rows = got.get("data") if isinstance(got, dict) else None
+        if not isinstance(rows, list):
+            return "error", None
+        lo, hi = since - IMAGE_RECOVER_SLACK, until + IMAGE_RECOVER_SLACK
+        hits = [r.get("job_id") for r in rows
+                if isinstance(r, dict) and r.get("modality") == "image" and r.get("model") in names
+                and isinstance(r.get("created_at"), (int, float)) and lo <= r["created_at"] <= hi
+                and isinstance(r.get("job_id"), str) and IMG_ID.match(r["job_id"])]
+        if len(hits) == 1:
+            return "found", hits[0]
+        return ("none" if not hits else "multi"), None
+
+    def _image_recover(self, body, started):
+        mode = image_recover_mode()
+        if mode == "off":
+            return None, None
+        model = str(body.get("model") or "")[:120]
+        outcome, iid = self._image_find(model, started, int(time.time()))
+        got = None
+        if outcome == "found":
+            try:
+                got = self.state.call("/images/" + iid, timeout=TIMEOUT)
+            except ConsoleError:
+                got = None
+            items = got.get("data") if isinstance(got, dict) else None
+            if not (isinstance(items, list) and any(isinstance(x, dict) and x.get("url") for x in items)):
+                outcome, got = "unfetchable", None
+        rec = {"at": started, "model": model, "mode": mode, "outcome": outcome}
+        if iid:
+            rec["id"] = iid
+        try:
+            with self.state.media_lock:
+                old = self.state.db.run(studio_store.kv_get, "image_recover_log")["value"]
+                lst = (old if isinstance(old, list) else []) + [rec]
+                self.state.db.run(studio_store.kv_put, "image_recover_log", lst[-IMAGE_RECOVER_KEPT:])
+        except studio_store.StoreError:
+            pass
+        if mode != "on":
+            return None, None
+        return (got, None) if got is not None else (None, outcome)
+
+    def _image_lost(self, body, started, outcome=None):
         model = str(body.get("model") or "")[:120]
         rec = {"at": started, "model": model, "n": body.get("n") if isinstance(body.get("n"), int) else 1}
         try:
@@ -1619,6 +1945,11 @@ class Handler(BaseHTTPRequestHandler):
         except studio_store.StoreError:
             pass
         when = time.strftime("%H:%M", time.localtime(started))
+        if outcome:
+            return self._json(504, {
+                "error": ("等不到這張圖（%s 送出的 %s）。可能已經生成了，但用量紀錄裡找不到唯一對得上的一筆，不替你猜；"
+                          "請到 AppleToken 的用量頁查 %s 之後的圖片紀錄。" % (when, model or "圖片", when)),
+                "maybe_billed": True, "submitted_at": started, "model": model, "recover": outcome})
         return self._json(504, {
             "error": ("等不到這張圖（%s 送出的 %s）。AppleToken 的生圖沒有可以回頭查的編號，圖拿不回來；"
                       "額度可能已經扣了，請到 AppleToken 的用量紀錄對 %s 之後的圖片那一筆，扣了的話請聯絡 AppleToken。"
@@ -1687,12 +2018,16 @@ class Handler(BaseHTTPRequestHandler):
             for k in [k for k, v in st.sb.items() if now - v["t"] > SB_QUOTE_TTL * 2]:
                 st.sb.pop(k, None)
             st.sb[ref] = {"q": q, "t": now, "status": "quoted", "result": None}
-        return self._json(200, {
+        out = {
             "object": "storyboard.confirmation", "status": "needs_confirmation", "quote_id": ref,
             "payer": "own_key", "model": storyboard.model_of(q), "shots": q.get("shots"),
             "expires_in": SB_QUOTE_TTL,
             "estimate": {"upstream_cost_max": str(cap) if cap is not None else None},
-            "note": "用你自己的 AppleToken 金鑰，AppleToken 依實際用量收費"})
+            "note": "用你自己的 AppleToken 金鑰，AppleToken 依實際用量收費"}
+        if not self._human():
+            out["approval"] = self._agent_card("storyboard", ref, cap, SB_QUOTE_TTL, {
+                "model": storyboard.model_of(q), "prompt": str(q.get("story") or "")[:280], "shots": q.get("shots")})
+        return self._json(200, out)
 
     def _storyboard(self, body):
         st = self.state
@@ -1708,6 +2043,8 @@ class Handler(BaseHTTPRequestHandler):
             if not body.get("confirm"):
                 s["status"] = "cancelled"
                 return self._json(200, {"status": "cancelled", "quote_id": qid})
+            if not self._human() and not getattr(self, "_via_card", False):
+                return self._json(409, {"error": _AGENT_NO_CONFIRM})
             if time.monotonic() - s["t"] > SB_QUOTE_TTL:
                 return self._json(409, {"error": "這張報價已逾時，請重新報價"})
             if s["status"] != "quoted":
@@ -1796,6 +2133,9 @@ class Handler(BaseHTTPRequestHandler):
             out["characters"] = len(body["input"])
         if note:
             out.update(quote_unavailable=True, note=note)
+        if not self._human():
+            summ = {"model": body["model"], "prompt": str(body.get("input") or body.get("prompt") or body.get("lyrics") or "")[:280]}
+            out["approval"] = self._agent_card(kind, ref, cost, 15 * 60, summ)
         return self._json(200, out)
 
     def _audio_confirm(self, qid, confirm, kind):
@@ -1811,6 +2151,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"status": "cancelled", "quote_id": qid})
             if a["status"] != "quoted":
                 return self._json(409, {"error": "這張報價已經送出過了，不能再送一次"})
+            if not self._human() and not getattr(self, "_via_card", False):
+                return self._json(409, {"error": _AGENT_NO_CONFIRM})
             if time.monotonic() - a["t"] > 15 * 60:
                 st.audio.pop(qid, None)
                 return self._json(409, {"error": "這張報價已逾時，請重新報價"})
@@ -2041,7 +2383,7 @@ class Handler(BaseHTTPRequestHandler):
                                                 engine=st.engine_now())
                 finally:
                     shutil.rmtree(work, ignore_errors=True)
-            keep = ("state", "error", "duration", "bytes", "srt", "size", "warnings", "models")
+            keep = ("state", "error", "duration", "bytes", "srt", "size", "warnings", "models", "captions_burned", "qc")
             self._export_set(eid, **{k: done[k] for k in keep if k in done})
         except export_spec.ExportError as e:
             self._export_set(eid, state="failed", error=e.msg)

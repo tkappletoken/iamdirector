@@ -5,10 +5,11 @@ import mimetypes
 import re
 from pathlib import Path
 
-from ..core import (STILL_RUNNING_HINT, ApiError, Workbench, is_confirmation,
+from ..core import (STILL_RUNNING_HINT, ApiError, ValidationError, Workbench, is_confirmation,
                     poll_post_process, poll_video)
 from .activity import Feed, describe
 from ..core.api import AUDIO_STYLES, PP_POLL_MAX_TRIES, PP_POLL_SLOW
+from ..core import model_caps
 try:
     from ..cli import ledger
 except ImportError:
@@ -303,13 +304,14 @@ class Registry:
             "（接在內建的後面，內建的刪不掉）、props＝道具（120 字內，明確寫進提示詞）、visual_cues＝一定要看得見的元素（120 字內）、"
             "allow_cuts＝允許切鏡頭（預設 false＝一鏡到底）、count_animals（預設 true：characters 寫成「名字: 描述; …」"
             "就自動加 Only N animals in the entire video）、cap_setup、cap_twist、flash_before、style＝meme／memebox）。"
-            "範本的 negative 與「只用環境音」由伺服器寫，報價用 quote_work；回應的 warnings 要看。",
+            "範本的 negative 與「只用環境音」由伺服器寫，報價用 quote_work；回應的 warnings 要看。"
+            "dry_run=true（只限 template）＝只驗欄位、回組好的提示詞與警告，不建作品。count_animals 也可以給 1–9 的數字。",
             _obj({"name": {"type": "string", "minLength": 1},
                   "shots": {"type": "array", "items": {"type": "object"}},
                   "script": {"type": "string"}, "model": {"type": "string"},
-                  "template": {"type": "string", "enum": ["meme"]}, "fields": {"type": "object"}}, ["name"]),
-            lambda a: wb.work_create(a["name"], a.get("shots"), a.get("script"), a.get("model"),
-                                     a.get("template"), a.get("fields")))
+                  "template": {"type": "string", "enum": ["meme"]}, "fields": {"type": "object"},
+                  "dry_run": {"type": "boolean"}}, ["name"]),
+            lambda a: _work_create(wb, a))
 
         add("quote_work",
             "用範本建的作品**只報價，不扣款**：送件的 payload 由伺服器照範本組（你改不掉 negative 與環境音），"
@@ -326,10 +328,13 @@ class Registry:
 
         add("meme_export",
             "迷因短片一鍵匯出 mp4（桌面版本機，不花錢）：作品的字卡＋白閃，自動對齊反轉點，裁成 1080×1920、faststart。"
-            "overrides 可改 captions／effects／twist（例如 {\"twist\": {\"at\": 9.6}}）。回匯出 id，用 result(export_id) 拿檔案。",
-            _obj({"project_id": {"type": "string"}, "job_id": {"type": "string"}, "overrides": {"type": "object"}},
+            "overrides 可改 captions／effects／twist（例如 {\"twist\": {\"at\": 9.6}}）。"
+            "captions=\"none\"＝無字版（不燒字卡，白閃與反轉點照常；不帶＝照範本的字卡）。"
+            "這支 ffmpeg 沒有 libass 時會自動輸出無字版並在 warnings 說明，不會整支失敗。回匯出 id，用 result(export_id) 拿檔案。",
+            _obj({"project_id": {"type": "string"}, "job_id": {"type": "string"}, "overrides": {"type": "object"},
+                  "captions": {"type": "string", "enum": ["none"]}},
                  ["project_id", "job_id"]),
-            lambda a: wb.work_export(a["project_id"], a["job_id"], a.get("overrides")))
+            lambda a: wb.work_export(a["project_id"], a["job_id"], a.get("overrides"), captions=a.get("captions")))
 
         add("blocks_list",
             "後製積木目錄（唯讀、不花錢）：每一塊的 id、名稱、階段（stage）、必要與否（locked）、"
@@ -370,14 +375,13 @@ class Registry:
         add("quote",
             "**只報價，不扣款、不建工作**。同時建一張核准卡（pending）：回 quote_id、金額、付款方，"
             "approval.id 與 approval.approve_url。把連結交給使用者，**等他本人在 App 或網頁按核准**——"
-            "你自己核准不了。核准之後用 submit_approved 送出。",
-            _obj({"model": {"type": "string"}, "prompt": {"type": "string"},
-                  "seconds": {"type": "integer"}, "resolution": {"type": "string"},
-                  "aspect_ratio": {"type": "string"}, "negative_prompt": {"type": "string"},
-                  "generate_audio": {"type": "boolean"},
-                  "input_references": {"type": "array", "items": {"type": "object"}}},
+            "你自己核准不了。核准之後用 submit_approved 送出。" + _SHOT_INPUTS_DOC,
+            _obj(dict({"model": {"type": "string"}, "prompt": {"type": "string"},
+                       "seconds": {"type": "integer"}, "resolution": {"type": "string"},
+                       "aspect_ratio": {"type": "string"}, "negative_prompt": {"type": "string"},
+                       "generate_audio": {"type": "boolean"}}, **_SHOT_INPUTS),
                  ["model", "prompt"]),
-            lambda a: wb.approval_quote(dict(a)))
+            lambda a: wb.approval_quote(_shot_payload(a)))
 
         add("request_approval",
             "取得一張報價的核准卡：卡片 id、給人點的連結（approve_url）、付款方、金額、模型、秒數、狀態。"
@@ -406,15 +410,15 @@ class Registry:
 
         add("video_quote",
             "**免費**取得一張官方確認單：解析後的參數、要花幾點、餘額夠不夠、有效期限。"
-            "不建工作、不扣款。要真的送出，把回傳的 quote_id 交給 video_confirm。",
+            "不建工作、不扣款。要真的送出，把回傳的 quote_id 交給 video_confirm。" + _SHOT_INPUTS_DOC,
             _obj({"model": {"type": "string"}, "prompt": {"type": "string"},
                   "seconds": {"type": "integer"},
                   "resolution": {"type": "string"},
                   "aspect_ratio": {"type": "string"},
                   "negative_prompt": {"type": "string"},
-                  "generate_audio": {"type": "boolean"}},
+                  "generate_audio": {"type": "boolean"}, **_SHOT_INPUTS},
                  ["model", "prompt"]),
-            self._h_quote)
+            lambda a: self._h_quote(_shot_payload(a)))
 
         add("audio_speech_quote",
             "**免費**替一句台詞報價（配音）：回 quote_id、要花幾點、付款方。不送件、不扣款。"
@@ -539,12 +543,23 @@ class Registry:
         add("storyboard_ai_quote",
             "AI 產生分鏡的**報價**（不花錢）：把故事或一句話構想交給文字模型拆成 N 鏡（1–12），先回確認單"
             "（quote_id、payer、charge_points＝預扣上限）。要真的拆，開 --allow-spend 用 storyboard_ai。"
-            "dry_run=true 只試算、不鎖單。",
+            "dry_run=true 只試算、不鎖單。director=true＝每鏡多給導演控制七欄（cast、style、lens、color、light、location、sound），"
+            "可以直接當 video_quote 的 controls。",
             _obj({"story": {"type": "string"}, "shots": {"type": "integer", "minimum": 1, "maximum": 12},
                   "style": {"type": "string"}, "video_model": {"type": "string"},
-                  "project_id": {"type": "string"}, "dry_run": {"type": "boolean"}}, ["story"]),
+                  "project_id": {"type": "string"}, "dry_run": {"type": "boolean"},
+                  "director": {"type": "boolean"}}, ["story"]),
             lambda a: wb.storyboard_ai_quote(a["story"], a.get("shots", 6), a.get("style"), a.get("video_model"),
-                                             a.get("project_id"), dry_run=bool(a.get("dry_run"))))
+                                             a.get("project_id"), dry_run=bool(a.get("dry_run")),
+                                             director=a.get("director") is True))
+
+        add("model_caps",
+            "模型能力表（實測過的才算）：哪個模型真的吃首幀、尾幀、參考圖，各家吃哪個欄位、首幀時鏡頭會不會漂移、"
+            "證據（job id、接縫 SSIM）與日期。報價收下參數不代表上游會吃。給 model 只回那一列。不花錢、不打伺服器。",
+            _obj({"model": {"type": "string"}}),
+            lambda a: ({"model": a["model"], **{k: (model_caps.caps(a["model"]).get(k) or {"status": "untested"})
+                                                 for k in model_caps.KINDS}} if a.get("model") else
+                       {"models": model_caps.table()}))
 
         add("parse_shots",
             "把一整段分鏡腳本切成一顆一顆鏡頭。**純字串處理，不叫 AI、不花錢。**"
@@ -726,11 +741,12 @@ class Registry:
                 "回 verdict（subjects_ok、colors_ok、defects、overall 1–10）與建議評分。**會花錢**："
                 "付款方跟那一支影片一樣，本站點數件照實收扣點（每支約 0.3 點），自帶金鑰件扣自己的 AppleToken 額度。"
                 "同一支、同樣畫面重送回同一筆結果，不重扣。"
-                "作品是允許切鏡頭的（迷因範本 fields.allow_cuts=true）才帶 allow_cuts=true：切鏡頭不算瑕疵；預設不帶。",
+                "作品是允許切鏡頭的（迷因範本 fields.allow_cuts=true）才帶 allow_cuts=true：切鏡頭不算瑕疵；預設不帶。"
+                "桌面本機可以不帶 frames，由本機取 15%／50%／90% 三格；網頁版一定要帶。",
                 _obj({"job_id": {"type": "string"},
                       "frames": {"type": "array", "items": {"type": "string"}},
                       "expect": {"type": "array", "items": {"type": "object"}},
-                      "allow_cuts": {"type": "boolean"}}, ["job_id", "frames"]),
+                      "allow_cuts": {"type": "boolean"}}, ["job_id"]),
                 lambda a: wb.qc(a["job_id"], a.get("frames"), a.get("expect"), a.get("allow_cuts") is True), spends=True)
 
             add("qc_rate",
@@ -782,7 +798,7 @@ class Registry:
                 "自帶金鑰件扣自己的 AppleToken 額度。必須帶 max_points。",
                 _obj({"story": {"type": "string"}, "shots": {"type": "integer", "minimum": 1, "maximum": 12},
                       "style": {"type": "string"}, "video_model": {"type": "string"},
-                      "project_id": {"type": "string"},
+                      "project_id": {"type": "string"}, "director": {"type": "boolean"},
                       "max_points": {"type": "number", "exclusiveMinimum": 0}},
                      ["story", "max_points"]),
                 self._h_storyboard_ai, spends=True)
@@ -797,7 +813,8 @@ class Registry:
             add("character_angles",
                 "角色多角度參考圖（正面／側面／背面／四分之三）：每一個角度一次 image_generate。"
                 "**會扣款**，每一張都要在 max_points_each 以內（先估價，超過就不送）。"
-                "生好之後用 asset_upload 放進素材庫，就能當 video_quote 的 input_references。",
+                "生好之後用 asset_upload 放進素材庫，就能當 video_quote／quote 的 input_references"
+                "（[{type: image, url: asset://ast_…, role: reference_image}]）；或存進角色庫，送件時帶 cast=true 由伺服器組。",
                 _obj({"model": {"type": "string"}, "name": {"type": "string"},
                       "description": {"type": "string"},
                       "angles": {"type": "array", "minItems": 1, "maxItems": 6,
@@ -1232,6 +1249,8 @@ class Registry:
 
     def _h_image(self, a):
         payload = {k: v for k, v in a.items() if k != "max_points"}
+        if self.local:
+            return self.wb.image_generate(payload)
         quote = None
         try:
             quote = self.wb.estimate(payload)
@@ -1282,7 +1301,7 @@ class Registry:
 
     def _h_storyboard_ai(self, a):
         sheet = self.wb.storyboard_ai_quote(a["story"], a.get("shots", 6), a.get("style"), a.get("video_model"),
-                                            a.get("project_id"))
+                                            a.get("project_id"), director=a.get("director") is True)
         qid = (sheet or {}).get("quote_id")
         if not qid:
             return sheet
@@ -1381,6 +1400,46 @@ def _submit_approved(wb, a):
         if e.status == 409 and isinstance(e.payload, dict) and e.payload.get("repriced"):
             return dict(e.payload)
         raise
+
+_SHOT_INPUTS = {
+    "first_frame": {"type": "string"},
+    "image_url": {"type": "string"},
+    "last_frame": {"type": "string"},
+    "input_references": {"type": "array", "items": {"type": "object"}},
+    "cast": {"anyOf": [{"type": "boolean"}, {"type": "array", "items": {}}]},
+    "cast_shot": {"type": "integer", "minimum": 1},
+    "controls": {"type": "object"},
+}
+_SHOT_INPUTS_DOC = (
+    "首幀 first_frame（或 image_url）、尾幀 last_frame（圖片網址、data URI 或 asset://）：依 model_caps 換成那一家吃的欄位"
+    "（gputw 是 frame_images 字串陣列、sailflow 是 image_url；沒實測的照工作台預設送、回應的 frames_note 會寫 untested）；"
+    "參考圖 input_references＝[{type: image|video|audio, url, role}]。首尾幀跟參考圖互斥（跟工作台一樣），兩種都帶會回錯。"
+    "cast=true＝用角色庫：提示詞裡的 @名字 換成外觀描述、角色卡的參考圖接進 input_references（鎖臉）；"
+    "cast=[\"名字\",…]＝角色庫裡這幾個（沒 @ 也附）；cast_shot＝第幾鏡（換裝的範圍用）。"
+    "controls＝導演控制：camera_move（static、pan_left、pan_right、tilt_up、tilt_down、dolly_in、dolly_out、zoom_in、zoom_out、truck_left、truck_right、pedestal_up、pedestal_down、arc、tracking、handheld、whip_pan、crane_up、crane_down、aerial、tiny_planet、orbit_360、bullet_time、camera_roll、dolly_zoom、rack_focus、crash_zoom、fpv_drone、top_down_drop、bolt_cam 其中一個；一鏡只放一種）、speed（slow／medium／fast）、direction、end（停在哪）、"
+    "lens、color、light、location、sound、style、allow_cuts；運鏡寫在提示詞最前面，有運鏡就加一鏡到底。"
+    "角色卡的 notes（表演筆記）在 cast 時自動帶進提示詞。"
+    "回應的 cast_refs 會寫有沒有套上（applied）與原因代碼；伺服器的 STUDIO_CAST_REFS 沒開時 applied=false。")
+
+def _work_create(wb, a):
+    if a.get("dry_run") and not a.get("template"):
+        raise ValidationError("dry_run 只給範本作品用（template）：一般分鏡沒有預覽，會真的建作品")
+    return wb.work_create(a["name"], a.get("shots"), a.get("script"), a.get("model"),
+                          a.get("template"), a.get("fields"), dry_run=a.get("dry_run") is True)
+
+def _shot_payload(a):
+    body = dict(a)
+    first = body.pop("first_frame", None) or body.pop("image_url", None)
+    body.pop("image_url", None)
+    last = body.pop("last_frame", None)
+    if (first or last) and body.get("input_references"):
+        raise ValidationError("首尾幀（first_frame／last_frame）跟參考圖（input_references）只能選一種")
+    try:
+        extra, _notes = model_caps.frames_payload(body.get("model"), first, last)
+    except model_caps.CapsError as e:
+        raise ValidationError(str(e))
+    body.update(extra)
+    return body
 
 _SPENDING_NAMES = ("video_confirm", "submit_approved", "image_generate", "audio_confirm", "post_process",
                    "shots_confirm", "character_angles", "storyboard_ai",

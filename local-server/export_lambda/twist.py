@@ -180,7 +180,7 @@ def resolve(v, twist, total):
     return round(min(max(0.0, x), float(total)), 3)
 
 CAPTION_MAX, EFFECT_MAX, CAPTION_TEXT_MAX = 20, 10, 40
-POSITIONS, STYLES, SIZES = ("top", "middle", "bottom"), ("meme", "memebox"), ("l", "xl")
+POSITIONS, STYLES, SIZES = ("top", "middle", "bottom"), ("meme", "memebox"), ("l", "xl", "xxl")
 
 def _time(v, name):
     if isinstance(v, bool):
@@ -198,7 +198,7 @@ def clean_meme(spec):
     effs = spec.get("effects") or []
     tw = spec.get("twist") or {}
     if not isinstance(caps, list) or len(caps) > CAPTION_MAX:
-        raise TwistError("captions 要是陣列，最多 %d 段" % CAPTION_MAX)
+        raise TwistError("captions 要是陣列，最多 %d 段（要無字版請用 captions:\"none\"）" % CAPTION_MAX)
     if not isinstance(effs, list) or len(effs) > EFFECT_MAX:
         raise TwistError("effects 要是陣列，最多 %d 個" % EFFECT_MAX)
     if not isinstance(tw, dict) or any(k not in ("auto", "at", "hint") for k in tw):
@@ -220,7 +220,7 @@ def clean_meme(spec):
             raise TwistError("第 %d 段字卡的 pos 要是 top／middle／bottom 或 {y: 0–1}" % i)
         style, size = q.get("style", "meme"), q.get("size", "l")
         if style not in STYLES or size not in SIZES:
-            raise TwistError("第 %d 段字卡的 style 要是 meme／memebox、size 要是 l／xl" % i)
+            raise TwistError("第 %d 段字卡的 style 要是 meme／memebox、size 要是 l／xl／xxl" % i)
         out_c.append({"text": text.strip(), "start": _time(q.get("start", 0), "第 %d 段字卡的開始" % i),
                       "end": _time(q.get("end", "end"), "第 %d 段字卡的結束" % i), "pos": pos, "style": style, "size": size})
     out_e = []

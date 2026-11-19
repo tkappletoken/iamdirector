@@ -2,6 +2,7 @@ import re
 
 MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,79}$")
 STYLES = ("meme", "memebox")
+CAP_SIZES = ("l", "xl", "xxl")
 RESOLUTIONS = ("720p", "1080p")
 _NAME = re.compile(r"\b[A-Z][a-z]{1,}\b")
 _COMMON = {"The", "A", "An", "At", "In", "On", "For", "Then", "When", "They", "He", "She", "It", "We", "His", "Her",
@@ -34,11 +35,13 @@ MEME = {
         "props": "道具（選填，120 字以內；明確寫進提示詞，例如 she wears a headband and a whistle clearly visible）",
         "visual_cues": "一定要看得見的元素（選填，120 字以內；例如 visible rain streaks and puddles）",
         "allow_cuts": "允許切鏡頭（選填，預設 false＝一鏡到底；true＝提示詞不寫一鏡到底、negative 拿掉 cuts／scene change）",
-        "count_animals": "characters 寫了幾個角色就加一句「Only N animals in the entire video」（預設 true；false＝不加）",
+        "count_animals": "characters 寫了幾個角色就加一句「Only N animals in the entire video」（預設 true；false＝不加；"
+                         "1–9 的數字＝直接用這個數，characters 數不出來也加）",
         "cap_setup": "前段字卡（選填，40 字以內）",
         "cap_twist": "反轉之後的字卡（選填，40 字以內）",
         "flash_before": "反轉前幾秒閃一下白光（選填，0.3–3 秒；例如拍照的閃光）",
         "style": "字卡樣式：meme（白字黑描邊，預設）或 memebox（黑字白底）",
+        "cap_size": "字卡字級：l（預設，畫面高度 4.1%）、xl（5.5%）、xxl（7.5%，手機上最清楚）",
         "model": "模型（選填，預設 gputw/minimax-h3）",
     },
 }
@@ -100,11 +103,20 @@ def meme(fields):
     props = _text(fields, "props", 120)
     cues = _text(fields, "visual_cues", 120)
     allow_cuts = _flag(fields, "allow_cuts", False)
-    n_animals = count_characters(chars) if _flag(fields, "count_animals", True) else None
+    ca = fields.get("count_animals")
+    if isinstance(ca, int) and not isinstance(ca, bool):
+        if not 1 <= ca <= 9:
+            raise TemplateError(400, "count_animals 要是 true／false，或 1–9 的數字")
+        n_animals = ca
+    else:
+        n_animals = count_characters(chars) if _flag(fields, "count_animals", True) else None
     flash = _num(fields, "flash_before", 0.3, 3)
     style = fields.get("style") or "meme"
     if style not in STYLES:
         raise TemplateError(400, "style 只能是 %s" % "／".join(STYLES))
+    cap_size = fields.get("cap_size")
+    if cap_size is not None and cap_size not in CAP_SIZES:
+        raise TemplateError(400, "cap_size 只能是 %s" % "／".join(CAP_SIZES))
     model = fields.get("model") or MEME["model"]
     if not isinstance(model, str) or not MODEL.match(model):
         raise TemplateError(400, "model 不合法")
@@ -143,9 +155,11 @@ def meme(fields):
     captions = []
     c1, c2 = _text(fields, "cap_setup", 40), _text(fields, "cap_twist", 40)
     if c1:
-        captions.append({"text": c1, "start": 0, "end": "twist", "pos": "top", "style": style})
+        captions.append(dict({"text": c1, "start": 0, "end": "twist", "pos": "top", "style": style},
+                             **({"size": cap_size} if cap_size else {})))
     if c2:
-        captions.append({"text": c2, "start": "twist", "end": "end", "pos": "top", "style": style})
+        captions.append(dict({"text": c2, "start": "twist", "end": "end", "pos": "top", "style": style},
+                             **({"size": cap_size} if cap_size else {})))
     effects = []
     if flash:
         effects.append({"type": "white_flash", "start": "twist-%g" % flash, "end": "twist-%g" % max(0.0, flash - 0.15)})
