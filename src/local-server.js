@@ -26,6 +26,13 @@ function devFfmpegDir({ appRoot, arch, platform, exists }) {
   return exists(path.join(dir, platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')) ? dir : null;
 }
 
+// IMAGE_RECOVER (off|shadow|on): the server defaults to off; the desktop app ships shadow
+// (log-only) unless the user's environment sets it.
+function serverEnv(parent) {
+  return { PATH: parent.PATH || '', LANG: 'en_US.UTF-8', PYTHONIOENCODING: 'utf-8',
+    IMAGE_RECOVER: parent.IMAGE_RECOVER || 'shadow' };
+}
+
 function start({ spawn, runtime, dataDir, keystore, gatewayBase, onExit, openh264Dir }) {
   const token = crypto.randomBytes(32).toString('hex');
   let initialKey = null;
@@ -35,7 +42,7 @@ function start({ spawn, runtime, dataDir, keystore, gatewayBase, onExit, openh26
   if (runtime.ffmpegDir) args.push('--ffmpeg-dir', runtime.ffmpegDir);
   const child = spawn(runtime.python, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { PATH: process.env.PATH || '', LANG: 'en_US.UTF-8', PYTHONIOENCODING: 'utf-8' },
+    env: serverEnv(process.env),
     windowsHide: true,
   });
   let buf = '';
@@ -112,4 +119,4 @@ function gatewayOverride(value, isPackaged) {
   return /^http:\/\/127\.0\.0\.1:\d{1,5}\/[A-Za-z0-9/_-]*$/.test(value) ? value : null;
 }
 
-module.exports = { resolveRuntime, start, needsToken, gatewayOverride, TOKEN_HEADER: 'X-Local-Token' };
+module.exports = { resolveRuntime, serverEnv, start, needsToken, gatewayOverride, TOKEN_HEADER: 'X-Local-Token' };

@@ -70,6 +70,14 @@ test('resolveRuntime：開發版沒設 IAMDIRECTOR_FFMPEG_DIR 時用 vendor/ffmp
   assert.equal(pk.ffmpegDir, path.join('/R', 'ffmpeg'), '打包版一律用附帶的');
 });
 
+test('serverEnv：IMAGE_RECOVER 沒設預設 shadow；有設以環境變數為準；不帶其他變數', () => {
+  assert.equal(ls.serverEnv({ PATH: '/bin' }).IMAGE_RECOVER, 'shadow');
+  assert.equal(ls.serverEnv({ PATH: '/bin', IMAGE_RECOVER: 'on' }).IMAGE_RECOVER, 'on');
+  assert.equal(ls.serverEnv({ PATH: '/bin', IMAGE_RECOVER: 'off' }).IMAGE_RECOVER, 'off');
+  assert.deepEqual(Object.keys(ls.serverEnv({ PATH: '/bin', SECRET_X: 'x' })).sort(),
+    ['IMAGE_RECOVER', 'LANG', 'PATH', 'PYTHONIOENCODING']);
+});
+
 test('整條管道：權杖、金鑰交給 keystore、stdin 關掉就結束', { skip: !DIR && '沒設 IAMDIRECTOR_LOCAL_SERVER_DIR' }, async () => {
   const up = await fakeUpstream();
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-'));
