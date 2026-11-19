@@ -1,7 +1,7 @@
 'use strict';
 
 const PREFIX = 'iamdirector://approve/';
-const ID = /^apv_[A-Za-z0-9]{16,32}$/;
+const ID = /^ap[vb]_[A-Za-z0-9]{16,32}$/;
 const INBOX_TTL_MS = 10 * 60 * 1000;
 
 function parseApprove(url) {
@@ -30,4 +30,20 @@ function createInbox(now = Date.now) {
   };
 }
 
-module.exports = { parseApprove, createInbox, INBOX_TTL_MS };
+function createDelivery({ inbox, isAppPage, trace = () => {} }) {
+  function deliver(wc) {
+    if (!wc || wc.isDestroyed() || wc.isLoading()) return false;
+    if (!isAppPage(wc.getURL())) return false;
+    const id = inbox.take();
+    if (!id) return false;
+    trace('approve-link-delivered', {});
+    wc.send('desktop:open-approval', id);
+    return true;
+  }
+  function attach(wc) {
+    wc.on('did-stop-loading', () => deliver(wc));
+  }
+  return { deliver, attach };
+}
+
+module.exports = { parseApprove, createInbox, createDelivery, INBOX_TTL_MS };

@@ -31,6 +31,10 @@ MEME = {
         "characters": "角色外觀描述（選填，300 字以內；例如「Dudu: a fluffy cream-colored toy poodle; Nini: an orange tabby cat」）",
         "resolution": "解析度（720p 或 1080p，預設 720p；這個模型照解析度計價）",
         "extra_negative": "追加的 negative（選填，200 字以內；接在範本內建的那一份後面，內建的刪不掉）",
+        "props": "道具（選填，120 字以內；明確寫進提示詞，例如 she wears a headband and a whistle clearly visible）",
+        "visual_cues": "一定要看得見的元素（選填，120 字以內；例如 visible rain streaks and puddles）",
+        "allow_cuts": "允許切鏡頭（選填，預設 false＝一鏡到底；true＝提示詞不寫一鏡到底、negative 拿掉 cuts／scene change）",
+        "count_animals": "characters 寫了幾個角色就加一句「Only N animals in the entire video」（預設 true；false＝不加）",
         "cap_setup": "前段字卡（選填，40 字以內）",
         "cap_twist": "反轉之後的字卡（選填，40 字以內）",
         "flash_before": "反轉前幾秒閃一下白光（選填，0.3–3 秒；例如拍照的閃光）",
@@ -61,6 +65,20 @@ def _num(fields, k, lo, hi, default=None):
         raise TemplateError(400, "%s 要是 %s–%s 之間的數字" % (k, lo, hi))
     return round(float(v), 2)
 
+def _flag(fields, k, default):
+    v = fields.get(k, default)
+    if v is None:
+        return default
+    if not isinstance(v, bool):
+        raise TemplateError(400, "%s 要是 true 或 false" % k)
+    return v
+
+def count_characters(chars):
+    parts = [p.strip() for p in re.split(r"[;；\n]", chars or "") if p.strip()]
+    if not parts or len(parts) > 9 or not all(re.match(r"^[^:：]{1,40}[:：]\s*\S", p) for p in parts):
+        return None
+    return len(parts)
+
 def meme(fields):
     if not isinstance(fields, dict):
         raise TemplateError(400, "fields 要是物件")
@@ -79,6 +97,10 @@ def meme(fields):
     if res not in RESOLUTIONS:
         raise TemplateError(400, "resolution 只能是 %s" % "／".join(RESOLUTIONS))
     extra_neg = _text(fields, "extra_negative", 200).strip(" ,，")
+    props = _text(fields, "props", 120)
+    cues = _text(fields, "visual_cues", 120)
+    allow_cuts = _flag(fields, "allow_cuts", False)
+    n_animals = count_characters(chars) if _flag(fields, "count_animals", True) else None
     flash = _num(fields, "flash_before", 0.3, 3)
     style = fields.get("style") or "meme"
     if style not in STYLES:
@@ -88,17 +110,28 @@ def meme(fields):
         raise TemplateError(400, "model 不合法")
 
     tw = ("%g" % twist_at)
+    opening = ("Static locked-off camera, %d-second video, full-body wide framing, no camera movement." % seconds
+               if allow_cuts else
+               "Static locked-off camera, one continuous %d-second shot, full-body wide framing, "
+               "no camera movement, no cuts." % seconds)
     prompt = " ".join(x for x in (
-        "Static locked-off camera, one continuous %d-second shot, full-body wide framing, "
-        "no camera movement, no cuts." % seconds,
+        opening,
         ("Characters: %s." % chars.rstrip(".")) if chars else "",
+        ("Only %d %s in the entire video." % (n_animals, "animal" if n_animals == 1 else "animals")) if n_animals else "",
+        ("Props: %s." % props.rstrip(".")) if props else "",
+        ("Clearly visible: %s." % cues.rstrip(".")) if cues else "",
         "For the first %s seconds: %s" % (tw, setup.rstrip(".") + "."),
         ("At %g seconds a bright white camera flash goes off once." % max(0.0, twist_at - flash)) if flash else "",
         "At exactly %s seconds everything suddenly flips: %s, continuing until the end." % (tw, chaos.rstrip(".")),
         "Only natural ambient sound from the scene, no music, no speech.",
         "Photorealistic, funny viral video, no text.") if x)
 
-    negative = MEME["negative_prompt"] + (", " + extra_neg if extra_neg else "")
+    builtin = MEME["negative_prompt"]
+    if allow_cuts:
+        builtin = builtin.replace(", cuts, scene change", "")
+    if n_animals:
+        builtin += ", third animal"
+    negative = builtin + (", " + extra_neg if extra_neg else "")
     shot = {"model": model, "prompt": prompt, "seconds": seconds, "aspect_ratio": MEME["aspect_ratio"],
             "resolution": res, "negative_prompt": negative, "generate_audio": True}
     warnings = []
@@ -119,7 +152,7 @@ def meme(fields):
     post = {"captions": captions, "effects": effects, "twist": {"auto": True, "hint": twist_at},
             "format": {"aspect": "9:16", "resolution": "1080p", "fps": 30, "fit": "crop"}}
     return {"template": "meme", "fields": dict(fields), "shot": shot, "post": post,
-            "prompt": prompt, "seconds": seconds, "negative_prompt": negative, "builtin_negative": MEME["negative_prompt"],
+            "prompt": prompt, "seconds": seconds, "negative_prompt": negative, "builtin_negative": builtin,
             "warnings": warnings}
 
 def build(template, fields):

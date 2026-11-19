@@ -178,12 +178,15 @@ class Workbench:
             _check(j, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         return self.c.get("/api/charges", params={"ids": ",".join(ids)})
 
-    def qc(self, job_id, frames, expect=None):
+    def qc(self, job_id, frames, expect=None, allow_cuts=False):
         _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         fr = list(frames or [])
         if not 1 <= len(fr) <= 4 or not all(isinstance(f, str) and f.startswith("data:image/") for f in fr):
             raise ValidationError("frames 要 1～4 個 data:image/… 畫面")
-        return self.c.post("/api/qc", {"job": job_id, "frames": fr, "expect": list(expect or [])})
+        body = {"job": job_id, "frames": fr, "expect": list(expect or [])}
+        if allow_cuts is True:
+            body["allow_cuts"] = True
+        return self.c.post("/api/qc", body)
 
     def storyboard_ai_quote(self, story, shots=6, style=None, video_model=None, project_id=None,
                             payer=None, dry_run=False):
@@ -383,9 +386,17 @@ class Workbench:
         _check_body(body, BODY_LIMIT_DEFAULT, "/api/generate")
         return self.c.post("/api/generate", body, timeout=TIMEOUT_GENERATE)
 
-    def approval_get(self, approval_id=None, quote_id=None):
+    def approval_get(self, approval_id=None, quote_id=None, batch_id=None):
+        if batch_id:
+            return self.c.get("/api/approvals", params={"batch_id": batch_id})
         params = {"id": approval_id} if approval_id else {"quote_id": quote_id}
         return self.c.get("/api/approvals", params=params)
+
+    def approval_batch(self, quote_ids):
+        ids = [str(q) for q in (quote_ids or [])]
+        if not 2 <= len(ids) <= 50:
+            raise ValueError("quote_ids 要 2–50 件")
+        return self.c.post("/api/approvals", {"quote_ids": ids})
 
     def approval_submit(self, approval_id, expect_amount=None):
         body = {"id": approval_id}
@@ -400,11 +411,23 @@ class Workbench:
         _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         return self.c.get("/api/twist", params={"job": job_id}, timeout=TIMEOUT_GENERATE)
 
-    def work_export(self, project_id, job_id, overrides=None):
+    def work_export(self, project_id, job_id, overrides=None, pipeline=None, dry_run=False):
         body = {"project_id": project_id, "job_id": job_id}
         if overrides:
             body["overrides"] = overrides
+        if pipeline is not None:
+            body["pipeline"] = pipeline
+        if dry_run:
+            body["dry_run"] = True
         return self.c.post("/api/works/export", body)
+
+    def blocks(self):
+        return self.c.get("/api/blocks")
+
+    def pipeline_preview(self, snapshot):
+        if not isinstance(snapshot, dict):
+            raise ValidationError("預覽的內容要是物件（跟匯出同一份請求）")
+        return self.c.post("/api/pipeline/preview", snapshot)
 
     def export_status(self, export_id):
         return self.c.get("/api/export/status", params={"id": export_id})

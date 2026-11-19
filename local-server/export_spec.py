@@ -50,7 +50,8 @@ def normalize(body):
     if not isinstance(body, dict):
         raise ExportError(400, "要是 JSON 物件")
     allowed = {"title", "format", "video", "audio", "cues", "subtitles", "disclosure", "titles",
-               "captions", "effects", "twist"}
+               "captions", "effects", "twist",
+               "pipeline"}
     bad = sorted(k for k in body if k not in allowed)
     if bad:
         raise ExportError(400, "匯出不收這些欄位：%s" % "、".join(bad))
@@ -166,6 +167,12 @@ def normalize(body):
         out.update(_twist.clean_meme(body))
     except _twist.TwistError as e:
         raise ExportError(400, str(e)) from None
+    if "pipeline" in body:
+        import postblocks
+        try:
+            out["pipeline"] = postblocks.clean_user(body["pipeline"])
+        except postblocks.PipelineError as e:
+            raise ExportError(400, str(e)) from None
     return out
 
 def build_spec(uid, eid, req, video_keys, video_models, audio_keys, src_bucket, out_bucket):
@@ -197,7 +204,14 @@ def build_spec(uid, eid, req, video_keys, video_models, audio_keys, src_bucket, 
     for k in ("captions", "effects", "twist"):
         if req.get(k):
             spec[k] = req[k]
+    if req.get("pipeline"):
+        spec["pipeline"] = req["pipeline"]
     return spec
+
+def preview_spec(req, uid="preview"):
+    vkeys = {_ref(v): "originals/%s/%064x" % (uid, i + 1) for i, v in enumerate(req["video"])}
+    akeys = [("originals/%s/%064x" % (uid, 1000 + i), "preview") for i, _a in enumerate(req["audio"])]
+    return build_spec(uid, "exp_preview0000", req, vkeys, {}, akeys, "preview-src", "preview-out")
 
 def _ref(v):
     return v.get("job") or v.get("asset")

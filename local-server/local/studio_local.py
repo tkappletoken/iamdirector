@@ -1,5 +1,4 @@
 import argparse
-import datetime
 import base64
 import hashlib
 import hmac
@@ -94,6 +93,7 @@ MANIFEST_SLOT = "<!-- STUDIO-MANIFEST -->"
 
 CAPABILITIES = (("video", "影片"), ("image", "圖片"), ("tts", "配音"), ("music", "配樂"), ("lipsync", "對嘴"))
 PROVIDED = ("video", "image", "tts", "music")
+ENGINE_CHOICES = ("legacy", "blocks", "shadow")
 NEEDS_KEY = "還沒有可用的模型目錄：到「付款與金鑰」貼上你自己的 AppleToken 金鑰"
 NO_KEY = {"error": "還沒有付款方式：請貼上你自己的 AppleToken 金鑰", "need_key": True}
 
@@ -114,6 +114,8 @@ LOCAL_API = (
     "/api/approvals", "/api/approvals/decide", "/api/approvals/submit", "/api/approvals/limits",
     "/api/works/create", "/api/local/mcp", "/api/local/mcp-token", "/api/local/result",
     "/api/works/quote", "/api/works/export", "/api/twist",
+    "/api/local/engine",
+    "/api/blocks", "/api/pipeline/preview",
 )
 
 AGENT_ALLOWED = {
@@ -121,9 +123,10 @@ AGENT_ALLOWED = {
     ("GET", "/api/usage"), ("GET", "/api/payer"), ("GET", "/api/projects"), ("GET", "/api/store"),
     ("GET", "/api/charges"), ("GET", "/api/confirm-status"), ("GET", "/api/approvals"),
     ("GET", "/api/approvals/limits"), ("GET", "/api/local/result"), ("GET", "/api/ffmpeg"),
-    ("POST", "/api/generate"), ("POST", "/api/estimate"), ("POST", "/api/approvals/submit"),
+    ("POST", "/api/generate"), ("POST", "/api/estimate"), ("POST", "/api/approvals/submit"), ("POST", "/api/approvals"),
     ("POST", "/api/works/create"), ("POST", "/api/parse-shots"), ("POST", "/api/check-refs"), ("POST", "/mcp"),
     ("POST", "/api/works/quote"), ("POST", "/api/works/export"), ("GET", "/api/twist"), ("GET", "/api/export/status"),
+    ("GET", "/api/blocks"), ("POST", "/api/pipeline/preview"),
 }
 MCP_PACKAGE_FILES = (
     "cli/appletoken/__init__.py",
@@ -250,6 +253,39 @@ class State:
     def key(self):
         with self.lock:
             return self._key
+
+    def engine_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "postblocks.json"), encoding="utf-8") as f:
+                v = json.load(f).get("engine")
+            return v if v in ENGINE_CHOICES else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def set_engine(self, value):
+        path = os.path.join(self.data_dir, "postblocks.json")
+        try:
+            if value is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"engine": value}, f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
+
+    def engine_now(self):
+        v = self.engine_setting()
+        env = os.environ.get("POSTBLOCKS_ENGINE", "").strip().lower()
+        return v or (env if env in ENGINE_CHOICES else "legacy")
+
+    def engine_info(self):
+        env = os.environ.get("POSTBLOCKS_ENGINE", "").strip().lower() or None
+        return {"engine": self.engine_now(), "setting": self.engine_setting(), "env": env,
+                "choices": list(ENGINE_CHOICES)}
 
     def set_key(self, key):
         with self.lock:
@@ -592,8 +628,10 @@ class Handler(BaseHTTPRequestHandler):
         one = lambda k: (q.get(k) or [""])[0]
         st = self.state
         if path in ("/", "/projects") or path.startswith("/w/") or \
-                (path.startswith("/approve/") and approvals.ID.match(path[len("/approve/"):])):
+                (path.startswith("/approve/") and approvals.card_or_batch(path[len("/approve/"):])):
             return self._workbench()
+        if path == "/api/approvals" and one("batch_id"):
+            return self._approvals_batch_get(one("batch_id"))
         if path == "/api/approvals":
             return self._approvals_get(one("id"), one("quote_id"), one("status"))
         if path == "/api/approvals/limits":
@@ -604,6 +642,11 @@ class Handler(BaseHTTPRequestHandler):
                                     "token_tail": tok[-4:] if tok else None})
         if path == "/api/local/result":
             return self._local_result(one("id"))
+        if path == "/api/local/engine":
+            return self._json(200, st.engine_info())
+        if path == "/api/blocks":
+            import postblocks
+            return self._json(200, postblocks.catalog())
         if path == "/api/twist":
             return self._twist(one("job"))
         if path == "/favicon.ico":
@@ -744,6 +787,15 @@ class Handler(BaseHTTPRequestHandler):
             if st.desktop:
                 st.desktop.request({"op": "clear_key"})
             return self._json(200, dict(self._payer_state(), removed=True))
+        if path == "/api/pipeline/preview":
+            return self._pipeline_preview(body)
+        if path == "/api/local/engine":
+            v = body.get("engine")
+            if v is not None and v not in ENGINE_CHOICES:
+                return self._json(400, {"error": "engine 只能是 %s，或 null（回到預設）" % "／".join(ENGINE_CHOICES)})
+            if not st.set_engine(v):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            return self._json(200, st.engine_info())
         if path == "/api/payer/choice":
             return self._json(200, self._payer_state())
         if path == "/api/estimate":
@@ -752,9 +804,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._generate(body)
         if path == "/mcp":
             return self._mcp(body)
+        if path == "/api/approvals":
+            def batch(c, u):
+                bid = approvals.make_batch(c, u, approvals.ids_for_batch(c, u, body))
+                return approvals.batch_public(approvals.batch_cards(c, u, bid), self._card_link(bid), self._card_link)
+            return self._approvals_run(batch)
         if path == "/api/approvals/decide":
             if not self._human():
                 return self._json(403, {"error": "核准要你本人在 App 裡按"})
+            if body.get("batch_id"):
+                return self._approvals_run(lambda c, u: approvals.batch_public(
+                    approvals.decide_batch(c, u, body["batch_id"], bool(body.get("approve"))),
+                    self._card_link(body["batch_id"]), self._card_link))
             return self._approvals_run(lambda c, u: approvals.public(approvals.decide(c, u, body.get("id"), bool(body.get("approve")))))
         if path == "/api/approvals/limits":
             if not self._human():
@@ -1075,14 +1136,14 @@ class Handler(BaseHTTPRequestHandler):
         return "iamdirector://approve/%s" % cid
 
     def _card_for_quote(self, qid, cost, open_ended, body, sheet):
-        exp = datetime.datetime.now(datetime.timezone.utc) + approvals.CARD_TTL
-        q_exp = approvals._ts(sheet.get("expires_at")) if isinstance(sheet, dict) else None
-        if q_exp and q_exp < exp:
-            exp = q_exp
         charge = {"id": None, "quote_ref": qid, "kind": "video", "payer": "own_key", "points": None, "upstream_cost": cost}
         summ = dict(approvals.summary_of(body), **({"open_ended": True} if open_ended else {}))
+        pl, q_exp = approvals.payload_for_card(body), approvals.quote_expiry(sheet)
         try:
-            card = self.state.db.run(lambda c, u: approvals.create(c, user_id=u, charge=charge, summary=summ, expires_at=exp))
+            def go(c, u):
+                card = approvals.create(c, user_id=u, charge=charge, summary=summ, payload=pl, quote_expires_at=q_exp)
+                return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
+            card = self.state.db.run(go)
         except Exception as e:
             return {"enabled": False, "error": "核准卡建不起來（%s），請重新報價" % type(e).__name__}
         return dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
@@ -1099,17 +1160,28 @@ class Handler(BaseHTTPRequestHandler):
                 card = approvals.get(c, u, cid) if cid else approvals.by_quote(c, u, qref)
                 if not card:
                     raise approvals.ApprovalError(404, "找不到這張核准卡")
+                card = approvals.try_auto(c, u, card) or card
                 return approvals.public(card, self._card_link(card["id"]))
             if status and status not in approvals.STATUSES:
                 raise approvals.ApprovalError(400, "status 不合法")
             return {"items": [approvals.public(x, self._card_link(x["id"])) for x in approvals.list_cards(c, u, status or None)]}
         return self._approvals_run(go)
 
+    def _approvals_batch_get(self, bid):
+        def go(c, u):
+            cards = approvals.batch_cards(c, u, bid)
+            if not cards:
+                raise approvals.ApprovalError(404, "找不到這一批")
+            return approvals.batch_public(cards, self._card_link(bid), self._card_link)
+        return self._approvals_run(go)
+
     def _approvals_limits(self, body):
         def go(c, u):
             lim = approvals.limits_set(c, u, body) if body is not None else approvals.limits_get(c, u)
             return dict(lim, used_today_points=approvals.fmt(approvals.used_today(c, u, "points")),
-                        used_today_upstream=approvals.fmt(approvals.used_today(c, u, "upstream")))
+                        used_today_upstream=approvals.fmt(approvals.used_today(c, u, "upstream")),
+                        auto_today_points=approvals.fmt(approvals.used_today_auto(c, u, "points")),
+                        auto_today_upstream=approvals.fmt(approvals.used_today_auto(c, u, "upstream")))
         return self._approvals_run(go)
 
     def _approval_submit(self, body):
@@ -1118,6 +1190,26 @@ class Handler(BaseHTTPRequestHandler):
             card = st.db.run(lambda c, u: approvals.claim_for_submit(c, u, body.get("id"), body.get("expect_amount")))
         except approvals.ApprovalError as e:
             return self._json(e.code, {"error": e.message})
+        if card.get("payload") and approvals.quote_stale(card):
+            card, stop = self._approval_requote(card)
+            if stop is not None:
+                return self._json(*stop)
+        code, obj = self._approval_confirm(card)
+        if card.get("payload") and approvals.upstream_says_expired(code, obj):
+            card, stop = self._approval_requote(card)
+            if stop is not None:
+                return self._json(*stop)
+            code, obj = self._approval_confirm(card)
+        ok = 200 <= code < 300
+        jid = obj.get("id") if isinstance(obj, dict) else None
+        card = st.db.run(lambda c, u: (approvals.mark_result(c, u, card["id"], job_id=jid) if ok else
+                                      approvals.mark_result(c, u, card["id"], error=(obj or {}).get("error") or "HTTP %s" % code),
+                                      approvals.get(c, u, card["id"]))[1])
+        out = dict(obj) if isinstance(obj, dict) else {"data": obj}
+        out["approval"] = approvals.public(card, self._card_link(card["id"]))
+        return self._json(code, out)
+
+    def _approval_confirm(self, card):
         sent = {}
 
         def capture(code, obj):
@@ -1130,15 +1222,44 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             del self._json
             self._via_card = False
-        code, obj = sent.get("code", 500), sent.get("obj") or {"error": "送件沒有回應"}
-        ok = 200 <= code < 300
-        jid = obj.get("id") if isinstance(obj, dict) else None
-        card = st.db.run(lambda c, u: (approvals.mark_result(c, u, card["id"], job_id=jid) if ok else
-                                      approvals.mark_result(c, u, card["id"], error=(obj or {}).get("error") or "HTTP %s" % code),
-                                      approvals.get(c, u, card["id"]))[1])
-        out = dict(obj) if isinstance(obj, dict) else {"data": obj}
-        out["approval"] = approvals.public(card, self._card_link(card["id"]))
-        return self._json(code, out)
+        return sent.get("code", 500), sent.get("obj") or {"error": "送件沒有回應"}
+
+    def _approval_requote(self, card):
+        st = self.state
+
+        def fail(code, msg):
+            msg = approvals.err_text(msg)
+            c = st.db.run(lambda c, u: (approvals.mark_result(c, u, card["id"], error="重新報價失敗：" + msg),
+                                        approvals.get(c, u, card["id"]))[1])
+            return c, (code, {"error": "報價過期了，重新報價失敗：" + msg,
+                              "approval": approvals.public(c, self._card_link(c["id"]))})
+        if card["payer"] != "own_key":
+            return fail(409, "本機模式只能用你自己的金鑰付款")
+        pl = card["payload"]
+        try:
+            sheet = st.call("/videos/generations", payload=dict(pl, require_confirmation=True), timeout=GENERATE_TIMEOUT)
+        except ConsoleError as e:
+            return fail(e.code if 400 <= e.code < 600 else 502, getattr(e, "body", None) or str(e))
+        if not (isinstance(sheet, dict) and sheet.get("quote_id") and isinstance(sheet.get("estimate"), dict)):
+            return fail(502, "上游沒有回確認單")
+        qid, cost = str(sheet["quote_id"]), (sheet.get("estimate") or {}).get("points")
+        open_ended = upstream.has_video_ref(pl)
+        with st.lock:
+            st.quotes[qid] = {"open_ended": open_ended, "status": "quoted", "t": time.monotonic()}
+            old = st.quotes.get(card["quote_ref"])
+            if old is not None and old["status"] == "quoted":
+                old["status"] = "cancelled"
+        charge = {"id": None, "quote_ref": qid, "kind": "video", "payer": "own_key", "points": None, "upstream_cost": cost}
+
+        def go(c, u):
+            c.cursor().execute("INSERT INTO local_quotes (quote_id, payload, upstream_cost) VALUES (%s, %s, %s)"
+                               " ON CONFLICT (quote_id) DO NOTHING",
+                               (qid, json.dumps({"open_ended": open_ended}), str(cost) if cost is not None else None))
+            return approvals.apply_requote(c, u, card, charge, approvals.quote_expiry(sheet))
+        c, why = st.db.run(go)
+        if why:
+            return c, (409, {"error": why, "repriced": True, "approval": approvals.public(c, self._card_link(c["id"]))})
+        return c, None
 
     def _work_template(self, pid):
         if not isinstance(pid, str) or not PROJECT_ID.match(pid):
@@ -1165,7 +1286,10 @@ class Handler(BaseHTTPRequestHandler):
         except twist.TwistError as e:
             return self._json(500, {"error": str(e)})
         got["job"] = jid
-        if got["at"] is None:
+        if got["at"] is None and got.get("candidates"):
+            got["note"] = ("沒把握：最可能是 %.2f 秒（candidates 第一個），請讓使用者確認，匯出時用 overrides.twist.at 指定"
+                           % got["candidates"][0]["t"])
+        elif got["at"] is None:
             got["note"] = "找不到明顯的反轉點：匯出時請手動指定 twist.at（第幾秒）"
         return self._json(200, got)
 
@@ -1185,6 +1309,11 @@ class Handler(BaseHTTPRequestHandler):
                "video": [{"job": jid, "in": 0, "out": float(tp["seconds"])}], "audio": [{"lane": "A1", "job": jid, "at": 0, "in": 0,
                "dur": float(tp["seconds"])}], "cues": [], "subtitles": "none", "disclosure": {"on": False},
                "captions": post["captions"], "effects": post["effects"], "twist": post["twist"]}
+        if "pipeline" in body:
+            req["pipeline"] = body["pipeline"]
+        if body.get("dry_run") is True:
+            req.pop("project_id", None)
+            return self._pipeline_preview(req)
         return self._export_start(req)
 
     def _local_result(self, jid):
@@ -1769,6 +1898,20 @@ class Handler(BaseHTTPRequestHandler):
                 "resolutions": list(export_spec.RESOLUTIONS), "fps": list(export_spec.FPS_ALLOWED),
                 "subtitle_modes": list(export_spec.SUB_MODES), "max_seconds": export_spec.MAX_TOTAL}
 
+    def _pipeline_preview(self, body):
+        import postblocks
+        body = dict(body)
+        body.pop("project_id", None)
+        container = body.pop("container", None) or "mp4"
+        if container not in ("mp4", "webm"):
+            return self._json(400, {"error": "container 只能是 mp4／webm"})
+        try:
+            req = export_spec.normalize(body)
+        except export_spec.ExportError as e:
+            return self._json(e.code, {"error": e.msg})
+        return self._json(200, postblocks.preview(export_spec.preview_spec(req), req.get("pipeline"),
+                                                  container=container, caption_fontsdir=os.path.join(ROOT, "fonts")))
+
     def _export_start(self, body):
         st = self.state
         body = dict(body)
@@ -1894,7 +2037,8 @@ class Handler(BaseHTTPRequestHandler):
                         done = export_local.run(spec, s3, work, strict=False, ffmpeg=st.ffmpeg, ffprobe=st.ffprobe,
                                                 fontsdir=fontsdir if fontsdir and os.path.isdir(fontsdir) else None,
                                                 container=container,
-                                                caption_fontsdir=os.path.join(ROOT, "fonts"))
+                                                caption_fontsdir=os.path.join(ROOT, "fonts"),
+                                                engine=st.engine_now())
                 finally:
                     shutil.rmtree(work, ignore_errors=True)
             keep = ("state", "error", "duration", "bytes", "srt", "size", "warnings", "models")
