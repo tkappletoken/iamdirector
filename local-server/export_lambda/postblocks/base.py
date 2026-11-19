@@ -12,6 +12,7 @@ class Block:
     params = {}
     optional = False
     passes = 1
+    capture = None
 
     def defaults(self):
         return {k: v.get("default") for k, v in self.params.items() if "default" in v}

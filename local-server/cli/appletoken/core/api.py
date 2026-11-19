@@ -180,16 +180,18 @@ class Workbench:
 
     def qc(self, job_id, frames, expect=None, allow_cuts=False):
         _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
-        fr = list(frames or [])
-        if not 1 <= len(fr) <= 4 or not all(isinstance(f, str) and f.startswith("data:image/") for f in fr):
-            raise ValidationError("frames 要 1～4 個 data:image/… 畫面")
-        body = {"job": job_id, "frames": fr, "expect": list(expect or [])}
+        body = {"job": job_id, "expect": list(expect or [])}
+        if frames is not None:
+            fr = list(frames)
+            if not 1 <= len(fr) <= 4 or not all(isinstance(f, str) and f.startswith("data:image/") for f in fr):
+                raise ValidationError("frames 要 1～4 個 data:image/… 畫面")
+            body["frames"] = fr
         if allow_cuts is True:
             body["allow_cuts"] = True
         return self.c.post("/api/qc", body)
 
     def storyboard_ai_quote(self, story, shots=6, style=None, video_model=None, project_id=None,
-                            payer=None, dry_run=False):
+                            payer=None, dry_run=False, director=False):
         if not isinstance(story, str) or not story.strip() or len(story.strip()) > 3000:
             raise ValidationError("story 要 1～3000 字")
         if isinstance(shots, bool) or not isinstance(shots, int) or not 1 <= shots <= 12:
@@ -208,6 +210,8 @@ class Workbench:
             body["payer"] = payer
         if dry_run:
             body["dry_run"] = True
+        if director:
+            body["director"] = True
         return self.c.post("/api/storyboard/quote", body)
 
     def storyboard_ai_confirm(self, quote_id, confirm=True):
@@ -365,7 +369,7 @@ class Workbench:
         return self.c.post("/api/generate", {"quote_id": quote_id, "confirm": True},
                            spending=True, timeout=TIMEOUT_GENERATE)
 
-    def work_create(self, name, shots=None, script=None, model=None, template=None, fields=None):
+    def work_create(self, name, shots=None, script=None, model=None, template=None, fields=None, dry_run=False):
         body = {"name": name}
         if template:
             body["template"] = template
@@ -376,6 +380,8 @@ class Workbench:
             body["script"] = script
         if model:
             body["model"] = model
+        if dry_run:
+            body["dry_run"] = True
         _check_body(body, BODY_LIMIT_DEFAULT, "/api/works/create")
         return self.c.post("/api/works/create", body)
 
@@ -391,6 +397,9 @@ class Workbench:
             return self.c.get("/api/approvals", params={"batch_id": batch_id})
         params = {"id": approval_id} if approval_id else {"quote_id": quote_id}
         return self.c.get("/api/approvals", params=params)
+
+    def approval_list(self, status=None):
+        return self.c.get("/api/approvals", params={"status": status} if status else None)
 
     def approval_batch(self, quote_ids):
         ids = [str(q) for q in (quote_ids or [])]
@@ -411,8 +420,10 @@ class Workbench:
         _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         return self.c.get("/api/twist", params={"job": job_id}, timeout=TIMEOUT_GENERATE)
 
-    def work_export(self, project_id, job_id, overrides=None, pipeline=None, dry_run=False):
+    def work_export(self, project_id, job_id, overrides=None, pipeline=None, dry_run=False, captions=None):
         body = {"project_id": project_id, "job_id": job_id}
+        if captions is not None:
+            body["captions"] = captions
         if overrides:
             body["overrides"] = overrides
         if pipeline is not None:

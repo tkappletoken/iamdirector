@@ -57,6 +57,27 @@ test('resolveRuntime：打包版用附帶的 python；開發版沒設路徑就�
   assert.throws(() => ls.resolveRuntime({ isPackaged: false, env: {}, platform: 'darwin' }));
 });
 
+test('resolveRuntime：開發版沒設 IAMDIRECTOR_FFMPEG_DIR 時用 vendor/ffmpeg-<arch>；打包版不變', () => {
+  const env = { IAMDIRECTOR_LOCAL_SERVER_DIR: '/W' };
+  const dir = path.join('/A', 'vendor', 'ffmpeg-arm64');
+  const has = (p) => p === path.join(dir, 'ffmpeg');
+  const dev = (e, exists) => ls.resolveRuntime({ isPackaged: false, env: e, platform: 'darwin', appRoot: '/A', arch: 'arm64', exists });
+  assert.equal(dev(env, has).ffmpegDir, dir);
+  assert.equal(dev(env, () => false).ffmpegDir, null, 'vendor 裡沒有就照舊走 PATH');
+  assert.equal(dev({ ...env, IAMDIRECTOR_FFMPEG_DIR: '/F' }, has).ffmpegDir, '/F', '環境變數優先');
+  assert.equal(ls.resolveRuntime({ isPackaged: false, env, platform: 'darwin' }).ffmpegDir, null);
+  const pk = ls.resolveRuntime({ isPackaged: true, resourcesPath: '/R', env: { IAMDIRECTOR_FFMPEG_DIR: '/F' }, platform: 'darwin', appRoot: '/A', arch: 'arm64', exists: has });
+  assert.equal(pk.ffmpegDir, path.join('/R', 'ffmpeg'), '打包版一律用附帶的');
+});
+
+test('serverEnv：IMAGE_RECOVER 沒設預設 shadow；有設以環境變數為準；不帶其他變數', () => {
+  assert.equal(ls.serverEnv({ PATH: '/bin' }).IMAGE_RECOVER, 'shadow');
+  assert.equal(ls.serverEnv({ PATH: '/bin', IMAGE_RECOVER: 'on' }).IMAGE_RECOVER, 'on');
+  assert.equal(ls.serverEnv({ PATH: '/bin', IMAGE_RECOVER: 'off' }).IMAGE_RECOVER, 'off');
+  assert.deepEqual(Object.keys(ls.serverEnv({ PATH: '/bin', SECRET_X: 'x' })).sort(),
+    ['IMAGE_RECOVER', 'LANG', 'PATH', 'PYTHONIOENCODING']);
+});
+
 test('整條管道：權杖、金鑰交給 keystore、stdin 關掉就結束', { skip: !DIR && '沒設 IAMDIRECTOR_LOCAL_SERVER_DIR' }, async () => {
   const up = await fakeUpstream();
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-'));

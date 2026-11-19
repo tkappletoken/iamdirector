@@ -6,6 +6,7 @@ class Loudness(Block):
     stage = "output"
     optional = True
     passes = 2
+    capture = "loudnorm"
     params = {"target": {"type": "enum", "values": ["youtube", "broadcast", "podcast"], "default": "youtube"}}
 
     TARGET = {"youtube": (-14, -1.0, 11), "broadcast": (-23, -1.0, 15), "podcast": (-16, -1.5, 11)}

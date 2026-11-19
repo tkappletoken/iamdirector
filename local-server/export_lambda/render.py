@@ -306,7 +306,7 @@ def check_caption_chars(captions, font_path):
         raise RenderError("字卡裡有字型沒有的字：%s（字型 %s 只含繁中常用字與標點；換個寫法，或換用完整字型）"
                           % ("".join(miss[:20]), MEME_FONT_FILE))
 
-def resolve_meme(spec, files, ffmpeg, body, env=None):
+def resolve_meme(spec, files, ffmpeg, body, env=None, detect=None):
     import twist as tw
     caps, effs = spec.get("captions") or [], spec.get("effects") or []
     tcfg = spec.get("twist") or {}
@@ -314,7 +314,7 @@ def resolve_meme(spec, files, ffmpeg, body, env=None):
     if at is None and tcfg.get("auto") and (caps or effs) and spec.get("video"):
         v = spec["video"][0]
         try:
-            got = tw.detect(ffmpeg, files[v["key"]], env=env)
+            got = detect(files[v["key"]]) if detect else tw.detect(ffmpeg, files[v["key"]], env=env)
         except tw.TwistError as e:
             raise RenderError("偵測反轉點失敗：%s" % e) from None
         if got.get("at") is not None:
@@ -328,7 +328,7 @@ def resolve_meme(spec, files, ffmpeg, body, env=None):
 
 def meme_ass(captions, W, H):
     def size(q):
-        return max(18, int(H * (0.055 if q.get("size") == "xl" else 0.041)))
+        return max(18, int(H * {"xl": 0.055, "xxl": 0.075}.get(q.get("size"), 0.041)))
     base = max(18, int(H * 0.041))
     head = ("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\nWrapStyle: 0\n"
             "ScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
@@ -712,6 +712,65 @@ def plan_select(spec, files, probes, caps, workdir, strict=True, fontsdir=None, 
     note("used", mode, None)
     return {k: v for k, v in new.items() if k != "files"}
 
+def _resolve_select(spec, files, ffmpeg, body, engine=None, note=None, pipeline=None):
+    note = note or _engine_note
+    try:
+        import postblocks
+        mode = postblocks.engine_of(engine)
+    except Exception as e:
+        note("fallback", engine or "?", "import:%s" % type(e).__name__)
+        return resolve_meme(spec, files, ffmpeg, body) + ([],)
+    if mode == "legacy":
+        return resolve_meme(spec, files, ffmpeg, body) + ([],)
+    import twist as tw
+    memo = {}
+
+    def detect(src):
+        if src not in memo:
+            memo[src] = tw.detect(ffmpeg, src)
+        return memo[src]
+    new, why = None, None
+    try:
+        new = postblocks.analyze_spec(spec, files, detect, body, pipeline if mode == "blocks" else None)
+    except Exception as e:
+        why = "analyze:%s" % type(e).__name__
+    if new is not None and new[4] and mode == "blocks":
+        note("used_custom", mode, "analyze")
+        return new[0], new[1], new[2], list(new[3])
+    old = resolve_meme(spec, files, ffmpeg, body, detect=detect)
+    if why is None and tuple(new[:3]) != tuple(old):
+        why = "analyze"
+    if mode == "shadow":
+        note("shadow", mode, why or "same")
+    elif why:
+        note("fallback", mode, why)
+    return old + ([],)
+
+def _captions_burned(spec, pipeline, engine=None):
+    if not spec.get("captions"):
+        return False
+    try:
+        import postblocks
+        if postblocks.engine_of(engine) == "blocks" and pipeline:
+            off = [b for b in postblocks.clean_user(pipeline) if b["use"] == "meme_captions" and not b.get("on", True)]
+            return not off
+    except Exception:
+        pass
+    return True
+
+def _seam_qc(pipeline, spec, files, ffmpeg, engine=None, note=None):
+    if not pipeline:
+        return None
+    note = note or _engine_note
+    try:
+        import postblocks
+        if postblocks.engine_of(engine) != "blocks":
+            return None
+        return postblocks.seam_reports(pipeline, spec, files, ffmpeg)
+    except Exception as e:
+        note("fallback", "blocks", "seam_check:%s" % type(e).__name__)
+        return None
+
 def _run_steps(ffmpeg, p):
     vals = {}
     for k, st in enumerate(p["steps"]):
@@ -734,9 +793,18 @@ def _run_steps(ffmpeg, p):
                 v = str(got.get(name, ""))
                 if not re.match(r"^-?(\d+(\.\d+)?|inf)$", v):
                     raise RenderError("響度量測值看不懂：%s" % name)
-                vals[name] = v
+                vals[st.get("prefix", "") + name] = v
     if not os.path.exists(p["out"]):
         raise RenderError("ffmpeg 沒有產生成片")
+
+NO_LIBASS_CAPTIONS = "這支 ffmpeg 沒有 libass（subtitles 濾鏡）：迷因字卡沒有燒進畫面，先輸出無字版（白閃照常）"
+
+def _captions_fallback(spec, caps):
+    if spec.get("captions") and not caps.get("libass"):
+        print("[captions] " + json.dumps({"event": "fallback", "reason": "no_libass", "count": len(spec["captions"])}),
+              file=sys.stderr, flush=True)
+        return dict(spec, captions=[]), [NO_LIBASS_CAPTIONS]
+    return spec, []
 
 def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fontsdir=None, status=None,
         container="mp4", caption_fontsdir=None, engine=None):
@@ -763,10 +831,17 @@ def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fonts
             files[key] = path
             probes[key] = probe(ffprobe, path)
         if spec.get("captions") or spec.get("effects"):
-            caps_, effs_, at_ = resolve_meme(spec, files, ffmpeg, timing(spec)["body"])
+            caps_, effs_, at_, twist_warn = _resolve_select(spec, files, ffmpeg, timing(spec)["body"], engine,
+                                                            pipeline=pipeline)
             spec = dict(spec, captions=caps_, effects=effs_, twist=dict(spec.get("twist") or {}, resolved=at_))
-        p = plan_select(spec, files, probes, ffmpeg_caps(ffmpeg), workdir, strict=strict, fontsdir=fontsdir,
+        else:
+            twist_warn = []
+        fcaps = ffmpeg_caps(ffmpeg)
+        spec, extra_warn = _captions_fallback(spec, fcaps)
+        extra_warn = twist_warn + extra_warn
+        p = plan_select(spec, files, probes, fcaps, workdir, strict=strict, fontsdir=fontsdir,
                         container=container, caption_fontsdir=caption_fontsdir, engine=engine, pipeline=pipeline)
+        p = dict(p, warnings=list(p["warnings"]) + extra_warn)
         if p.get("steps"):
             try:
                 _run_steps(ffmpeg, p)
@@ -786,6 +861,10 @@ def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fonts
         st = {"state": "done", "id": spec["id"], "duration": round(got["duration"], 3),
               "bytes": os.path.getsize(p["out"]), "srt": bool(p["srt_text"]), "size": p["size"],
               "warnings": p["warnings"], "models": spec["models"], "container": container}
+        st["captions_burned"] = _captions_burned(spec, pipeline, engine)
+        qc = _seam_qc(pipeline, spec, files, ffmpeg, engine)
+        if qc is not None:
+            st["qc"] = qc
     except (RenderError, OSError, subprocess.TimeoutExpired) as e:
         st = {"state": "failed", "id": spec["id"], "error": str(e)[:800]}
     report(st)

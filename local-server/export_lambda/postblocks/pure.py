@@ -15,7 +15,7 @@ def catalog():
     for cls in REGISTRY.values():
         out.append({"id": cls.id, "label": cls.label, "stage": cls.stage, "locked": cls.locked,
                     "sortable": cls.stage == "overlay", "optional": cls.optional, "passes": cls.passes,
-                    "params": {k: dict(v) for k, v in cls.params.items()},
+                    "params": {k: dict(v) for k, v in cls.params.items() if not v.get("from_spec")},
                     "doc": (cls.__doc__ or "").strip().split("\n")[0]})
     return {"stages": list(STAGES), "blocks": out,
             "templates": {k: [dict(b) for b in v] for k, v in TEMPLATE_PIPELINES.items()}}
@@ -46,7 +46,7 @@ def clean_user(blocks):
             spec = cls.params.get(k)
             if spec is None:
                 raise PipelineError("%s：不認得的參數 %s" % (cls.id, k))
-            if spec.get("type") not in SIMPLE:
+            if spec.get("type") not in SIMPLE or spec.get("from_spec"):
                 raise PipelineError("%s.%s 請用原本的欄位設定（不能經 pipeline 改）" % (cls.id, k))
         cls().check(params)
         out.append({"use": cls.id, "on": on, "params": dict(params)})

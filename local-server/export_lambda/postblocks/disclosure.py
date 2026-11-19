@@ -1,5 +1,13 @@
 from .base import Block
 
+def card_lines(disclosure):
+    if not disclosure.get("on"):
+        return []
+    lines = [disclosure.get("text") or ""]
+    if disclosure.get("models"):
+        lines.append("使用的 AI 模型：" + "、".join(disclosure["models"]))
+    return [x for x in lines if x]
+
 class Disclosure(Block):
     id = "disclosure"
     label = "AI 揭露片尾"
@@ -13,5 +21,4 @@ class Disclosure(Block):
             c.last = "vall"
 
     def text(self, p, c):
-        import render
-        c.text["card"] = render.card_lines(p.get("disclosure") or {})
+        c.text["card"] = card_lines(p.get("disclosure") or {})

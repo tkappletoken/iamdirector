@@ -7,5 +7,10 @@ class Concat(Block):
     locked = True
 
     def timeline(self, p, c):
-        c.graph.append("%sconcat=n=%d:v=1:a=0[vcat]" % ("".join(c.vlabels), len(c.vlabels)))
+        tr = getattr(c, "transition", None)
+        if tr and len(c.vlabels) > 1:
+            from .transition import Transition
+            c.graph += Transition().chain(c, [round(v["out"] - v["in"], 3) for v in c.spec["video"]])
+        else:
+            c.graph.append("%sconcat=n=%d:v=1:a=0[vcat]" % ("".join(c.vlabels), len(c.vlabels)))
         c.last = "vcat"
