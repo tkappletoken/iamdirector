@@ -131,7 +131,10 @@ LOCAL_API = (
     "/api/local/agent-scope",
     "/api/takes", "/api/takes/move", "/api/takes/qc", "/api/takes/pick", "/api/takes/retake-plan",
     "/api/chains", "/api/chains/next", "/api/chains/move",
-    "/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/get", "/api/local/agent-loop",
+    "/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/get", "/api/local/agent-loop", "/api/local/agent/plan",
+    "/api/local/agent/runs", "/api/local/agent/film",
+    "/api/local/agent-qc",
+    "/api/local/frame-relay",
     "/api/local/ui-desc", "/api/local/ui-profiles",
     "/api/local/mcp-direct",
 )
@@ -149,12 +152,75 @@ AGENT_ALLOWED = {
 }
 AGENT_ALLOWED |= set(takes.ROUTES)
 AGENT_ALLOWED |= {("POST", "/api/local/agent/start"), ("POST", "/api/local/agent/step"), ("GET", "/api/local/agent/get"),
+                  ("POST", "/api/local/agent/plan"), ("GET", "/api/local/agent/runs"), ("GET", "/api/local/agent/film"),
                   ("GET", "/api/local/agent-loop")}
+AGENT_ALLOWED |= {("GET", "/api/local/frame-relay")}
 AGENT_ALLOWED |= {("GET", "/api/local/ui-desc"), ("POST", "/api/local/ui-desc")}
 UI_PROFILES_OFF = "介面描述檔沒有開（設定 ui_profiles.json 或 STUDIO_LOCAL_UI_PROFILES=on）"
 AGENT_ALLOWED |= {("GET", "/api/local/mcp-direct")}
+AGENT_ALLOWED |= {("GET", "/api/local/agent-qc")}
 AGENT_ALLOWED |= {("GET", "/api/dir-controls"), ("POST", "/api/dir-controls/preview"), ("POST", "/api/previs-rig"),
                   ("POST", "/api/works/shot-dirctl")}
+FRAME_RELAY_ENV = "STUDIO_LOCAL_FRAME_RELAY"
+
+def frame_relay_on():
+    return os.environ.get(FRAME_RELAY_ENV, "").strip().lower() in ("on", "1", "true")
+
+def frame_relay(st, video_of, take_id):
+    from filming import frames as ffr
+    try:
+        t = st.db.run(lambda c, u: takes.get(c, u, take_id))
+    except Exception:
+        return None, "take_unreadable"
+    job = (t or {}).get("job_id")
+    if not job:
+        return None, "no_job"
+    try:
+        path = video_of(job)
+    except Exception:
+        return None, "no_video"
+    ff = st.ffmpeg or ffr.find_ffmpeg()
+    if not ff:
+        return None, "no_ffmpeg"
+    tmp = tempfile.mkdtemp(prefix="iamd-relay-")
+    try:
+        png = os.path.join(tmp, "last.png")
+        try:
+            ffr.last(path, png, ffmpeg=ff)
+            with open(png, "rb") as f:
+                raw = f.read()
+        except (ffr.FramesError, OSError, subprocess.SubprocessError):
+            return None, "extract_failed"
+        if not raw or len(raw) > 20 * 1024 * 1024:
+            return None, "extract_failed"
+        try:
+            r = st.call("/assets", payload={"source": "data:image/png;base64," + base64.b64encode(raw).decode(),
+                                            "name": "relay-%s" % take_id}, timeout=GENERATE_TIMEOUT)
+        except ConsoleError:
+            return None, "upload_failed"
+        aid = r.get("id") if isinstance(r, dict) else None
+        if not (isinstance(aid, str) and ASSET_ID.match(aid)):
+            return None, "upload_failed"
+        return "asset://" + aid, None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+def seam_ssim(st, video_of, prev_job, job):
+    from filming import frames as ffr
+    import postblocks.seam_check as sc
+    ff = st.ffmpeg or ffr.find_ffmpeg()
+    if not ff:
+        return None
+    tmp = tempfile.mkdtemp(prefix="iamd-seam-")
+    try:
+        png = os.path.join(tmp, "prev_last.png")
+        ffr.last(video_of(prev_job), png, ffmpeg=ff)
+        return sc.SeamCheck.ssim(ff, png, 0.0, video_of(job), 0.0)
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
 AGENT_LOOP_OFF = "Filming Agent 主迴圈沒有開（設定 agent_loop.json 或 STUDIO_LOCAL_AGENT_LOOP=on）"
 AGENT_RUN = re.compile(r"^agr_[0-9a-f]{24}$")
 AGENT_SCOPES = ("basic", "full")
@@ -298,7 +364,7 @@ def ui_desc_value(value):
 def ui_desc_actions():
     try:
         from filming import ui_schema
-        return ui_schema.client_actions()
+        return ui_schema.client_actions(local=True)
     except Exception:
         return None
 
@@ -561,6 +627,70 @@ class State:
             os.replace(tmp, path)
             return True
         except (OSError, ValueError):
+            return False
+
+    def frame_relay_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "frame_relay.json"), encoding="utf-8") as f:
+                v = json.load(f).get("on")
+            return v if isinstance(v, bool) else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def frame_relay_on(self):
+        v = self.frame_relay_setting()
+        return v if v is not None else frame_relay_on()
+
+    def agent_qc_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "agent_qc.json"), encoding="utf-8") as f:
+                v = json.load(f).get("on")
+            return v if isinstance(v, bool) else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def agent_qc_on(self):
+        v = self.agent_qc_setting()
+        if v is not None:
+            return v
+        return os.environ.get("STUDIO_LOCAL_AGENT_QC", "").strip().lower() in ("on", "1", "true")
+
+    def agent_qc_info(self):
+        env = os.environ.get("STUDIO_LOCAL_AGENT_QC", "").strip().lower() or None
+        return {"on": self.agent_qc_on(), "setting": self.agent_qc_setting(), "env": env}
+
+    def set_agent_qc(self, value):
+        path = os.path.join(self.data_dir, "agent_qc.json")
+        try:
+            if value is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"on": bool(value)}, f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
+
+    def frame_relay_info(self):
+        env = os.environ.get(FRAME_RELAY_ENV, "").strip().lower() or None
+        return {"on": self.frame_relay_on(), "setting": self.frame_relay_setting(), "env": env}
+
+    def set_frame_relay(self, value):
+        path = os.path.join(self.data_dir, "frame_relay.json")
+        try:
+            if value is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"on": bool(value)}, f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
             return False
 
     def agentloop_info(self):
@@ -1014,6 +1144,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.agent_scope_info())
         if path == "/api/local/agent-loop":
             return self._json(200, st.agentloop_info())
+        if path == "/api/local/frame-relay":
+            return self._json(200, st.frame_relay_info())
+        if path == "/api/local/agent-qc":
+            return self._json(200, st.agent_qc_info())
         if path == "/api/local/ui-profiles":
             return self._json(200, st.uiprofiles_info())
         if path == "/api/local/ui-desc":
@@ -1023,6 +1157,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.mcp_direct_info())
         if path == "/api/local/agent/get":
             return self._agentloop("get", {"run": one("run")})
+        if path == "/api/local/agent/runs":
+            return self._agentloop("runs", {})
+        if path == "/api/local/agent/film":
+            return self._agent_film(one("run"))
         if path == "/api/blocks":
             import postblocks
             return self._json(200, postblocks.catalog())
@@ -1226,7 +1364,25 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     sys.stderr.write("[mcp_direct] revoke_failed %s\n" % type(e).__name__)
             return self._json(200, out)
-        if path in ("/api/local/agent/start", "/api/local/agent/step"):
+        if path == "/api/local/agent-qc":
+            if not self._human():
+                return self._json(403, {"error": "主迴圈自動驗片（每鏡多一張驗片卡）要你本人在 App 裡切"})
+            v = body.get("on")
+            if v is not None and not isinstance(v, bool):
+                return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
+            if not st.set_agent_qc(v):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            return self._json(200, st.agent_qc_info())
+        if path == "/api/local/frame-relay":
+            if not self._human():
+                return self._json(403, {"error": "首幀接力（會用你的金鑰上傳）要你本人在 App 裡切"})
+            v = body.get("on")
+            if v is not None and not isinstance(v, bool):
+                return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
+            if not st.set_frame_relay(v):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            return self._json(200, st.frame_relay_info())
+        if path in ("/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/plan"):
             return self._agentloop(path.rsplit("/", 1)[1], body)
         if path == "/api/local/engine":
             v = body.get("engine")
@@ -2003,10 +2159,12 @@ class Handler(BaseHTTPRequestHandler):
             sys.path.insert(0, cli)
         from appletoken.core import model_caps
         try:
+            vid_of = lambda job: os.path.join(st.media, self._cache_job(job))
             code, out = agent_exec.handle(op, body if isinstance(body, dict) else {}, data_dir=st.data_dir,
                                           port=self.port, secret=st.agent_loop, caps_of=model_caps.caps,
-                                          frames=model_caps.frames_payload, ffmpeg=st.ffmpeg,
-                                          video_of=lambda job: os.path.join(st.media, self._cache_job(job)))
+                                          frames=model_caps.frames_payload, ffmpeg=st.ffmpeg, video_of=vid_of,
+                                          relay=(lambda take: frame_relay(st, vid_of, take)) if st.frame_relay_on() else None,
+                                          auto_qc=st.agent_qc_on(), seam=lambda prev, job: seam_ssim(st, vid_of, prev, job))
         except agent_exec.fexec.ExecutorError as e:
             return self._json(502, {"error": str(e).replace(st.agent_loop, "…")})
         return self._json(code, out)
@@ -2521,7 +2679,6 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"text": text if isinstance(text, str) else "", "payer": "own_key"})
 
     def _concat(self, body):
-        st = self.state
         files = body.get("files")
         if not isinstance(files, list) or not 2 <= len(files) <= CONCAT_MAX:
             return self._json(400, {"error": "要勾 2 到 %d 支" % CONCAT_MAX})
@@ -2531,13 +2688,18 @@ class Handler(BaseHTTPRequestHandler):
             if not m:
                 return self._json(400, {"error": "只能合併這台電腦裡的成片"})
             ids.append(m.group(1))
-        if not (st.ffmpeg and st.ffprobe):
-            return self._json(409, {"error": "這台找不到 ffmpeg，沒辦法合併"})
         try:
-            paths = [os.path.join(st.media, self._cache_job(j)) for j in ids]
+            code, out = self._concat_jobs(ids, body.get("name") or "合併")
         except ConsoleError as e:
             return self._err(e, with_hints=False)
-        name = safe_filename(body.get("name") or "合併", 60) or "合併"
+        return self._json(code, out)
+
+    def _concat_jobs(self, ids, name):
+        st = self.state
+        if not (st.ffmpeg and st.ffprobe):
+            return 409, {"error": "這台找不到 ffmpeg，沒辦法合併"}
+        paths = [os.path.join(st.media, self._cache_job(j)) for j in ids]
+        name = safe_filename(name, 60) or "合併"
         work = tempfile.mkdtemp(prefix="concat-", dir=st.data_dir)
         env = st.openh264_env()
         run = lambda args, t=600: subprocess.run(args, capture_output=True, timeout=t, env=env, stdin=subprocess.DEVNULL)
@@ -2579,10 +2741,10 @@ class Handler(BaseHTTPRequestHandler):
                              "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,fps=24,"
                              "format=yuv420p" % (W, H, W, H)] + vc + ["-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest", y]
                     if run(args).returncode != 0:
-                        return self._json(500, {"error": "第 %d 支重新編碼失敗" % (i + 1)})
+                        return 500, {"error": "第 %d 支重新編碼失敗" % (i + 1)}
                     norm.append(y)
                 if not concat(norm):
-                    return self._json(500, {"error": "合併失敗"})
+                    return 500, {"error": "合併失敗"}
             with open(out, "rb") as f:
                 sha = self._store_blob(f.read(), "video/mp4")
             kept_dir = os.path.join(st.data_dir, "merged")
@@ -2591,12 +2753,56 @@ class Handler(BaseHTTPRequestHandler):
             if not os.path.exists(kept):
                 shutil.copyfile(out, kept)
         except render.RenderError as e:
-            return self._json(409, {"error": str(e)})
+            return 409, {"error": str(e)}
         except (OSError, subprocess.SubprocessError):
-            return self._json(500, {"error": "合併失敗（ffmpeg 沒跑完）"})
+            return 500, {"error": "合併失敗（ffmpeg 沒跑完）"}
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        return self._json(200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": lossless, "path": kept})
+        return 200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": lossless, "path": kept}
+
+    def _agent_film(self, run):
+        st = self.state
+        if not st.agentloop_on():
+            return self._json(501, {"error": AGENT_LOOP_OFF})
+        import agent_exec
+        plan = agent_exec.film_shots(st.data_dir, run)
+        if not plan:
+            return self._json(404, {"error": "沒有這一次拍片"})
+        mine = {t for s in plan["shots"] for t in s["takes"]}
+        rows = []
+        if plan["project_id"] and mine:
+            rows = [r for r in st.db.run(lambda c, u: takes.list_takes(c, u, plan["project_id"], limit=500)) if r["id"] in mine]
+        shots, files, missing = [], [], []
+        for n, s in enumerate(plan["shots"], 1):
+            ts = sorted((r for r in rows if r["shot_key"] == s["key"]), key=lambda r: r.get("attempt") or 0)
+            vs = [{"take": r["id"], "attempt": r.get("attempt"), "status": r["status"], "qc_ok": r.get("qc_ok"),
+                   "picked": bool(r.get("picked")), "picked_by": r.get("picked_by") if r.get("picked") else None,
+                   "job_id": r.get("job_id"),
+                   "src": "/api/download?id=" + r["job_id"] if r.get("job_id") and r["status"] == "ready" else None}
+                  for r in ts]
+            pick = next((v for v in vs if v["picked"] and v["src"]), None)
+            shots.append({"n": n, "key": s["key"], "picked": pick and pick["take"], "picked_by": pick and pick["picked_by"],
+                          "versions": vs})
+            if pick:
+                files.append(pick["job_id"])
+            else:
+                missing.append(s["key"])
+        out = {"run": run, "phase": plan["phase"], "project_id": plan["project_id"], "shots": shots, "film": None,
+               "missing": missing}
+        if files and not missing:
+            try:
+                if len(files) == 1:
+                    out["film"] = {"src": "/api/download?id=" + files[0],
+                                   "path": os.path.join(st.media, self._cache_job(files[0]))}
+                else:
+                    code, f = self._concat_jobs(files, "agent-film")
+                    if code == 200:
+                        out["film"] = f
+                    else:
+                        out["film_error"] = f.get("error")
+            except ConsoleError as e:
+                out["film_error"] = str(e)
+        return self._json(200, out)
 
     def _image_names(self, model):
         names = {model}

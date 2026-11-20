@@ -52,6 +52,8 @@ npm run dist:mac                       # 打包（不簽章）；Windows：npm r
 
 `IAMDIRECTOR_UI` 只給開發測試用：打包後的 App 一律忽略它（`test/devui.test.js` 守著），使用者下載的正式版不受影響。
 
+想讀、改程式，或接上自己的 Agent（MCP）：見[開發者指南](docs/DEVELOPERS.md)（架構、本機伺服器、MCP 工具、核准與上限、主迴圈、各項開關）。
+
 ## 授權
 
 - 原始碼：[Apache License 2.0](LICENSE)。
@@ -76,6 +78,7 @@ No account needed. **Use your own AppleToken API key**; your works, assets and e
 - The desktop app is always a local tool. Signing in to an iamdirector.app account is optional and only adds syncing your works to the cloud (upload, download, and a prompt when both sides changed). Publishing to your channels and paying with platform points are on the iamdirector.app website.
 - On-device export uses a bundled LGPL build of FFmpeg: VideoToolbox on macOS, Media Foundation on Windows; on Linux x64, Cisco's OpenH264 is downloaded only with your consent (otherwise WebM). *OpenH264 Video Codec provided by Cisco Systems, Inc.*
 - Build: see the commands above.
+- Developer guide (Traditional Chinese): [docs/DEVELOPERS.md](docs/DEVELOPERS.md) — architecture, the local server, MCP tools, approvals and limits, the agent loop, feature switches.
 - License: Apache-2.0. The names "我是導演" / "iamdirector" and the logo are reserved and not covered by the license ([TRADEMARKS.md](TRADEMARKS.md)).
 - Security issues: see [SECURITY.md](SECURITY.md).
 

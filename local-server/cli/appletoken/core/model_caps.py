@@ -5,7 +5,7 @@ CAPS = {
     "gputw/minimax-h3": {
         "first_frame": {"status": "ok", "field": "frame_images_str", "drift": "yes",
                         "evidence": "job_2e34c9802390ea1a490a；60 秒四段接力的接縫 SSIM 0.976／0.974／0.977"
-                                    "（影片助手 Dudu & Nini 實測）",
+                                    "（實測）",
                         "date": "2026-11-20",
                         "success": {"ok": 3, "tries": 5},
                         "notes": ["兩個角色身體接觸的動作（抱、扭打）短暫融在一起約 0.5 秒",
@@ -18,7 +18,7 @@ CAPS = {
     },
     "sailflow/minimax-h3": {
         "first_frame": {"status": "ok", "field": "image_url", "drift": "yes",
-                        "evidence": "接縫 SSIM 0.979（影片助手 Dudu & Nini 實測）", "date": "2026-11-20",
+                        "evidence": "接縫 SSIM 0.979（實測）", "date": "2026-11-20",
                         "success": {"ok": 1, "tries": 1}},
         "last_frame": {"status": "untested"},
         "input_references": {"status": "untested"},

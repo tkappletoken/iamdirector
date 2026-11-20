@@ -905,6 +905,11 @@ pre.err { color:var(--ng); }
           <div class="hint" id="pbEngineNote">切換之後下一次匯出就生效，不用重開 App。</div>
         </div>
         
+        <div id="frameRelayWrap" hidden style="margin-top:10px">
+          <div class="chk"><input type="checkbox" id="frameRelay"><label for="frameRelay">首幀接力<span class="note"> · Agent 拍長片時，用上一鏡定稿的最後一格當下一鏡的首幀（測試中）</span></label></div>
+          <div class="hint" id="frameRelayNote">打開之後，每接一鏡會用你自己的 AppleToken 金鑰上傳一張圖（上一鏡的最後一格）。預設關。</div>
+        </div>
+        
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pbPanel"><label for="pbPanel">匯出面板用積木清單（測試中，預設是原本的面板）</label></div>
         
         <div class="chk" style="margin-top:6px"><input type="checkbox" id="r7Cat"><label for="r7Cat">匯出面板照積木目錄畫（測試中，預設是原本的面板）</label></div>
@@ -918,6 +923,8 @@ pre.err { color:var(--ng); }
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvRig"><label for="pvRig">3D 預演加「景別照角色身高」與「對準角色」（過肩、反打、雙人；後者限桌面版；測試中，預設關）</label></div>
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="dcPanel"><label for="dcPanel">分鏡每一鏡加「導演控制」（走位、表演、運鏡；測試中，預設關）</label></div>
+        
+        <div class="chk" id="agRunRow" hidden style="margin-top:10px"><input type="checkbox" id="agRun"><label for="agRun">右下角顯示「Agent 拍片進度」（第幾鏡、花了多少、Agent 的提問、交片；測試中，預設關）</label></div>
         
         <div id="uiMine" hidden style="margin-top:6px"><label for="uiProfilePick">我的介面</label>
           <select id="uiProfilePick"></select> <button type="button" id="uiApplyBtn">套用</button></div>
@@ -25160,7 +25167,15 @@ document.addEventListener('keydown', e => {
     } catch (_) {}
   }
 
-  window.__APPROVALS__ = { open: openCard, list: openList, refresh: paintPill };
+  async function openLimits() {
+    await openList();
+    const d = document.getElementById('apvLimits');
+    if (!d) return;
+    d.open = true;
+    const i = d.querySelector('input');
+    if (i) i.focus();
+  }
+  window.__APPROVALS__ = { open: openCard, list: openList, refresh: paintPill, limits: openLimits };
   const m = location.pathname.match(/^\/approve\/(ap[vb]_[A-Za-z0-9]{16,32})$/);
   if (m) openCard(m[1]);
   const desk = window.iamdirectorDesktop;
@@ -25186,6 +25201,29 @@ document.addEventListener('keydown', e => {
     fetch('/api/local/engine', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                  body: JSON.stringify({ engine: sel.value }) })
       .then(r => r.ok ? r.json() : null).then(show).catch(() => {});
+  });
+})();
+
+(() => {
+  if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
+  const wrap = document.getElementById('frameRelayWrap'), cb = document.getElementById('frameRelay');
+  const note = document.getElementById('frameRelayNote');
+  if (!wrap || !cb) return;
+  const BASE = '打開之後，每接一鏡會用你自己的 AppleToken 金鑰上傳一張圖（上一鏡的最後一格）。預設關。';
+  const show = d => {
+    if (!d || typeof d.on !== 'boolean') return;
+    wrap.hidden = false;
+    cb.checked = d.on;
+    note.textContent = d.setting == null && d.env ? BASE + '目前照環境變數 STUDIO_LOCAL_FRAME_RELAY＝' + d.env + '；在這裡勾一次就改用你選的。' : BASE;
+  };
+  fetch('/api/local/frame-relay').then(r => r.ok ? r.json() : null).then(show).catch(() => {});
+  cb.addEventListener('change', () => {
+    const want = cb.checked;
+    fetch('/api/local/frame-relay', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                     body: JSON.stringify({ on: want }) })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) show(d); else cb.checked = !want; })
+      .catch(() => { cb.checked = !want; });
   });
 })();
 
@@ -25712,7 +25750,7 @@ function uiComposeAnswers(questions, picks) {
       'background:rgba(13,15,19,.92)';
     const card = el('div'); card.style.cssText = 'width:min(560px,92vw);background:var(--riser,#1B1F26);border-radius:12px;padding:24px';
     card.append(el('h2', null, '先打造你的介面'),
-      el('p', null, '每個人拍片的方式不一樣。先跟你的 Agent（Claude Code、影片助手，透過 MCP）聊你想怎麼拍，它會直接幫你排好導演台；'
+      el('p', null, '每個人拍片的方式不一樣。先跟你的 Agent（例如 Claude Code，或其他支援 MCP 的 Agent）聊你想怎麼拍，它會直接幫你排好導演台；'
         + '或是回答幾題快速建立。之後隨時可以說「回預設」或「還原」。'));
     const row = el('div'); row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px';
     const quick = el('button', null, '用幾個問題快速建立'), skip = el('button', null, '先用預設框架');
@@ -26366,5 +26404,259 @@ function uiComposeAnswers(questions, picks) {
     isOn: () => on,
     ctx: () => (LOCAL ? { rigOn: true, rig } : { rigOn: true }),
   };
+})();
+const AGRUN_PHASE = { budget: '規劃中', execute: '拍攝中', deliver: '交片中', done: '完成', stopped: '已停止' };
+const AGRUN_SHOT = { pending: '還沒拍', checking: '檢查中', wait_refund: '等退款', ok: '通過', accepted: '收下了', exhausted: '重做用完' };
+const AGRUN_REASON = {
+  interrupted: '你按了中斷', card_pending: '要你核准這一鏡的費用', repriced: '重新報價變貴了，要你再核准', over_limit: '超過核准卡的上限',
+  controls_gap: '分鏡有缺口（例如缺角色）', plan_over_budget: '這次規劃超過預算', over_per_job: '這一鏡超過單鏡上限',
+  over_per_run: '再拍會超過這次拍片的上限', no_price: '算不出這一鏡要多少', retakes_exhausted: '重做次數用完了',
+  approval_needed: '要你本人放行' };
+const AGRUN_CARD = ['card_pending', 'repriced', 'over_limit'];
+const AGRUN_DECISION = { resume: '繼續', stop: '停止', accept_best: '收最好的一版', approve: '放行這一鏡', raise: '提高上限' };
+function agRunModel(st) {
+  if (!st || !Array.isArray(st.shots)) return null;
+  const fly = st.phase === 'done' || st.phase === 'stopped' ? null : (st.inflight || null);
+  const num = v => (typeof v === 'number' && isFinite(v) ? Math.round(v * 100) / 100 : null);
+  const shots = st.shots.map((s, i) => ({
+    n: i + 1, key: s.key,
+    label: fly && fly.shot_key === s.key && fly.do === 'generate' ? '生成中' : (AGRUN_SHOT[s.status] || s.status),
+    attempts: (s.takes || []).length, now: !!(fly && fly.shot_key === s.key) }));
+  const cur = shots.find(s => s.now) || null;
+  const b = st.budget || {};
+  const spent = num(st.spent) || 0;
+  const cap = num(b.per_run);
+  const money = { spent, held: num(st.held) || 0, cap, left: cap == null ? null : Math.max(0, num(cap - spent)),
+                  planned: num(st.plan && st.plan.totals && st.plan.totals.cost) };
+  let ask = null;
+  const p = st.pause;
+  if (p && (st.phase !== 'done' && st.phase !== 'stopped')) {
+    const opts = (p.options || []).filter(d => AGRUN_DECISION[d]);
+    ask = { reason: p.reason, title: AGRUN_REASON[p.reason] || p.reason, detail: p.detail || '',
+            options: opts.map(d => ({ d, label: AGRUN_DECISION[d] })), approve_url: p.approve_url || null,
+            limits: AGRUN_CARD.includes(p.reason) && opts.includes('resume'),
+            hint: p.reason === 'controls_gap' ? '請 Agent 補好分鏡再送回來（它手上有完整分鏡）；或在這裡停止。'
+              : AGRUN_CARD.includes(p.reason) ? '超過上限就按「到設定調整上限」改好，或打開核准卡直接核准；再按「繼續」。'
+              : (p.reason === 'plan_over_budget' || p.reason === 'over_per_run' || p.reason === 'over_per_job') && !opts.includes('raise')
+                ? '這是 Agent 開拍時設的這次拍片上限，設定頁改不到；要拍下去就請 Agent 用新的上限重開一次，或在這裡停止。' : '' };
+  }
+  let done = null;
+  if (st.phase === 'done') {
+    const ev = (st.log || []).slice().reverse().find(x => x.kind === 'phase' && x.to === 'done') || {};
+    const pid = st.exec && st.exec.project_id;
+    done = { link: pid ? '/w/' + encodeURIComponent(pid) : null, export: ev.export || null };
+  }
+  return { run: st.run, request: st.request || '', phase: st.phase, phaseLabel: AGRUN_PHASE[st.phase] || st.phase,
+           total: shots.length, cur, shots, money, ask, done };
+}
+const AGRUN_BY = { agent: 'Agent 挑的', human: '你挑的' };
+const AGRUN_TAKE = { queued: '排隊中', generating: '生成中', failed: '生成失敗', refunded: '生成失敗（已退款）' };
+function agFilmModel(st, items) {
+  if (!st || st.phase !== 'done' || !Array.isArray(st.shots)) return null;
+  const mine = new Set();
+  st.shots.forEach(s => (s.takes || []).forEach(t => { if (t && t.take) mine.add(t.take); }));
+  const rows = (Array.isArray(items) ? items : []).filter(t => t && mine.has(t.id));
+  const shots = st.shots.map((s, i) => {
+    const takes = rows.filter(t => t.shot_key === s.key).sort((a, b) => (a.attempt || 0) - (b.attempt || 0)).map(t => {
+      const src = t.job_id && t.status === 'ready' ? '/api/download?id=' + encodeURIComponent(t.job_id) : null;
+      return { id: t.id, attempt: t.attempt, src, picked: !!t.picked, canPick: !!src && !t.picked,
+               label: '第 ' + t.attempt + ' 版' + (t.qc_ok === true ? ' · 品管通過' : t.qc_ok === false ? ' · 品管不合格' : '') +
+                      (t.status === 'ready' ? '' : ' · ' + (AGRUN_TAKE[t.status] || t.status)) +
+                      (t.picked ? ' · 定稿' + (AGRUN_BY[t.picked_by] ? '（' + AGRUN_BY[t.picked_by] + '）' : '') : ''),
+               by: t.picked ? (t.picked_by || null) : null };
+    });
+    return { n: i + 1, key: s.key, takes, pick: takes.find(t => t.picked && t.src) || null };
+  });
+  const missing = shots.filter(s => !s.pick).map(s => s.n);
+  return { shots, missing, files: missing.length ? [] : shots.map(s => s.pick.src) };
+}
+(function studioAgentRun() {
+  const KEY = 'iamd-agent-run';
+  const LOCAL = !!(window.__STUDIO__ && window.__STUDIO__.local);
+  const row = document.getElementById('agRunRow');
+  const box = document.getElementById('agRun');
+  if (!LOCAL) return;
+  if (row) row.hidden = false;
+  let on = false, host = null, timer = 0, pick = '', busy = false, msg = '', sure = '', lastSig = '', stitch = null;
+  const openShots = new Set();
+  try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const get = path => fetch(path).then(r => r.json().catch(() => ({})).then(d => ({ code: r.status, d })));
+  function draw(view) {
+    if (!host) return;
+    host.textContent = '';
+    const head = el('div', 'agrun-head');
+    head.append(el('b', '', 'Agent 拍片進度'));
+    const x = el('button', 'agrun-x', '×'); x.type = 'button'; x.setAttribute('aria-label', '關掉 Agent 拍片進度'); x.onclick = close;
+    head.append(x);
+    host.append(head);
+    if (view.off) { host.append(el('p', 'agrun-note', 'Agent 主迴圈還沒開（這台的主迴圈開關預設關著），開了之後請 Agent 開拍，這裡就會顯示進度。')); return; }
+    if (!view.runs.length) { host.append(el('p', 'agrun-note', '還沒有拍片。請 Agent 開拍之後，這裡會即時顯示進度。')); return; }
+    if (view.runs.length > 1) {
+      const sel = el('select', 'agrun-pick'); sel.setAttribute('aria-label', '看哪一次拍片');
+      for (const r of view.runs) { const o = el('option', '', (r.pause_reason ? '⏸ ' : '') + (r.request || r.run).slice(0, 24) + ' · ' + (AGRUN_PHASE[r.phase] || r.phase)); o.value = r.run; sel.append(o); }
+      sel.value = view.m ? view.m.run : '';
+      sel.onchange = () => { pick = sel.value; refresh(); };
+      host.append(sel);
+    }
+    const m = view.m;
+    if (!m) { host.append(el('p', 'agrun-note', '讀不到這一次拍片。')); return; }
+    host.append(el('div', 'agrun-req', m.request));
+    host.append(el('div', 'agrun-phase', m.phaseLabel + (m.cur ? ' · 第 ' + m.cur.n + '／' + m.total + ' 鏡' : ' · 共 ' + m.total + ' 鏡')));
+    const ul = el('ul', 'agrun-shots');
+    for (const s of m.shots) {
+      const li = el('li', s.now ? 'now' : '', '第 ' + s.n + ' 鏡：' + s.label + (s.attempts > 1 ? '（第 ' + s.attempts + ' 次）' : ''));
+      li.dataset.key = s.key; ul.append(li);
+    }
+    host.append(ul);
+    const mo = m.money;
+    host.append(el('div', 'agrun-money', '已花 ' + mo.spent + (mo.held ? '（含等退款 ' + mo.held + '）' : '') +
+      (mo.cap == null ? ' · 這次沒設上限' : ' · 上限 ' + mo.cap + '，還剩 ' + mo.left) + (mo.planned != null ? ' · 規劃 ' + mo.planned : '')));
+    if (m.ask) {
+      const a = el('div', 'agrun-ask'); a.setAttribute('role', 'group'); a.setAttribute('aria-label', 'Agent 在問你');
+      a.append(el('b', '', 'Agent 在問：' + m.ask.title));
+      if (m.ask.detail) a.append(el('p', '', m.ask.detail));
+      if (m.ask.hint) a.append(el('p', 'agrun-note', m.ask.hint));
+      if (m.ask.approve_url && /^(\/|https?:\/\/)/.test(m.ask.approve_url)) {
+        const l = el('a', '', '打開核准卡'); l.href = m.ask.approve_url; l.target = '_blank'; l.rel = 'noopener'; a.append(l);
+      }
+      const bar = el('div', 'agrun-bar');
+      if (m.ask.limits && window.__APPROVALS__ && window.__APPROVALS__.limits) {
+        const g = el('button', 'agrun-limits', '到設定調整上限'); g.type = 'button'; g.onclick = () => window.__APPROVALS__.limits();
+        bar.append(g);
+      }
+      for (const o of m.ask.options) {
+        const again = o.d === 'stop' && sure === m.run;
+        const b = el('button', o.d === 'stop' ? 'agrun-stop' : '', again ? '確定停止？再按一次' : o.label); b.type = 'button'; b.dataset.d = o.d; b.disabled = busy;
+        b.onclick = () => {
+          if (o.d === 'stop' && sure !== m.run) { sure = m.run; b.textContent = '確定停止？再按一次'; return; }
+          sure = ''; answer(m.run, o.d);
+        };
+        bar.append(b);
+      }
+      a.append(bar);
+      host.append(a);
+    }
+    if (m.done) {
+      const d = el('div', 'agrun-done');
+      d.append(el('b', '', '交片了'));
+      if (m.done.link) { const l = el('a', '', '打開作品'); l.href = m.done.link; d.append(l); }
+      host.append(d);
+    }
+    if (view.film) host.append(filmBox(view.film));
+    if (msg) host.append(el('p', 'agrun-err', msg));
+  }
+  function stitched(files) {
+    const key = files.join('|');
+    if (stitch && stitch.key === key) return stitch.p;
+    const p = files.length === 1 ? Promise.resolve({ src: files[0] })
+      : fetch('/api/concat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                               body: JSON.stringify({ files, name: 'agent-film' }) })
+          .then(r => r.json().catch(() => ({})).then(d => (r.ok && d.src ? { src: d.src } : { err: (d && d.error) || ('HTTP ' + r.status) })))
+          .catch(e => ({ err: String(e && e.message || e) }));
+    stitch = { key, p };
+    p.then(x => { if (x.err && stitch && stitch.key === key) stitch = null; });
+    return p;
+  }
+  function filmBox(f) {
+    const box = el('div', 'agrun-film');
+    box.append(el('b', '', '交片預覽'));
+    if (f.src) {
+      const v = el('video', 'agrun-film-v'); v.controls = true; v.preload = 'metadata'; v.src = f.src;
+      v.setAttribute('aria-label', '接好的成片'); box.append(v);
+    } else if (f.err) box.append(el('p', 'agrun-err', '成片接不起來：' + f.err));
+    else if (f.missing.length) box.append(el('p', 'agrun-note', '第 ' + f.missing.join('、') + ' 鏡還沒定稿：挑好就會接成一支。'));
+    for (const s of f.shots) {
+      const d = el('details', 'agrun-shot'); d.dataset.key = s.key; d.open = openShots.has(s.key);
+      d.ontoggle = () => { if (d.open) openShots.add(s.key); else openShots.delete(s.key); };
+      d.append(el('summary', '', '第 ' + s.n + ' 鏡 · ' + s.takes.length + ' 版' +
+        (s.pick ? '（定稿：第 ' + s.pick.attempt + ' 版' + (AGRUN_BY[s.pick.by] ? '，' + AGRUN_BY[s.pick.by] : '') + '）' : '（還沒定稿）')));
+      for (const t of s.takes) {
+        const row = el('div', 'agrun-take' + (t.picked ? ' picked' : '')); row.dataset.take = t.id;
+        row.append(el('div', '', t.label));
+        if (t.src) { const v = el('video'); v.controls = true; v.preload = 'none'; v.src = t.src; v.setAttribute('aria-label', '第 ' + s.n + ' 鏡' + t.label); row.append(v); }
+        if (t.canPick) {
+          const b = el('button', '', '用這一版當定稿'); b.type = 'button'; b.disabled = busy; b.onclick = () => pickTake(t.id);
+          row.append(b);
+        }
+        d.append(row);
+      }
+      box.append(d);
+    }
+    return box;
+  }
+  async function pickTake(id) {
+    busy = true; msg = ''; lastSig = '';
+    try {
+      const r = await fetch('/api/takes/pick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) msg = (d && d.error) || ('HTTP ' + r.status);
+    } catch (e) { msg = '送不出去：' + (e && e.message || e); }
+    busy = false; refresh();
+  }
+  async function refresh() {
+    if (!host) return;
+    try {
+      const r = await get('/api/local/agent/runs');
+      if (r.code === 501) { lastSig = ''; return draw({ off: true }); }
+      const runs = (r.d && Array.isArray(r.d.items)) ? r.d.items : [];
+      const run = runs.some(x => x.run === pick) ? pick : (runs[0] && runs[0].run);
+      let m = null, film = null;
+      if (run) {
+        const g = await get('/api/local/agent/get?run=' + encodeURIComponent(run));
+        if (g.code === 200) {
+          m = agRunModel(g.d);
+          const pid = g.d.exec && g.d.exec.project_id;
+          if (g.d.phase === 'done' && pid) {
+            const t = await get('/api/takes?project_id=' + encodeURIComponent(pid));
+            film = agFilmModel(g.d, t.code === 200 && t.d ? t.d.items : []);
+            if (film && film.files.length) Object.assign(film, await stitched(film.files));
+          }
+        }
+      }
+      const sig = JSON.stringify([runs.map(x => [x.run, x.phase, x.pause_reason]), m, film, msg, busy, sure]);
+      if (sig === lastSig && host.firstChild) return;
+      lastSig = sig;
+      draw({ runs, m, film });
+    } catch (e) { console.warn('[agentrun] read_failed'); }
+  }
+  async function answer(run, decision) {
+    busy = true; msg = ''; lastSig = ''; refresh();
+    try {
+      const r = await fetch('/api/local/agent/step', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                       body: JSON.stringify({ run, decision }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) msg = (d && d.error) || ('HTTP ' + r.status);
+    } catch (e) { msg = '送不出去：' + (e && e.message || e); }
+    busy = false; refresh();
+  }
+  function tick() {
+    const a = document.activeElement;
+    if (host && !document.hidden && !(a && a.tagName === 'SELECT' && host.contains(a))) refresh();
+  }
+  function open() {
+    if (!on) { console.warn('[agentrun] off'); return; }
+    if (!host) { host = el('aside', 'agrun'); host.setAttribute('aria-label', 'Agent 拍片進度'); host.setAttribute('data-agent', 'agent-run'); document.body.append(host); }
+    refresh();
+    if (!timer) timer = setInterval(tick, 3000);
+  }
+  function close() { if (host) { host.remove(); host = null; } if (timer) { clearInterval(timer); timer = 0; } }
+  if (box) {
+    box.checked = on;
+    box.onchange = () => { on = box.checked; try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {} if (on) open(); else close(); };
+  }
+  const css = document.createElement('style');
+  css.textContent = '.agrun{position:fixed;right:16px;bottom:16px;z-index:60;width:320px;max-height:70vh;overflow:auto;padding:12px 14px;' +
+    'background:var(--panel,#1c1a17);color:inherit;border:1px solid rgba(240,236,226,.16);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.35);font-size:var(--fs-s,13px)}' +
+    '.agrun-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.agrun-x{background:none;border:0;color:inherit;font-size:18px;cursor:pointer}' +
+    '.agrun-req{font-weight:600;margin:4px 0}.agrun-phase,.agrun-money{opacity:.8;margin:4px 0}.agrun-pick{width:100%;margin:4px 0}' +
+    '.agrun-shots{margin:6px 0;padding-left:18px}.agrun-shots li.now{font-weight:600;color:var(--grease,#e8a33d)}' +
+    '.agrun-ask{margin-top:8px;padding:8px;border:1px solid var(--grease,#e8a33d);border-radius:8px}.agrun-ask p{margin:4px 0}' +
+    '.agrun-film{margin-top:8px}.agrun-film video{width:100%;margin:6px 0;border-radius:6px;background:#000}' +
+    '.agrun-shot{margin:4px 0}.agrun-shot>summary{cursor:pointer}.agrun-take{padding:6px 0;border-top:1px solid rgba(240,236,226,.08)}.agrun-take.picked>div{font-weight:600}' +
+    '.agrun-bar{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}.agrun-note{opacity:.7}.agrun-err{color:#e66}.agrun-done{margin-top:8px;display:flex;gap:10px;align-items:center}';
+  document.head.append(css);
+  window.__AGENTRUN__ = { open, close, refresh, isOn: () => on };
+  if (on) open();
 })();
 </script>

@@ -29,7 +29,7 @@ MEME = {
         "twist_at": "第幾秒反轉",
         "chaos": "後段暴走的內容（反轉之後到結尾）",
         "seconds": "總長 11–15 秒（預設 15）",
-        "characters": "角色外觀描述（選填，300 字以內；例如「Dudu: a fluffy cream-colored toy poodle; Nini: an orange tabby cat」）",
+        "characters": "角色外觀描述（選填，300 字以內；例如「小白: a fluffy cream-colored toy poodle; 橘子: an orange tabby cat」）",
         "resolution": "解析度（720p 或 1080p，預設 720p；這個模型照解析度計價）",
         "extra_negative": "追加的 negative（選填，200 字以內；接在範本內建的那一份後面，內建的刪不掉）",
         "props": "道具（選填，120 字以內；明確寫進提示詞，例如 she wears a headband and a whistle clearly visible）",
@@ -181,7 +181,7 @@ def meme(fields):
         names = sorted({w for w in _NAME.findall(setup + " " + chaos) if w not in _COMMON})
         if names:
             warnings.append("提示詞裡有名字（%s），但 characters 是空的：模型不知道這些名字長什麼樣子，"
-                            "請在 characters 寫外觀描述（例如 Dudu: a fluffy cream-colored toy poodle）" % "、".join(names))
+                            "請在 characters 寫外觀描述（例如 Max: a fluffy cream-colored toy poodle）" % "、".join(names))
     captions = []
     c1, c2 = _text(fields, "cap_setup", 40), _text(fields, "cap_twist", 40)
     if c1:

@@ -51,6 +51,8 @@ def run(state, executor, *, max_steps=MAX_STEPS, max_polls=MAX_POLLS, sleep=None
             if not hasattr(executor, "qc"):
                 return st, act
             reports = executor.qc(act)
+            if reports is None:
+                return st, act
             ev = {"type": "checked", "reports": reports}
         elif d == "deliver":
             if not hasattr(executor, "deliver"):

@@ -3,11 +3,11 @@ import sys
 
 from . import agent_loop, executor
 
-REQUEST = "Dudu 和 Nini 在公園追球，30 秒"
+REQUEST = "小白和橘子在公園追球，30 秒"
 SCRIPT = {"version": 1, "segments": [
-    {"shot_key": "s1", "seconds": 10, "prompt": "@Dudu 在公園草地上看到一顆紅球滾過來，耳朵豎起來，鏡頭低角度跟拍"},
-    {"shot_key": "s2", "seconds": 10, "prompt": "@Dudu 和 @Nini 一起追著紅球跑過草地，Nini 跳起來撲球，tracking 跟拍"},
-    {"shot_key": "s3", "seconds": 10, "prompt": "球停在樹下，@Dudu 和 @Nini 一起趴在球旁邊喘氣，鏡頭慢慢拉遠"},
+    {"shot_key": "s1", "seconds": 10, "prompt": "@小白 在公園草地上看到一顆紅球滾過來，耳朵豎起來，鏡頭低角度跟拍"},
+    {"shot_key": "s2", "seconds": 10, "prompt": "@小白 和 @橘子 一起追著紅球跑過草地，橘子 跳起來撲球，tracking 跟拍"},
+    {"shot_key": "s3", "seconds": 10, "prompt": "球停在樹下，@小白 和 @橘子 一起趴在球旁邊喘氣，鏡頭慢慢拉遠"},
 ]}
 DEMO_CAPS = {"first_frame": {"status": "ok"}, "last_frame": {"status": "untested"}}
 BUDGET = {"auto": True, "per_job": 25, "per_run": 100}

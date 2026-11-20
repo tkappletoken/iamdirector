@@ -16,6 +16,8 @@ QUESTIONS = [
      "options": {True: "要", False: "不要"}},
     {"id": "agent", "ask": "要不要 Agent 協作面板（讓 Agent 幫你跑流程）？", "type": "bool", "default": True,
      "options": {True: "要", False: "不要"}},
+    {"id": "agent_run", "ask": "要不要讓 Agent 幫你從頭拍到尾（你看進度、回答它的提問）？", "type": "bool", "default": False,
+     "options": {True: "要（放上 Agent 拍片進度與 Agent 協作）", False: "不要（自己一步一步拍）"}},
     {"id": "publish", "ask": "做好之後通常上架到哪裡？", "type": "one", "default": "none",
      "options": {"youtube": "YouTube", "pitch": "投稿包（短劇平台）", "none": "先不用"}},
     {"id": "density", "ask": "介面要多精簡？", "type": "one", "default": "standard",
@@ -27,12 +29,14 @@ QMAP = {q["id"]: q for q in QUESTIONS}
 
 TEXT = {
     "zh-TW": {"meme": "迷因", "plan": "規劃", "previs": "預演", "make": "生成", "pick": "挑版本與定稿", "post": "後製與匯出",
-              "publish": "上架", "assist": "協作",
+              "publish": "上架", "assist": "協作", "agentrun": "Agent 拍片",
+              "agentrun_hint": "Agent 從頭拍到尾：這裡看進度、回答它的提問；花錢照舊走核准卡",
               "meme_hint": "挑範本 → 改字卡 → 匯出", "plan_hint": "先寫腳本、拆分鏡（照下面的順序）",
               "step_script": "1. 腳本", "step_board": "2. 分鏡", "step_cast": "角色", "previs_hint": "站位與運鏡用 3D 鎖住再生成",
               "make_hint": "按開拍照舊先報價、再確認"},
     "en": {"meme": "Meme", "plan": "Plan", "previs": "Previs", "make": "Generate", "pick": "Takes", "post": "Post & export",
-           "publish": "Publish", "assist": "Assist",
+           "publish": "Publish", "assist": "Assist", "agentrun": "Agent shoot",
+           "agentrun_hint": "The Agent shoots end to end: watch progress and answer its questions here; spending still goes through approval cards",
            "meme_hint": "Pick a template → edit captions → export", "plan_hint": "Script first, then storyboard",
            "step_script": "1. Script", "step_board": "2. Storyboard", "step_cast": "Cast",
            "previs_hint": "Lock blocking and camera in 3D", "make_hint": "Shooting still quotes first, then asks you"},
@@ -40,7 +44,8 @@ TEXT = {
 LABEL_EN = {"export.open": "Export", "blocks.move": "Reorder blocks", "meme.load": "Meme captions", "sound.open": "Sound",
             "cast.turn": "Cast turnaround", "puppet.open": "Puppet previs", "previs.open": "3D previs", "takes.open": "Takes",
             "gate.pick": "Pick final", "approve.batch": "Confirm together", "youtube.open": "Upload to YouTube",
-            "pitch.open": "Pitch package", "agent.open": "Agent", "mode.set": "Switch mode", "generate.open": "Shoot"}
+            "pitch.open": "Pitch package", "agent.open": "Agent", "mode.set": "Switch mode", "generate.open": "Shoot",
+            "agent.panel": "Agent run"}
 ADVANCED = ("blocks.move", "puppet.open", "cast.turn", "previs.open")
 
 class ComposeError(ValueError):
@@ -109,6 +114,9 @@ def compose(answers=None, name=None):
     def step(label, act=None):
         return {"type": "step", "label": label, **({"action": act} if act else {})}
     panels = []
+    if a["agent_run"]:
+        panels.append({"id": "agentrun", "title": T["agentrun"], "items": [
+            {"type": "text", "text": T["agentrun_hint"]}, button("agent.panel"), button("agent.open")]})
     if a["genre"] == "meme":
         panels.append({"id": "meme", "title": T["meme"], "items": [
             {"type": "text", "text": T["meme_hint"]}, step(_label("meme.load", lang), "meme.load"), button("export.open")]})
@@ -148,7 +156,7 @@ def compose(answers=None, name=None):
     side = []
     if a["budget"]:
         side.append(button("approve.batch"))
-    if a["agent"]:
+    if a["agent"] and not a["agent_run"]:
         side.append(button("agent.open"))
     if simple or pro:
         side.append(button("mode.set"))
@@ -160,7 +168,7 @@ def compose(answers=None, name=None):
     except ui_schema.DescError as e:
         raise ComposeError("組出來的描述檔過不了驗證：%s" % e) from None
     prefs = ui_schema.validate_prefs({"version": VERSION, "density": a["density"], "lang": lang, "show_budget": a["budget"],
-                                      "previs": a["previs"], "agent_panel": a["agent"], "hide": hide,
+                                      "previs": a["previs"], "agent_panel": a["agent"] or a["agent_run"], "hide": hide,
                                       "confirm_actions": summary["confirm_actions"]})
     return {"desc": desc, "prefs": prefs, "answers": a, "notes": notes}
 

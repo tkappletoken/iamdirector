@@ -15,7 +15,10 @@ ACTIONS = {
     "agent.open":     {"feature": "agent_activity", "call": "__AGENT_PANEL__.open", "spend": "none",    "label": "Agent 協作"},
     "mode.set":       {"feature": "workflow",      "call": "__SIMPLE__.setMode",    "spend": "none",    "label": "切換模式"},
     "generate.open":  {"feature": "video_quote",   "call": "__GENERATE__.open",     "spend": "confirm", "label": "開拍"},
+    "agent.panel":    {"feature": "agent_activity", "call": "__AGENTRUN__.open",    "spend": "none",    "label": "Agent 拍片進度",
+                       "local": True},
 }
+LOCAL_ONLY = tuple(k for k, v in ACTIONS.items() if v.get("local"))
 
 NEVER_FEATURES = ("payer_key", "wallet", "topup", "agent_tokens", "logout", "agent_pending")
 SPENDS = ("none", "confirm")
