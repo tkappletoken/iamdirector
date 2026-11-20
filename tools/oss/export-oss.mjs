@@ -81,6 +81,15 @@ function transform(f, buf) {
 }
 
 const sha = execFileSync('git', ['-C', WEB, 'rev-parse', '--verify', `${COMMIT}^{commit}`], { encoding: 'utf8' }).trim();
+// Packages imported as a whole: every .py in them has to ship, or an import fails only when the feature is used
+// Not shipped: self_improve.py is a production ops tool (instance id, AWS profile, host paths); nothing here imports it
+const NOT_SHIPPED = ['filming/self_improve.py'];
+const shipped = NOT_SHIPPED.filter((f) => FILES.includes(f));
+if (shipped.length) throw new Error('must not be in SERVER_FILES: ' + shipped.join(', '));
+const missing = ['filming', 'export_lambda/postblocks'].flatMap((dir) =>
+  execFileSync('git', ['-C', WEB, 'ls-tree', '--name-only', `${sha}:${dir}`], { encoding: 'utf8' })
+    .split('\n').filter((n) => n.endsWith('.py')).map((n) => dir + '/' + n)).filter((f) => !FILES.includes(f) && !NOT_SHIPPED.includes(f));
+if (missing.length) throw new Error('not in SERVER_FILES: ' + missing.join(', '));
 fs.rmSync(OUT, { recursive: true, force: true });
 for (const f of FILES) {
   const buf = execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 });
