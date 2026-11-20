@@ -681,15 +681,24 @@ def plan_select(spec, files, probes, caps, workdir, strict=True, fontsdir=None, 
                 note("shadow" if mode == "shadow" else "fallback", mode, why0 or "custom")
                 return plan(spec, files, probes, caps, workdir, **kw)
             try:
-                new = postblocks.compile_pipeline(pipe, files, probes, caps, workdir, **kw)
+                new, dropped = postblocks.compile_custom(pipe, files, probes, caps, workdir, **kw)
             except Exception as e:
                 note("fallback", mode, "exception:%s" % type(e).__name__)
                 return plan(spec, files, probes, caps, workdir, **kw)
             for path, text in new["files"].items():
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
+            for bid, why in dropped:
+                note("dropped", mode, "%s:%s" % (bid, why))
             note("used_custom", mode, None)
-            return {k: v for k, v in new.items() if k != "files"}
+            out = {k: v for k, v in new.items() if k != "files"}
+            if dropped:
+                out["dropped"] = [bid for bid, _w in dropped]
+            m6 = [b["use"] for b in pipe["blocks"] if b.get("on", True) and b["use"] not in out.get("dropped", [])
+                  and getattr(postblocks.REGISTRY[b["use"]], "drop_on_fail", False)]
+            if m6:
+                out["m6_blocks"] = m6
+            return out
     new, why = None, None
     try:
         new = postblocks.compile_spec(spec, files, probes, caps, workdir, **kw)
@@ -771,6 +780,52 @@ def _seam_qc(pipeline, spec, files, ffmpeg, engine=None, note=None):
         note("fallback", "blocks", "seam_check:%s" % type(e).__name__)
         return None
 
+def _blocks_on(pipeline, engine):
+    if not pipeline:
+        return None
+    try:
+        import postblocks
+        return postblocks if postblocks.engine_of(engine) == "blocks" else None
+    except Exception:
+        return None
+
+def _extra_fetch(pipeline, spec, fetch, workdir, files, probes, engine=None, note=None):
+    pb = _blocks_on(pipeline, engine)
+    if pb is None:
+        return
+    note = note or _engine_note
+    try:
+        for n, key in enumerate(pb.extra_inputs(pipeline, spec)):
+            if key in files:
+                continue
+            path = os.path.join(workdir, "extra_%03d" % n)
+            fetch(spec["src_bucket"], key, path)
+            from postblocks.watermark import image_kind
+            files[key] = path
+            probes[key] = {"image": image_kind(path), "has_video": False, "has_audio": False}
+    except Exception as e:
+        note("fallback", "blocks", "extra_input:%s" % type(e).__name__)
+
+def _cover(pipeline, out_path, container, duration, fps, put, bucket, video_key, ffmpeg, engine=None, note=None):
+    pb = _blocks_on(pipeline, engine)
+    if pb is None:
+        return None, None
+    note = note or _engine_note
+    try:
+        dest = os.path.join(os.path.dirname(out_path), "cover.img")
+        got = pb.cover_output(pipeline, out_path, "matroska" if container == "webm" else "mov", duration, dest, ffmpeg, fps)
+        if got is None:
+            return None, None
+        path, fmt, rep = got
+        if not path or not os.path.exists(path):
+            return None, rep
+        key = video_key.rsplit(".", 1)[0] + ".cover." + fmt
+        put(bucket, key, path, "image/jpeg" if fmt == "jpg" else "image/png")
+        return {"key": key, "format": fmt}, rep
+    except Exception as e:
+        note("fallback", "blocks", "cover:%s" % type(e).__name__)
+        return None, None
+
 def _run_steps(ffmpeg, p):
     vals = {}
     for k, st in enumerate(p["steps"]):
@@ -830,6 +885,7 @@ def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fonts
             fetch(spec["src_bucket"], key, path)
             files[key] = path
             probes[key] = probe(ffprobe, path)
+        _extra_fetch(pipeline, spec, fetch, workdir, files, probes, engine)
         if spec.get("captions") or spec.get("effects"):
             caps_, effs_, at_, twist_warn = _resolve_select(spec, files, ffmpeg, timing(spec)["body"], engine,
                                                             pipeline=pipeline)
@@ -852,6 +908,14 @@ def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fonts
         if not p.get("steps"):
             r = subprocess.run([ffmpeg] + p["argv"], capture_output=True, text=True, timeout=14 * 60,
                                stdin=subprocess.DEVNULL)
+            if (r.returncode != 0 or not os.path.exists(p["out"])) and p.get("m6_blocks"):
+                _engine_note("fallback", "blocks", "runtime:ffmpeg%d" % r.returncode)
+                gone = list(p.get("dropped") or []) + p["m6_blocks"]
+                p = plan(spec, files, probes, ffmpeg_caps(ffmpeg), workdir, strict=strict, fontsdir=fontsdir,
+                         container=container, caption_fontsdir=caption_fontsdir)
+                p = dict(p, warnings=list(p["warnings"]) + extra_warn, dropped=gone)
+                r = subprocess.run([ffmpeg] + p["argv"], capture_output=True, text=True, timeout=14 * 60,
+                                   stdin=subprocess.DEVNULL)
             if r.returncode != 0 or not os.path.exists(p["out"]):
                 raise RenderError("ffmpeg 失敗（%d）：%s" % (r.returncode, (r.stderr or "")[-600:]))
         put(spec["out_bucket"], keys[container], p["out"], "video/" + container)
@@ -863,6 +927,17 @@ def run(spec, fetch, put, workdir, ffmpeg=None, ffprobe=None, strict=True, fonts
               "warnings": p["warnings"], "models": spec["models"], "container": container}
         st["captions_burned"] = _captions_burned(spec, pipeline, engine)
         qc = _seam_qc(pipeline, spec, files, ffmpeg, engine)
+        extra_qc = [{"block": bid, "subject": bid, "ok": False, "score": None, "defects": ["blocks_fallback"],
+                     "redo": {"scope": "step", "target": bid}, "source": "compile", "note": "編譯失敗，已拿掉"}
+                    for bid in p.get("dropped") or []]
+        cov, crep = _cover(pipeline, p["out"], container, st["duration"], spec["format"]["fps"], put,
+                           spec["out_bucket"], keys[container], ffmpeg, engine)
+        if cov is not None:
+            st["cover"] = cov
+        if crep is not None:
+            extra_qc.append(crep)
+        if extra_qc:
+            qc = (qc or []) + extra_qc
         if qc is not None:
             st["qc"] = qc
     except (RenderError, OSError, subprocess.TimeoutExpired) as e:

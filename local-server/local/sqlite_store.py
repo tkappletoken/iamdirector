@@ -66,6 +66,43 @@ CREATE TABLE IF NOT EXISTS local_quotes (
   upstream_cost TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+-- 每鏡候選與定稿、長片接力（M3，跟正式站 036_shot_takes 同名同欄位；SQL 在根目錄 takes.py，兩邊共用）
+CREATE TABLE IF NOT EXISTS shot_takes (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT REFERENCES studio_projects(id) ON DELETE CASCADE,
+  shot_key TEXT NOT NULL,
+  job_id TEXT,
+  parent_take TEXT REFERENCES shot_takes(id) ON DELETE SET NULL,
+  reason TEXT,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  charge_id TEXT,
+  approval_id TEXT REFERENCES approval_cards(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'generating', 'ready', 'failed', 'refunded')),
+  qc JSONB NOT NULL DEFAULT '[]',
+  qc_ok INTEGER,
+  picked INTEGER NOT NULL DEFAULT 0,
+  picked_by TEXT,
+  picked_at TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS shot_takes_shot_idx ON shot_takes (tenant_id, project_id, shot_key, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS shot_takes_job_uniq ON shot_takes (tenant_id, job_id) WHERE job_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS shot_takes_picked_uniq ON shot_takes (tenant_id, COALESCE(CAST(project_id AS TEXT), ''), shot_key) WHERE picked;
+CREATE TABLE IF NOT EXISTS chain_runs (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT REFERENCES studio_projects(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'running', 'done', 'failed', 'stopped')),
+  segments JSONB NOT NULL DEFAULT '[]',
+  max_retakes INTEGER NOT NULL DEFAULT 1,
+  stop_reason TEXT,
+  export_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 """
 
 ADD_COLUMNS = (

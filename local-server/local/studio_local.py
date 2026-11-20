@@ -52,6 +52,8 @@ import sqlite_store
 import storyboard
 import studio_store
 import studio_tools
+import takes
+import gen_retry
 import upstream
 from upstream import ConsoleError, Cred, retry_field, with_hint
 
@@ -127,9 +129,14 @@ LOCAL_API = (
     "/api/approvals", "/api/approvals/decide", "/api/approvals/submit", "/api/approvals/limits",
     "/api/works/create", "/api/local/mcp", "/api/local/mcp-token", "/api/local/result",
     "/api/works/quote", "/api/works/export", "/api/twist",
+    "/api/works/get", "/api/works/clone",
     "/api/local/engine",
     "/api/blocks", "/api/pipeline/preview",
     "/api/local/agent-scope",
+    "/api/takes", "/api/takes/move", "/api/takes/qc", "/api/takes/pick", "/api/takes/retake-plan",
+    "/api/chains", "/api/chains/next", "/api/chains/move",
+    "/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/get", "/api/local/agent-loop",
+    "/api/local/mcp-direct",
 )
 
 AGENT_ALLOWED = {
@@ -141,7 +148,14 @@ AGENT_ALLOWED = {
     ("POST", "/api/works/create"), ("POST", "/api/parse-shots"), ("POST", "/api/check-refs"), ("POST", "/mcp"),
     ("POST", "/api/works/quote"), ("POST", "/api/works/export"), ("GET", "/api/twist"), ("GET", "/api/export/status"),
     ("GET", "/api/blocks"), ("POST", "/api/pipeline/preview"),
+    ("GET", "/api/works/get"), ("POST", "/api/works/clone"),
 }
+AGENT_ALLOWED |= set(takes.ROUTES)
+AGENT_ALLOWED |= {("POST", "/api/local/agent/start"), ("POST", "/api/local/agent/step"), ("GET", "/api/local/agent/get"),
+                  ("GET", "/api/local/agent-loop")}
+AGENT_ALLOWED |= {("GET", "/api/local/mcp-direct")}
+AGENT_LOOP_OFF = "Filming Agent 主迴圈沒有開（設定 agent_loop.json 或 STUDIO_LOCAL_AGENT_LOOP=on）"
+AGENT_RUN = re.compile(r"^agr_[0-9a-f]{24}$")
 AGENT_SCOPES = ("basic", "full")
 AGENT_FULL = {
     ("POST", "/api/storyboard/quote"), ("POST", "/api/storyboard"),
@@ -320,6 +334,111 @@ class State:
             return v if v in AGENT_SCOPES else None
         except (OSError, ValueError, AttributeError):
             return None
+
+    def agentloop_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "agent_loop.json"), encoding="utf-8") as f:
+                v = json.load(f).get("on")
+            return v if isinstance(v, bool) else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def agentloop_on(self):
+        v = self.agentloop_setting()
+        if v is not None:
+            return v
+        return os.environ.get("STUDIO_LOCAL_AGENT_LOOP", "").strip().lower() in ("on", "1", "true")
+
+    AGENT_RUNS_SCAN = 50
+
+    def agent_run_ids(self):
+        d = os.path.join(self.data_dir, "agent_runs")
+        if not os.path.isdir(d):
+            return frozenset()
+        ents = [e for e in os.scandir(d) if e.is_file() and e.name.startswith("agr_") and e.name.endswith(".json")]
+        ents.sort(key=lambda e: e.stat().st_mtime_ns, reverse=True)
+        cache = self.__dict__.setdefault("_run_ids", {})
+        out = set()
+        for e in ents[:self.AGENT_RUNS_SCAN]:
+            stt = e.stat()
+            sig = (stt.st_mtime_ns, stt.st_size)
+            got = cache.get(e.name)
+            if not got or got[0] != sig:
+                with open(e.path, encoding="utf-8") as f:
+                    rec = json.load(f)
+                ids = set()
+                for r in ((rec.get("ids") or {}).values() if isinstance(rec, dict) else ()):
+                    if isinstance(r, dict):
+                        ids.update(str(r[k]) for k in ("card", "take", "job") if r.get(k))
+                got = cache[e.name] = (sig, frozenset(ids))
+            out |= got[1]
+        for gone in set(cache) - {e.name for e in ents}:
+            cache.pop(gone, None)
+        return frozenset(out)
+
+    def agent_loop_owns(self, take):
+        if not take or not self.agentloop_on():
+            return False
+        if not os.path.isdir(os.path.join(self.data_dir, "agent_runs")):
+            return False
+        try:
+            ids = self.agent_run_ids()
+        except Exception as e:
+            gen_retry.log("agent_runs_unreadable", type(e).__name__)
+            return True
+        return any(str(take.get(k)) in ids for k in ("id", "job_id", "approval_id") if take.get(k))
+
+    def agentloop_info(self):
+        env = os.environ.get("STUDIO_LOCAL_AGENT_LOOP", "").strip().lower() or None
+        return {"on": self.agentloop_on(), "setting": self.agentloop_setting(), "env": env}
+
+    def set_agentloop(self, value):
+        path = os.path.join(self.data_dir, "agent_loop.json")
+        try:
+            if value is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"on": bool(value)}, f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
+
+    def mcp_direct_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "mcp_direct.json"), encoding="utf-8") as f:
+                v = json.load(f).get("on")
+            return v if isinstance(v, bool) else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def mcp_direct_on(self):
+        v = self.mcp_direct_setting()
+        if v is not None:
+            return v
+        return os.environ.get("STUDIO_LOCAL_MCP_DIRECT", "").strip().lower() in ("on", "1", "true")
+
+    def mcp_direct_info(self):
+        env = os.environ.get("STUDIO_LOCAL_MCP_DIRECT", "").strip().lower() or None
+        return {"on": self.mcp_direct_on(), "setting": self.mcp_direct_setting(), "env": env}
+
+    def set_mcp_direct(self, value):
+        path = os.path.join(self.data_dir, "mcp_direct.json")
+        try:
+            if value is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"on": bool(value)}, f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
 
     def set_agent_scope(self, value):
         path = os.path.join(self.data_dir, "agent_scope.json")
@@ -690,6 +809,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/projects") or path.startswith("/w/") or \
                 (path.startswith("/approve/") and approvals.card_or_batch(path[len("/approve/"):])):
             return self._workbench()
+        if ("GET", path) in takes.ROUTES:
+            return self._takes("GET", path, {}, q)
         if path == "/api/approvals" and one("batch_id"):
             return self._approvals_batch_get(one("batch_id"))
         if path == "/api/approvals":
@@ -706,6 +827,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.engine_info())
         if path == "/api/local/agent-scope":
             return self._json(200, st.agent_scope_info())
+        if path == "/api/local/agent-loop":
+            return self._json(200, st.agentloop_info())
+        if path == "/api/local/mcp-direct":
+            return self._json(200, st.mcp_direct_info())
+        if path == "/api/local/agent/get":
+            return self._agentloop("get", {"run": one("run")})
         if path == "/api/blocks":
             import postblocks
             return self._json(200, postblocks.catalog())
@@ -753,6 +880,9 @@ class Handler(BaseHTTPRequestHandler):
                     s = st.call("/videos/" + vid)
                     if isinstance(s, dict) and s.get("status") == "completed":
                         self._land_later(vid)
+                    retry = self._gen_retry_hook(vid, s)
+                    if retry is not None:
+                        s = dict(s, retry=retry)
                     return self._json(200, s)
                 return self._local_file(self._cache_job(vid))
             except ConsoleError as e:
@@ -816,6 +946,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._export_file(one("id"), one("kind"))
         if path == "/api/projects":
             return self._store(studio_store.list_projects)
+        if path == "/api/works/get":
+            return self._store(studio_store.work_get, one("project_id"))
         if path in MISSING:
             return self._json(501, {"error": MISSING[path]})
         return self._json(404, {"error": "沒有這個端點"})
@@ -842,6 +974,8 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             return
         st = self.state
+        if ("POST", path) in takes.ROUTES:
+            return self._takes("POST", path, body, {})
         if path == "/api/payer/key":
             return self._payer_key(body)
         if path == "/api/payer/key/delete":
@@ -851,6 +985,30 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, dict(self._payer_state(), removed=True))
         if path == "/api/pipeline/preview":
             return self._pipeline_preview(body)
+        if path == "/api/local/agent-loop":
+            v = body.get("on")
+            if v is not None and not isinstance(v, bool):
+                return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
+            if not st.set_agentloop(v):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            return self._json(200, st.agentloop_info())
+        if path == "/api/local/mcp-direct":
+            if not self._human():
+                return self._json(403, {"error": "Agent 直送要你本人在 App 裡切"})
+            v = body.get("on")
+            if v is not None and not isinstance(v, bool):
+                return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
+            if not st.set_mcp_direct(v):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            out = st.mcp_direct_info()
+            if not out["on"]:
+                try:
+                    out["revoked"] = st.db.run(lambda c, u: approvals.revoke_direct(c, u))
+                except Exception as e:
+                    sys.stderr.write("[mcp_direct] revoke_failed %s\n" % type(e).__name__)
+            return self._json(200, out)
+        if path in ("/api/local/agent/start", "/api/local/agent/step"):
+            return self._agentloop(path.rsplit("/", 1)[1], body)
         if path == "/api/local/engine":
             v = body.get("engine")
             if v is not None and v not in ENGINE_CHOICES:
@@ -912,7 +1070,20 @@ class Handler(BaseHTTPRequestHandler):
             shots = body.get("shots")
             if shots is None and isinstance(body.get("script"), str):
                 shots = studio_tools.parse_shots(body["script"], body.get("model"))
+            if shots is None and isinstance(body.get("story"), str):
+                shots = studio_tools.parse_shots(studio_tools.story_to_script(body["story"]), body.get("model"))
             return self._store(studio_store.create_work, body.get("name"), shots)
+        if path == "/api/works/clone":
+            def go(c, u):
+                src = studio_store.work_get(c, u, str(body.get("project_id") or ""))
+                name, shots, meta, warn = templates.clone_plan(src, body.get("name"), body.get("fields"), body.get("shots"))
+                return dict(studio_store.create_work(c, u, name, shots, meta), cloned_from=src["project_id"], warnings=warn)
+            try:
+                return self._json(200, self.state.db.run(go))
+            except studio_store.StoreError as e:
+                return self._json(e.code, e.body)
+            except templates.TemplateError as e:
+                return self._json(e.code, {"error": e.msg})
         if path == "/api/works/quote":
             tp = self._work_template(body.get("project_id"))
             if not isinstance(tp, dict):
@@ -964,7 +1135,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/local/work-import":
             return self._work_import(body)
         if path == "/api/parse-shots":
-            return self._json(200, {"shots": studio_tools.parse_shots(body.get("text") or "", body.get("model"))})
+            text = body.get("text") or ""
+            if not text and isinstance(body.get("story"), str):
+                text = studio_tools.story_to_script(body["story"])
+            return self._json(200, {"shots": studio_tools.parse_shots(text, body.get("model"))})
         if path == "/api/captions":
             try:
                 return self._json(200, studio_tools.build_captions(body))
@@ -1169,6 +1343,10 @@ class Handler(BaseHTTPRequestHandler):
                 out["cast_refs"] = cast_info
             if want_card:
                 out["approval"] = self._card_for_quote(qid, cost, open_ended, body, sheet)
+                if self._direct_refused(out["approval"]):
+                    return None
+                if out["approval"].get("direct"):
+                    out["direct"] = True
             if open_ended:
                 out["open_ended"] = True
                 out["billing_note"] = ("帶參考影片：上游按參考影片秒數＋成品秒數計費，實際可能較高，"
@@ -1210,7 +1388,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, r)
         out = dict(r) if isinstance(r, dict) else {"data": r}
         out.update(payer="own_key", provider="appletoken")
+        self._auto_take(out.get("id"), qid)
         return self._json(200, out)
+
+    def _auto_take(self, job_id, qid):
+        m = gen_retry.auto_mode()
+        if m == "off" or not isinstance(job_id, str) or not job_id:
+            return
+        if not self._human():
+            gen_retry.log("auto_take skipped:agent", job_id)
+            return
+        st = self.state
+        try:
+            card = st.db.run(lambda c, u: approvals.by_quote(c, u, qid))
+            cid = (card or {}).get("id")
+            if st.agent_loop_owns({"job_id": job_id, "approval_id": cid}):
+                gen_retry.log("auto_take skipped:agent_loop", job_id)
+                return
+            r = st.db.run(lambda c, u: gen_retry.auto_take(c, u, job_id, cid, None, apply=(m == "on")))
+        except Exception as e:
+            gen_retry.log("auto_take error", type(e).__name__)
+            return
+        gen_retry.log("auto_take " + " ".join("%s=%s" % kv for kv in sorted(r.items())), job_id)
 
     def _restore_quote(self, qid):
         def get(c, u):
@@ -1232,6 +1431,28 @@ class Handler(BaseHTTPRequestHandler):
     def _card_link(self, cid):
         return "iamdirector://approve/%s" % cid
 
+    def _decide_card(self, c, u, card):
+        if not self._human() and self.state.mcp_direct_on():
+            got, stop = approvals.try_direct(c, u, card)
+            return dict(got, _direct_stop=stop) if stop else dict(got, _direct=True)
+        return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
+
+    def _card_public(self, card):
+        out = dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
+        if card.get("_direct_stop"):
+            out["direct_stop"] = list(card["_direct_stop"])
+        elif card.get("_direct"):
+            out["direct"] = True
+        return out
+
+    def _direct_refused(self, card):
+        stop = (card or {}).get("direct_stop") if isinstance(card, dict) else None
+        if not stop:
+            return False
+        self._json(stop[0], {"error": stop[1], "direct": True,
+                             "approval": {k: v for k, v in card.items() if k != "direct_stop"}})
+        return True
+
     def _card_for_quote(self, qid, cost, open_ended, body, sheet):
         charge = {"id": None, "quote_ref": qid, "kind": "video", "payer": "own_key", "points": None, "upstream_cost": cost}
         summ = dict(approvals.summary_of(body), **({"open_ended": True} if open_ended else {}))
@@ -1239,11 +1460,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             def go(c, u):
                 card = approvals.create(c, user_id=u, charge=charge, summary=summ, payload=pl, quote_expires_at=q_exp)
-                return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
+                return self._decide_card(c, u, card)
             card = self.state.db.run(go)
         except Exception as e:
             return {"enabled": False, "error": "核准卡建不起來（%s），請重新報價" % type(e).__name__}
-        return dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
+        return self._card_public(card)
 
     def _agent_card(self, kind, ref, cost, ttl, summary):
         charge = {"id": None, "quote_ref": ref, "kind": kind, "payer": "own_key", "points": None, "upstream_cost": cost}
@@ -1252,11 +1473,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             def go(c, u):
                 card = approvals.create(c, user_id=u, charge=charge, summary=summ, expires_at=exp)
-                return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
+                return self._decide_card(c, u, card)
             card = self.state.db.run(go)
         except Exception as e:
             return {"enabled": False, "error": "核准卡建不起來（%s），請重新報價" % type(e).__name__}
-        return dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
+        return self._card_public(card)
 
     def _spend_hold(self, kind, body, cost=None, summary=None):
         st = self.state
@@ -1270,11 +1491,20 @@ class Handler(BaseHTTPRequestHandler):
             st.spend[ref] = {"kind": kind, "body": body, "t": now, "status": "quoted"}
         summ = summary or {"model": body.get("model"), "prompt": str(body.get("prompt") or "")[:280],
                            "n": body.get("n")}
-        return self._json(200, {"object": "%s.confirmation" % kind, "status": "needs_confirmation", "quote_id": ref,
-                                "kind": kind, "payer": "own_key", "expires_in": SPEND_TTL,
-                                "estimate": {"upstream_cost": str(cost) if cost is not None else None},
-                                "approval": self._agent_card(kind, ref, cost, SPEND_TTL, summ),
-                                "note": "要使用者核准這張卡（或在預先授權上限內），再用 submit_approved 送出"})
+        card = self._agent_card(kind, ref, cost, SPEND_TTL, summ)
+        if self._direct_refused(card):
+            with st.lock:
+                st.spend.pop(ref, None)
+            return None
+        out = {"object": "%s.confirmation" % kind, "status": "needs_confirmation", "quote_id": ref,
+               "kind": kind, "payer": "own_key", "expires_in": SPEND_TTL,
+               "estimate": {"upstream_cost": str(cost) if cost is not None else None},
+               "approval": card,
+               "note": "要使用者核准這張卡（或在預先授權上限內），再用 submit_approved 送出"}
+        if card.get("direct"):
+            out["direct"] = True
+            out["note"] = "Agent 直送：已在你設的上限內核准，直接用 submit_approved 送出"
+        return self._json(200, out)
 
     def _spend_run(self, ref, kind):
         st = self.state
@@ -1339,12 +1569,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             job, frames, expect = qc.check_request(body)
             cuts = qc.allow_cuts_of(body)
+            count = qc.count_of(body)
         except qc.QCError as e:
             out = {"error": e.message}
             if auto:
                 out["frames_auto"] = auto
             return self._json(e.code, out)
         send = {"job": job, "frames": frames, "expect": expect, "allow_cuts": cuts}
+        if count:
+            send["count"] = count
         if not self._human() and not getattr(self, "_via_card", False):
             cap = None
             try:
@@ -1375,11 +1608,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(409, NO_KEY)
         try:
             resp = st.call("/chat/completions", payload=qc.chat_payload(send["frames"], send["expect"],
-                                                                        allow_cuts=send["allow_cuts"]),
+                                                                        allow_cuts=send["allow_cuts"],
+                                                                        count=send.get("count")),
                            timeout=GENERATE_TIMEOUT)
         except ConsoleError as e:
             return self._err(e, payer="own_key")
-        v = qc.parse_verdict(resp)
+        v = qc.check_count(qc.parse_verdict(resp), send.get("count"))
         out = {"job": send["job"], "payer": "own_key", "model": qc.MODEL, "verdict": v}
         if v.get("ok"):
             out["rating"] = qc.to_rating(v)
@@ -1389,7 +1623,33 @@ class Handler(BaseHTTPRequestHandler):
         actual = qc.charged_of(resp)
         if actual is not None:
             out["upstream_cost"] = str(actual)
+        retry = self._qc_retry_hook(send["job"], v)
+        if retry is not None:
+            out["retry"] = retry
         return self._json(200, out)
+
+    def _takes(self, method, path, body, q):
+        picker = "human" if self._human() else "agent"
+        code, out = self.state.db.run(lambda c, u: takes.handle(c, u, method, path, body, q, picker))
+        return self._json(code, out)
+
+    def _agentloop(self, op, body):
+        st = self.state
+        if not st.agentloop_on():
+            return self._json(501, {"error": AGENT_LOOP_OFF})
+        import agent_exec
+        cli = os.path.join(ROOT, "cli")
+        if cli not in sys.path:
+            sys.path.insert(0, cli)
+        from appletoken.core import model_caps
+        try:
+            code, out = agent_exec.handle(op, body if isinstance(body, dict) else {}, data_dir=st.data_dir,
+                                          port=self.port, secret=st.agent_loop, caps_of=model_caps.caps,
+                                          frames=model_caps.frames_payload, ffmpeg=st.ffmpeg,
+                                          video_of=lambda job: os.path.join(st.media, self._cache_job(job)))
+        except agent_exec.fexec.ExecutorError as e:
+            return self._json(502, {"error": str(e).replace(st.agent_loop, "…")})
+        return self._json(code, out)
 
     def _approvals_run(self, fn):
         try:
@@ -1431,7 +1691,8 @@ class Handler(BaseHTTPRequestHandler):
     def _approval_submit(self, body):
         st = self.state
         try:
-            card = st.db.run(lambda c, u: approvals.claim_for_submit(c, u, body.get("id"), body.get("expect_amount")))
+            card = st.db.run(lambda c, u: approvals.claim_for_submit(c, u, body.get("id"), body.get("expect_amount"),
+                                                                      direct_on=st.mcp_direct_on()))
         except approvals.ApprovalError as e:
             return self._json(e.code, {"error": e.message})
         if card.get("payload") and approvals.quote_stale(card):
@@ -1452,6 +1713,101 @@ class Handler(BaseHTTPRequestHandler):
         out = dict(obj) if isinstance(obj, dict) else {"data": obj}
         out["approval"] = approvals.public(card, self._card_link(card["id"]))
         return self._json(code, out)
+
+    def _gen_retry_hook(self, vid, s):
+        m = gen_retry.mode()
+        if m == "off" or not gen_retry.terminal(s):
+            return None
+        try:
+            cs = "released" if gen_retry.own_key_refunded(s) else None
+            if self._agent_loop_skip(vid):
+                return None
+            p = self.state.db.run(lambda c, u: gen_retry.plan(c, u, vid, s, cs))
+        except Exception as e:
+            gen_retry.log("error", type(e).__name__)
+            return None
+        return self._gen_retry_after(m, p)
+
+    def _gen_retry_after(self, m, p):
+        if p is None:
+            return None
+        if not p.get("retake"):
+            gen_retry.log("stop=" + p["stop"], p.get("take") or "")
+            return gen_retry.public(dict(p, state="stopped")) if m == "on" else None
+        if m == "shadow":
+            gen_retry.log("shadow would_retry", "%s %s" % (p["take"]["id"], p.get("reason") or ""))
+            return None
+        try:
+            out = self._gen_retry_send(p)
+        except Exception as e:
+            gen_retry.log("error", type(e).__name__)
+            return None
+        gen_retry.log("state=" + out.get("state", "?"), p["take"]["id"])
+        return gen_retry.public(out)
+
+    def _agent_loop_skip(self, job):
+        st = self.state
+        if not st.agentloop_on():
+            return False
+        t = st.db.run(lambda c, u: takes.by_job(c, u, job))
+        if st.agent_loop_owns(t):
+            gen_retry.log("skipped:agent_loop", t["id"])
+            return True
+        return False
+
+    def _qc_retry_hook(self, job, verdict):
+        m = gen_retry.qc_mode()
+        if m == "off":
+            return None
+        try:
+            if self._agent_loop_skip(job):
+                return None
+            p = self.state.db.run(lambda c, u: gen_retry.qc_plan(c, u, job, verdict))
+        except Exception as e:
+            gen_retry.log("error", type(e).__name__)
+            return None
+        saved = {k: self.__dict__.pop(k) for k in ("_json", "_via_card") if k in self.__dict__}
+        try:
+            return self._gen_retry_after(m, p)
+        finally:
+            self.__dict__.update(saved)
+
+    def _gen_retry_send(self, p):
+        st = self.state
+        sent = {}
+
+        def capture(code, obj):
+            sent["code"], sent["obj"] = code, obj
+        self._json = capture
+        try:
+            self._generate(dict(p["payload"], require_confirmation=True, approval_card=True))
+        finally:
+            del self._json
+        card = (sent.get("obj") or {}).get("approval") if isinstance(sent.get("obj"), dict) else None
+        if not (isinstance(card, dict) and card.get("id")):
+            return {"state": "stopped", "stop": "quote_failed", "take": p["take"]["id"]}
+        jid = None
+        if card.get("status") == "approved":
+            try:
+                c = st.db.run(lambda cn, u: approvals.claim_for_submit(cn, u, card["id"], card.get("amount"),
+                                                                       direct_on=st.mcp_direct_on()))
+                stop = None
+                if c.get("payload") and approvals.quote_stale(c):
+                    c, stop = self._approval_requote(c)
+                code, obj = stop if stop is not None else self._approval_confirm(c)
+                ok = 200 <= code < 300 and stop is None
+                jid = obj.get("id") if ok and isinstance(obj, dict) else None
+                if ok:
+                    st.db.run(lambda cn, u: approvals.mark_result(cn, u, c["id"], job_id=jid))
+                elif stop is None:
+                    st.db.run(lambda cn, u: approvals.mark_result(cn, u, c["id"], error=(obj or {}).get("error") or "HTTP %s" % code))
+                card = approvals.public(st.db.run(lambda cn, u: approvals.get(cn, u, c["id"])), self._card_link(c["id"]))
+            except approvals.ApprovalError as e:
+                gen_retry.log("submit_refused", str(e.code))
+        t = st.db.run(lambda cn, u: gen_retry.record(cn, u, p["take"], card["id"], jid, p.get("reason") or gen_retry.GEN_REASON))
+        return {"state": "resubmitted" if jid else "waiting_approval", "take": t["id"], "reason": p.get("reason"),
+                "approval_id": card["id"],
+                "approval_status": card.get("status"), "job_id": jid, "approve_url": card.get("approve_url")}
 
     def _approval_confirm(self, card):
         sent = {}
@@ -2027,6 +2383,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._human():
             out["approval"] = self._agent_card("storyboard", ref, cap, SB_QUOTE_TTL, {
                 "model": storyboard.model_of(q), "prompt": str(q.get("story") or "")[:280], "shots": q.get("shots")})
+            if self._direct_refused(out["approval"]):
+                return None
+            if out["approval"].get("direct"):
+                out["direct"] = True
         return self._json(200, out)
 
     def _storyboard(self, body):
@@ -2136,6 +2496,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._human():
             summ = {"model": body["model"], "prompt": str(body.get("input") or body.get("prompt") or body.get("lyrics") or "")[:280]}
             out["approval"] = self._agent_card(kind, ref, cost, 15 * 60, summ)
+            if self._direct_refused(out["approval"]):
+                return None
+            if out["approval"].get("direct"):
+                out["direct"] = True
         return self._json(200, out)
 
     def _audio_confirm(self, qid, confirm, kind):
@@ -2251,8 +2615,12 @@ class Handler(BaseHTTPRequestHandler):
             req = export_spec.normalize(body)
         except export_spec.ExportError as e:
             return self._json(e.code, {"error": e.msg})
-        return self._json(200, postblocks.preview(export_spec.preview_spec(req), req.get("pipeline"),
-                                                  container=container, caption_fontsdir=os.path.join(ROOT, "fonts")))
+        try:
+            got = postblocks.preview(export_spec.preview_spec(req), req.get("pipeline"),
+                                     container=container, caption_fontsdir=os.path.join(ROOT, "fonts"))
+        except postblocks.PipelineError as e:
+            return self._json(400, {"error": str(e)})
+        return self._json(200, got)
 
     def _export_start(self, body):
         st = self.state

@@ -378,6 +378,41 @@ def try_auto(conn, user_id, card, now=None):
     _mark_approved(conn, user_id, card["id"], card, "auto:%d" % lim["version"])
     return get(conn, user_id, card["id"])
 
+DIRECT_NO_LIMITS = "Agent 直送要先在設定設好單支與每日上限（沒有上限，Agent 就能無上限地花你的錢）。"
+
+def try_direct(conn, user_id, card, now=None):
+    if card is None or card.get("status") != "pending":
+        return card, None
+    m = measure(card.get("payer"))
+
+    def refuse(code, msg):
+        if _move(conn, user_id, card["id"], "pending", "rejected"):
+            with conn.cursor() as cur:
+                cur.execute("UPDATE approval_cards SET note = %s, decided_by = %s WHERE id = %s AND user_id = %s::uuid",
+                            (msg[:500], "direct", str(card["id"]), str(user_id)))
+        return get(conn, user_id, card["id"]), (code, msg)
+    if not auto_ready(dict(limits_get(conn, user_id), auto_approve=True), m):
+        return refuse(409, DIRECT_NO_LIMITS)
+    lock_limits(conn, user_id)
+    lim = limits_get(conn, user_id)
+    if not auto_ready(dict(lim, auto_approve=True), m):
+        return refuse(409, DIRECT_NO_LIMITS)
+    why = check_limits(card, lim, used_today(conn, user_id, m, now))
+    if why:
+        return refuse(402, "Agent 直送：%s到設定調高上限。" % why)
+    if not _move(conn, user_id, card["id"], "pending", "approved"):
+        return get(conn, user_id, card["id"]), (409, "這張卡剛剛被處理過了，請重新報價")
+    _mark_approved(conn, user_id, card["id"], card, "direct:%d" % lim["version"])
+    return get(conn, user_id, card["id"]), None
+
+def revoke_direct(conn, user_id):
+    with conn.cursor() as cur:
+        cur.execute("UPDATE approval_cards SET status = 'pending', decided_at = NULL, decided_by = NULL,"
+                    " approved_points = NULL, approved_upstream = NULL, note = %s"
+                    " WHERE user_id = %s::uuid AND status = 'approved' AND decided_by LIKE 'direct:%%'",
+                    ("Agent 直送已關閉：這一張要你本人重新核准", str(user_id)))
+        return cur.rowcount or 0
+
 def limits_set(conn, user_id, body):
     vals = []
     for k in LIMIT_KEYS:
@@ -403,7 +438,8 @@ def limits_set(conn, user_id, body):
                     (str(user_id),) + tuple(vals) + (auto, ver))
         cur.execute("UPDATE approval_cards SET status = 'pending', decided_at = NULL, decided_by = NULL,"
                     " approved_points = NULL, approved_upstream = NULL, note = %s"
-                    " WHERE user_id = %s::uuid AND status = 'approved' AND decided_by LIKE 'auto:%%'",
+                    " WHERE user_id = %s::uuid AND status = 'approved'"
+                    " AND (decided_by LIKE 'auto:%%' OR decided_by LIKE 'direct:%%')",
                     ("自動核准已關閉或上限改了：這一張要你本人重新核准", str(user_id)))
     return limits_get(conn, user_id)
 
@@ -445,7 +481,8 @@ def make_batch(conn, user_id, card_ids):
     if any(c is None for c in cards):
         raise ApprovalError(404, "有一張卡找不到（或不是你的）")
     bad = [c["id"] for c in cards if c.get("batch_id") or not (
-        c["status"] == "pending" or (c["status"] == "approved" and str(c.get("decided_by") or "").startswith("auto:")))]
+        c["status"] == "pending" or (c["status"] == "approved"
+                                     and str(c.get("decided_by") or "").startswith(("auto:", "direct:"))))]
     if bad:
         raise ApprovalError(409, "這幾張不是等核准的卡，或已經在別的批裡：%s" % "、".join(bad))
     bid = new_batch_id()
@@ -514,7 +551,7 @@ def reapply_auto(conn, user_id, cards, now=None):
             done[c["id"]] = got
     return [done.get(c["id"], c) for c in cards]
 
-def claim_for_submit(conn, user_id, cid, expect_amount=None, now=None):
+def claim_for_submit(conn, user_id, cid, expect_amount=None, now=None, direct_on=False):
     card = get(conn, user_id, cid)
     if not card:
         raise ApprovalError(404, "找不到這張核准卡")
@@ -533,6 +570,10 @@ def claim_for_submit(conn, user_id, cid, expect_amount=None, now=None):
         lim = limits_get(conn, user_id)
         if not lim["auto_approve"] or by != "auto:%d" % lim["version"]:
             raise ApprovalError(409, "這張卡是自動核准的，但自動核准已關閉或上限改了：請使用者本人重新核准")
+    elif by.startswith("direct:"):
+        lim = limits_get(conn, user_id)
+        if not direct_on or by != "direct:%d" % lim["version"]:
+            raise ApprovalError(409, "這張卡是 Agent 直送核准的，但直送已關閉或上限改了：請使用者本人重新核准")
     used = used_today(conn, user_id, measure(card["payer"]), now)
     dec_at = _ts(card.get("decided_at"))
     if dec_at and iso(dec_at) >= day_start(now):

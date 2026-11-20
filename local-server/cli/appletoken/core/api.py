@@ -178,7 +178,7 @@ class Workbench:
             _check(j, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         return self.c.get("/api/charges", params={"ids": ",".join(ids)})
 
-    def qc(self, job_id, frames, expect=None, allow_cuts=False):
+    def qc(self, job_id, frames, expect=None, allow_cuts=False, count=None):
         _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         body = {"job": job_id, "expect": list(expect or [])}
         if frames is not None:
@@ -188,6 +188,8 @@ class Workbench:
             body["frames"] = fr
         if allow_cuts is True:
             body["allow_cuts"] = True
+        if count:
+            body["count"] = dict(count)
         return self.c.post("/api/qc", body)
 
     def storyboard_ai_quote(self, story, shots=6, style=None, video_model=None, project_id=None,
@@ -271,8 +273,8 @@ class Workbench:
         _check(key, STORE_KEY_RE, "store key", "^[a-z0-9_-]{1,32}$")
         return self.c.delete("/api/store", params={"key": key})
 
-    def parse_shots(self, text, model=None):
-        body = {"text": text}
+    def parse_shots(self, text, model=None, story=None):
+        body = {"text": text} if text or story is None else {"story": story}
         if model:
             body["model"] = model
         return self.c.post("/api/parse-shots",
@@ -369,7 +371,76 @@ class Workbench:
         return self.c.post("/api/generate", {"quote_id": quote_id, "confirm": True},
                            spending=True, timeout=TIMEOUT_GENERATE)
 
-    def work_create(self, name, shots=None, script=None, model=None, template=None, fields=None, dry_run=False):
+    def work_get(self, project_id):
+        _check(project_id, PROJECT_ID_RE, "project id", "^[0-9a-fA-F-]{36}$")
+        return self.c.get("/api/works/get", params={"project_id": project_id})
+
+    def takes_list(self, project_id=None, shot_key=None, take_id=None):
+        params = {k: v for k, v in (("project_id", project_id), ("shot_key", shot_key), ("id", take_id)) if v}
+        return self.c.get("/api/takes", params=params)
+
+    def take_add(self, shot_key, project_id=None, job_id=None, parent_take=None, reason=None, approval_id=None,
+                 status="queued"):
+        body = {"shot_key": shot_key, "status": status}
+        for k, v in (("project_id", project_id), ("job_id", job_id), ("parent_take", parent_take), ("reason", reason),
+                     ("approval_id", approval_id)):
+            if v:
+                body[k] = v
+        return self.c.post("/api/takes", body)
+
+    def take_update(self, take_id, status, error=None, job_id=None):
+        body = {"id": take_id, "status": status}
+        if error:
+            body["error"] = error
+        if job_id:
+            body["job_id"] = job_id
+        return self.c.post("/api/takes/move", body)
+
+    def take_qc(self, take_id, reports):
+        return self.c.post("/api/takes/qc", {"id": take_id, "reports": reports})
+
+    def take_pick(self, take_id):
+        return self.c.post("/api/takes/pick", {"id": take_id})
+
+    def take_retake_plan(self, shot_key, reason="manual", project_id=None, max_retakes=1, failed_take=None,
+                         charge_status=None):
+        body = {"shot_key": shot_key, "reason": reason, "max_retakes": max_retakes}
+        for k, v in (("project_id", project_id), ("failed_take", failed_take), ("charge_status", charge_status)):
+            if v:
+                body[k] = v
+        return self.c.post("/api/takes/retake-plan", body)
+
+    def chain_create(self, segments, project_id=None, max_retakes=1):
+        body = {"segments": segments, "max_retakes": max_retakes}
+        if project_id:
+            body["project_id"] = project_id
+        return self.c.post("/api/chains", body)
+
+    def chain_next(self, chain_id):
+        return self.c.post("/api/chains/next", {"id": chain_id})
+
+    def chain_update(self, chain_id, status, stop_reason=None, export_id=None):
+        body = {"id": chain_id, "status": status}
+        if stop_reason:
+            body["stop_reason"] = stop_reason
+        if export_id:
+            body["export_id"] = export_id
+        return self.c.post("/api/chains/move", body)
+
+    def work_clone(self, project_id, name=None, fields=None, shots=None):
+        _check(project_id, PROJECT_ID_RE, "project id", "^[0-9a-fA-F-]{36}$")
+        body = {"project_id": project_id}
+        if name:
+            body["name"] = name
+        if fields is not None:
+            body["fields"] = fields
+        if shots is not None:
+            body["shots"] = shots
+        _check_body(body, BODY_LIMIT_DEFAULT, "/api/works/clone")
+        return self.c.post("/api/works/clone", body)
+
+    def work_create(self, name, shots=None, script=None, model=None, template=None, fields=None, dry_run=False,
+                    story=None):
         body = {"name": name}
         if template:
             body["template"] = template
@@ -378,6 +449,8 @@ class Workbench:
             body["shots"] = shots
         if script is not None:
             body["script"] = script
+        if story is not None:
+            body["story"] = story
         if model:
             body["model"] = model
         if dry_run:

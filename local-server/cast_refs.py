@@ -190,6 +190,35 @@ def prepare(body, load, mode_now=None):
     info["applied"] = True
     return new, None, info
 
+_SEG_END = r"(?= Performance \(| Style: | Lens: | Color: | Light: | Location: | Sound: | Single continuous shot|$)"
+MIN_DESC = 8
+
+def _perf(c):
+    return "Performance (%s): %s." % (c["name"], "; ".join(n.rstrip(".。") for n in c["notes"]))
+
+def refresh_notes(body, raw_cards):
+    try:
+        cards = [c for c in clean_cards(raw_cards if isinstance(raw_cards, list) else []) if _kind(c) == "char"]
+    except CastError:
+        return body, []
+    prompt = body.get("prompt") if isinstance(body, dict) else None
+    if not isinstance(prompt, str) or not prompt:
+        return body, []
+    out, changed = prompt, []
+    for c in cards:
+        pat = re.compile(r" ?Performance \(%s\): .*?%s" % (re.escape(c["name"]), _SEG_END))
+        new = _perf(c) if c.get("notes") else ""
+        if pat.search(out):
+            got = pat.sub((" " + new) if new else "", out, count=1)
+            if got != out:
+                out = got
+                changed.append(c["name"])
+        elif new and len((c.get("desc") or "").strip()) >= MIN_DESC and c["desc"].strip() in out:
+            out = out + " " + new
+            changed.append(c["name"])
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return (dict(body, prompt=out) if changed else body), changed
+
 def price_of(q):
     if not isinstance(q, dict):
         return None

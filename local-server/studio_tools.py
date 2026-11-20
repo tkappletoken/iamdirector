@@ -151,6 +151,17 @@ def reference_limits(model):
     return {"total": None, "supported": False,
             "source": "此模型不支援 input_references（僅 Seedance 2.0/2.5 與 Veo）"}
 
+def story_to_script(story):
+    parts = [x.strip() for x in re.split(r"(?<=[。！？!?；;])|(?<=\.)\s+|\n+", str(story or "").replace("\r", "")) if x and x.strip()]
+    per = max(1, -(-len(parts) // 6))
+    out = []
+    for i in range(0, len(parts), per):
+        acc = ""
+        for b in parts[i:i + per]:
+            acc += (" " if acc and re.search(r"[\x21-\x7E]$", acc) and re.match(r"[\x21-\x7E]", b) else "") + b
+        out.append(acc)
+    return "\n\n".join("鏡頭 %d\n%s" % (i + 1, t) for i, t in enumerate(out))
+
 def check_references(model, refs):
     lim = reference_limits(model)
     counts = {"image": 0, "video": 0, "audio": 0}

@@ -202,6 +202,22 @@ def create_work(conn, uid, name, shots, meta=None):
         out["template"] = meta.get("template")
     return out
 
+def work_get(conn, uid, pid):
+    _check_pid(pid)
+    with conn.cursor() as cur:
+        cur.execute("SELECT name FROM studio_projects WHERE tenant_id = %s AND id = %s::uuid", (uid, pid))
+        row = cur.fetchone()
+    if row is None:
+        raise StoreError(404, "not_found", "找不到這部作品")
+    board = kv_get(conn, uid, board_key(pid)).get("value")
+    meta = kv_get(conn, uid, meta_key(pid)).get("value")
+    out = {"project_id": pid, "name": row[0],
+           "shots": [{"prompt": s.get("prompt"), "seconds": s.get("seconds")}
+                     for s in (board if isinstance(board, list) else []) if isinstance(s, dict)]}
+    if isinstance(meta, dict) and isinstance(meta.get("template"), str):
+        out["template"], out["fields"] = meta["template"], meta.get("fields") or {}
+    return out
+
 def work_meta(conn, uid, pid):
     _check_pid(pid)
     got = kv_get(conn, uid, meta_key(pid))
