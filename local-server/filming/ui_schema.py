@@ -35,8 +35,19 @@ def store_value(value):
     clean, _summary = validate(value)
     return clean
 
-def client_actions():
-    return {k: {"call": v["call"], "spend": v["spend"], "label": v["label"]} for k, v in ui_actions.ACTIONS.items()}
+def strip_local(desc):
+    if not desc:
+        return desc
+    panels = []
+    for p in desc["panels"]:
+        items = [it for it in p["items"] if it.get("action") not in ui_actions.LOCAL_ONLY]
+        if any(it["type"] != "text" for it in items):
+            panels.append(dict(p, items=items))
+    return dict(desc, panels=panels) if panels else None
+
+def client_actions(local=False):
+    return {k: {"call": v["call"], "spend": v["spend"], "label": v["label"]} for k, v in ui_actions.ACTIONS.items()
+            if local or not v.get("local")}
 
 def validate(desc):
     if is_default(desc):

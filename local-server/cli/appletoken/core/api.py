@@ -391,6 +391,24 @@ class Workbench:
         params = {k: v for k, v in (("project_id", project_id), ("shot_key", shot_key), ("id", take_id)) if v}
         return self.c.get("/api/takes", params=params)
 
+    def agent_plan(self, body):
+        return self.c.post("/api/local/agent/plan", body)
+
+    def agent_start(self, body):
+        return self.c.post("/api/local/agent/start", body)
+
+    def agent_step(self, body):
+        return self.c.post("/api/local/agent/step", body)
+
+    def agent_get(self, run):
+        return self.c.get("/api/local/agent/get", params={"run": run})
+
+    def agent_runs(self):
+        return self.c.get("/api/local/agent/runs")
+
+    def agent_film(self, run):
+        return self.c.get("/api/local/agent/film", params={"run": run})
+
     def ui_desc_get(self, name=None, questions=False, catalog=False, onboarding=False):
         flag = "questions" if questions else "catalog" if catalog else "onboarding" if onboarding else None
         params = {"name": name} if name else ({flag: "1"} if flag else None)

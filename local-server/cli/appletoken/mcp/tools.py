@@ -124,7 +124,7 @@ class Registry:
         for name in _LOCAL_FILE_TOOLS:
             self._tools.pop(name, None)
         if not self.local:
-            for name in _LOCAL_UI_TOOLS:
+            for name in _LOCAL_UI_TOOLS + _LOCAL_AGENT_TOOLS:
                 self._tools.pop(name, None)
         self._tools.pop("session_logout", None)
         base = getattr(self.session, "public_url", None) or self.session.base_url
@@ -321,6 +321,7 @@ class Registry:
 
         if self.local:
             self._add_ui_tools(add)
+            self._add_agent_tools(add)
 
         add("take_list",
             "列一鏡（shot_key）或整個專案的候選（take）：狀態、品管報告、是不是定稿；best＝品管最好的那支。免費。",
@@ -822,7 +823,7 @@ class Registry:
                 "作品是允許切鏡頭的（迷因範本 fields.allow_cuts=true）才帶 allow_cuts=true：切鏡頭不算瑕疵；預設不帶。"
                 "桌面本機可以不帶 frames，由本機取 15%／50%／90% 三格；網頁版一定要帶。"
                 "要數動物就帶 count（英文物種 → 預期幾隻，例如 {\"dog\": 1, \"cat\": 1}）：數量不對或多了別的動物，"
-                "verdict.count_ok=false 並算不合格（影片助手 05：床上出現兩隻橘貓）。",
+                "verdict.count_ok=false 並算不合格（實測案例：畫面裡多出一隻同樣的角色）。",
                 _obj({"job_id": {"type": "string"},
                       "frames": {"type": "array", "items": {"type": "string"}},
                       "expect": {"type": "array", "items": {"type": "object"}},
@@ -1256,6 +1257,81 @@ class Registry:
             "問他想怎麼拍、常用哪些步驟，用 ui_compose／ui_edit／ui_apply 建好。他也可以在畫面上按「先用預設框架」跳過。免費。",
             _obj({}), lambda a: wb.ui_desc_get(onboarding=True))
 
+    def _add_agent_tools(self, add):
+        wb = self.wb
+        S = {"type": "string"}
+        plan_props = {"request": S, "input": {"type": "object"}, "storyboard": {"type": "array", "items": {"type": "object"}},
+                      "cast": {"type": "array"}, "budget": {"type": "object"}, "model": S, "caps": {"type": "object"},
+                      "has_cast_refs": {"type": "boolean"}, "max_retakes": {"type": "integer", "minimum": 0, "maximum": 5},
+                      "target_seconds": {"type": "number"}}
+        add("agent_plan",
+            "Filming Agent 只規劃、不花錢：一句需求（request）＋分鏡（storyboard，可省；或 input＝腳本／鏡頭表）→ 每一鏡的計畫、"
+            "接縫、總秒數、預算（totals）、要先問人的缺口（must_ask／controls_gaps）。要開拍再用 agent_run。",
+            _obj(plan_props, ["request"]), lambda a: wb.agent_plan(dict(a)))
+        add("agent_run",
+            "Filming Agent 主迴圈。action=start：開拍（request＋model，可帶 storyboard／input／budget／project_id）→ run id；"
+            "action=step：往下跑一步（Agent 自己看片的話帶 event={type:'checked', reports:[品管報告]}）；action=get：讀整份狀態；action=list：最近的 run（新的在前，最多 20 筆），找回「目前那一次」用。"
+            "錢照既有規則：Agent 直送開著就在上限內直接送，超過上限或沒有預先授權就停下來（ask），等人處理後用 agent_answer 續跑。"
+            "Agent 不能自己改上限。",
+            _obj(dict(plan_props, action={"type": "string", "enum": ["start", "step", "get", "list"]}, run=S,
+                      event={"type": "object"}, project_id=S, resolution=S, aspect_ratio=S), ["action"]),
+            self._h_agent_run, spends=True)
+        add("agent_answer",
+            "回覆主迴圈的提問（動作是 ask 時）：decision＝resume（人處理好了，例如在 App 裡核准了卡）／stop（停）／"
+            "accept_best（重做用完了，挑最好的那支）；或 controls＝{storyboard, cast} 補好分鏡的缺口（controls_gap）。"
+            "不收 approve／raise：放行與改上限只有人在 App 裡能做。",
+            _obj({"run": S, "decision": {"type": "string", "enum": ["resume", "stop", "accept_best"]},
+                  "controls": {"type": "object"}}, ["run"]), self._h_agent_answer, spends=True)
+        add("agent_film_preview",
+            "交片預覽（不花錢）：這一次拍片每一鏡有哪些版本（versions：第幾版、品管、狀態、能不能播）、哪一版是定稿、誰挑的"
+            "（picked_by：agent／human），以及每一鏡定稿依序接好的成片（film.path＝這台電腦上的檔案；本機 ffmpeg 接）。"
+            "有一鏡還沒定稿就不接（missing 列出鏡號）。人在 App 的「Agent 拍片進度」面板上看得到同一份。",
+            _obj({"run": S}, ["run"]), lambda a: wb.agent_film(a["run"]))
+        add("agent_pick",
+            "替人挑一鏡的定稿（不花錢）：take 要是 agent_film_preview 列出的這一次拍片、這一鏡的版本。直接生效，記成 Agent 挑的"
+            "（面板上寫「Agent 挑的」）；原本的定稿自動取消。挑錯了人可以在面板上再挑回來。回挑完之後的交片預覽（成片照新定稿重接）。",
+            _obj({"run": S, "shot_key": S, "take": S}, ["run", "shot_key", "take"]), self._h_agent_pick)
+
+    def _h_agent_run(self, a):
+        act = a.get("action")
+        if act == "list":
+            return self.wb.agent_runs()
+        if act == "get":
+            if not a.get("run"):
+                return {"error": "get 要帶 run"}
+            return self.wb.agent_get(a["run"])
+        if act == "step":
+            if not a.get("run"):
+                return {"error": "step 要帶 run"}
+            return self.wb.agent_step({"run": a["run"], **({"event": a["event"]} if a.get("event") is not None else {})})
+        if act == "start":
+            body = {k: v for k, v in a.items() if k not in ("action", "run", "event")}
+            return self.wb.agent_start(body)
+        return {"error": "action 只能是 start／step／get／list"}
+
+    def _h_agent_answer(self, a):
+        if (a.get("decision") is None) == (a.get("controls") is None):
+            return {"error": "decision 與 controls 要給其中一個"}
+        if a.get("decision") is not None:
+            return self.wb.agent_step({"run": a["run"], "decision": a["decision"]})
+        c = a["controls"] if isinstance(a["controls"], dict) else {}
+        return self.wb.agent_step({"run": a["run"], "event": dict({"type": "controls"},
+                                   **{k: c[k] for k in ("storyboard", "cast") if k in c})})
+
+    def _h_agent_pick(self, a):
+        cur = self.wb.agent_film(a["run"])
+        shot = next((s for s in cur.get("shots") or [] if s.get("key") == a["shot_key"]), None)
+        if shot is None:
+            return {"error": "這一次拍片沒有 %s 這一鏡" % a["shot_key"]}
+        v = next((x for x in shot.get("versions") or [] if x.get("take") == a["take"]), None)
+        if v is None:
+            return {"error": "%s 不是這一次拍片 %s 的版本（先用 agent_film_preview 看清單）" % (a["take"], a["shot_key"])}
+        if not v.get("src"):
+            return {"error": "這一版沒有生成好的片（%s），不能當定稿" % v.get("status")}
+        self.wb.take_pick(a["take"])
+        return dict(self.wb.agent_film(a["run"]), picked={"shot_key": a["shot_key"], "take": a["take"], "by": "agent"},
+                    undo="挑錯了：人在 App 的「Agent 拍片進度」面板上按「用這一版當定稿」就改回來")
+
     def _ui_catalog(self):
         return self.wb.ui_desc_get(catalog=True)
 
@@ -1666,6 +1742,7 @@ _TOPUP_NAMES = ("wallet_topup_intent",)
 _LOCAL_FILE_TOOLS = ("video_fetch", "post_process_fetch", "audio_music_fetch", "asset_fetch")
 _LOCAL_UI_TOOLS = ("ui_actions_list", "ui_get", "ui_compose", "ui_edit", "ui_preview", "ui_save", "ui_apply", "ui_reset",
                    "ui_undo", "ui_onboarding_status")
+_LOCAL_AGENT_TOOLS = ("agent_plan", "agent_run", "agent_answer", "agent_film_preview", "agent_pick")
 
 class _NoLedger:
 
