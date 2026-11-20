@@ -1,5 +1,6 @@
 from . import ui_actions
 
+STORE_KEY = "ui-desc"
 VERSION = 1
 MAX_PANELS = 12
 MAX_ITEMS = 40
@@ -29,6 +30,13 @@ def _keys(d, allowed, where):
 
 def is_default(desc):
     return desc is None or desc == {} or (isinstance(desc, dict) and not desc.get("panels"))
+
+def store_value(value):
+    clean, _summary = validate(value)
+    return clean
+
+def client_actions():
+    return {k: {"call": v["call"], "spend": v["spend"], "label": v["label"]} for k, v in ui_actions.ACTIONS.items()}
 
 def validate(desc):
     if is_default(desc):
@@ -73,3 +81,38 @@ def validate(desc):
     acts = list(dict.fromkeys(used))
     return ({"version": VERSION, "name": name, "panels": out},
             {"actions": acts, "confirm_actions": [a for a in acts if ui_actions.ACTIONS[a]["spend"] == "confirm"]})
+
+PREFS_KEY = "ui-prefs"
+PREFS_DEFAULT = {"version": 1, "density": "standard", "lang": "zh-TW", "show_budget": True, "previs": False,
+                 "agent_panel": True, "hide": [], "confirm_actions": []}
+PREFS_ENUM = {"density": ("simple", "standard", "pro"), "lang": ("zh-TW", "en")}
+PREFS_BOOL = ("show_budget", "previs", "agent_panel")
+PREFS_LISTS = ("hide", "confirm_actions")
+
+def validate_prefs(prefs):
+    if prefs is None or prefs == {}:
+        return None
+    _keys(prefs, set(PREFS_DEFAULT), "prefs")
+    out = dict(PREFS_DEFAULT, hide=[], confirm_actions=[])
+    v = prefs.get("version", 1)
+    if isinstance(v, bool) or v != 1:
+        raise DescError("prefs.version 要是 1")
+    for k, allowed in PREFS_ENUM.items():
+        if k in prefs:
+            if prefs[k] not in allowed:
+                raise DescError("prefs.%s 只能是 %s" % (k, "／".join(allowed)))
+            out[k] = prefs[k]
+    for k in PREFS_BOOL:
+        if k in prefs:
+            if not isinstance(prefs[k], bool):
+                raise DescError("prefs.%s 要是 true／false" % k)
+            out[k] = prefs[k]
+    for k in PREFS_LISTS:
+        if k in prefs:
+            v = prefs[k]
+            if not isinstance(v, list) or len(v) > len(ui_actions.ACTIONS) or \
+                    any(not isinstance(x, str) or ui_actions.get(x) is None for x in v):
+                raise DescError("prefs.%s 要是動作表裡的動作名稱" % k)
+            out[k] = list(dict.fromkeys(v))
+    return out
+

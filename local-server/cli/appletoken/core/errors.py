@@ -35,7 +35,8 @@ class ApiError(AppleTokenError):
         parts = ["HTTP %s" % status]
         if detail:
             parts.append(self._flatten(detail))
-        hint = _GUARD_HINTS.get(status)
+        local = isinstance(self.payload, dict) and self.payload.get("local") is True
+        hint = None if local and status == 403 else _GUARD_HINTS.get(status)
         if hint:
             parts.append("→ %s" % hint)
         for n in self.notes:

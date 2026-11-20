@@ -906,6 +906,21 @@ pre.err { color:var(--ng); }
         </div>
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pbPanel"><label for="pbPanel">匯出面板用積木清單（測試中，預設是原本的面板）</label></div>
+        
+        <div class="chk" style="margin-top:6px"><input type="checkbox" id="r7Cat"><label for="r7Cat">匯出面板照積木目錄畫（測試中，預設是原本的面板）</label></div>
+        
+        <div class="chk" style="margin-top:6px"><input type="checkbox" id="uiDescOn"><label for="uiDescOn">依介面描述檔多一個面板（測試中，預設關）</label></div>
+        
+        <div style="margin-top:6px;display:flex;gap:8px"><button type="button" id="uiComposeBtn" hidden>設定我的介面</button><button type="button" id="uiResetBtn" hidden>回預設</button><button type="button" id="uiUndoBtn" hidden>還原上一步</button></div>
+        
+        <div class="chk" style="margin-top:10px"><input type="checkbox" id="pbM6"><label for="pbM6">積木清單的新積木（調色、浮水印、變速、封面）用完整參數表單（測試中，預設關）</label></div>
+        
+        <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvRig"><label for="pvRig">3D 預演加「景別照角色身高」與「對準角色」（過肩、反打、雙人；後者限桌面版；測試中，預設關）</label></div>
+        
+        <div class="chk" style="margin-top:10px"><input type="checkbox" id="dcPanel"><label for="dcPanel">分鏡每一鏡加「導演控制」（走位、表演、運鏡；測試中，預設關）</label></div>
+        
+        <div id="uiMine" hidden style="margin-top:6px"><label for="uiProfilePick">我的介面</label>
+          <select id="uiProfilePick"></select> <button type="button" id="uiApplyBtn">套用</button></div>
         <details style="margin-top:12px">
           <summary class="printed" style="cursor:pointer;padding:5px 0">這個模型的計價規則</summary>
           <textarea id="rateJson" class="mono" style="min-height:118px;margin-top:8px"
@@ -4375,12 +4390,45 @@ document.addEventListener('keydown', e => {
       return Promise.resolve(res);
     }
 
+    if (path === '/api/image-generate' && S.image_async && !S.local && opts &&
+        String(opts.method || 'GET').toUpperCase() === 'POST' && typeof opts.body === 'string') {
+      return imageAsync(opts);
+    }
+
     const why = missing[path];
     if (why === undefined) return realFetch(input, opts);
     return Promise.resolve(new Response(
       JSON.stringify({ error: why, studio_unavailable: true }),
       { status: 501, headers: { 'Content-Type': 'application/json' } }));
   };
+
+  const IMAGE_POLL_MS = 3000, IMAGE_POLL_MAX_MS = 20 * 60 * 1000;
+  const jsonRes = (code, obj) => new Response(JSON.stringify(obj), { status: code, headers: { 'Content-Type': 'application/json' } });
+  async function imageAsync(opts) {
+    let body;
+    try { body = JSON.parse(opts.body); } catch (_) { return realFetch('/api/image-generate', opts); }
+    const r = await realFetch('/api/image-generate', Object.assign({}, opts, { body: JSON.stringify(Object.assign({}, body, { async: true })) }));
+    if (r.status !== 202) return r;
+    const t = await r.json().catch(() => ({}));
+    if (!t.task_id) return jsonRes(502, { error: '伺服器沒有回任務編號' });
+    const until = Date.now() + IMAGE_POLL_MAX_MS;
+    let misses = 0;
+    while (Date.now() < until) {
+      await new Promise(z => setTimeout(z, window.__IMAGE_POLL_MS__ || IMAGE_POLL_MS));
+      let d = null;
+      try {
+        const p = await realFetch('/api/image-task?id=' + encodeURIComponent(t.task_id));
+        d = await p.json();
+        if (!p.ok) return jsonRes(p.status, d);
+        misses = 0;
+      } catch (_) {
+        if (++misses >= 10) return jsonRes(504, { error: '一直問不到這張圖的進度；可能已經生成了，請稍後到資產庫看', maybe_billed: true });
+        continue;
+      }
+      if (d && (d.status === 'done' || d.status === 'failed')) return jsonRes(d.code || (d.status === 'done' ? 200 : 502), d.body || {});
+    }
+    return jsonRes(504, { error: '等這張圖太久了；可能已經生成了，請稍後到資產庫看', maybe_billed: true });
+  }
 
   window.loadAuth = async function () {
     $$('whoami').hidden = false;
@@ -6747,11 +6795,13 @@ document.addEventListener('keydown', e => {
   }
   async function batchRun(payloads, labels) {
     const rows = [];
-    payloads = payloads.map(p => { const c = JSON.parse(JSON.stringify(p)); delete c._vars;
-      if (typeof window.__PREP_PAYLOAD__ === 'function') { try { window.__PREP_PAYLOAD__(c, { fromBoard: true }); } catch (e) {} }
+    const dcs = [];
+    payloads = payloads.map((p, i) => { const c = JSON.parse(JSON.stringify(p)); delete c._vars;
+      if (typeof window.__PREP_PAYLOAD__ === 'function') { try { const ap = window.__PREP_PAYLOAD__(c, { fromBoard: true }); dcs[i] = ap && ap.dc; } catch (e) {} }
       return c; });
     for (let i = 0; i < payloads.length; i++) {
       const row = { label: (labels && labels[i]) || ('第 ' + (i + 1) + ' 鏡') };
+      if (dcs[i]) row.dc = dcs[i];
       try {
         const r = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(Object.assign({}, payloads[i], { require_confirmation: true })) });
@@ -6799,6 +6849,10 @@ document.addEventListener('keydown', e => {
         else { c2.textContent = '—'; c3.textContent = '拿不到'; c3.style.color = '#B3412E'; }
         if (r.secBlock || r.error) tr.style.color = '#B3412E';
         tr.append(c1, c2, c3); tb.append(tr);
+        if (r.dc && window.__DIRCTL__ && typeof window.__DIRCTL__.sheet === 'function') {
+          const el = window.__DIRCTL__.sheet(r.dc);
+          if (el) { const tr2 = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 3; td.append(el); tr2.append(td); tb.append(tr2); }
+        }
       });
       const sum = document.createElement('div');
       sum.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px;border-radius:10px;background:rgba(232,163,61,.14);border-left:4px solid var(--grease)';
@@ -14550,6 +14604,7 @@ document.addEventListener('keydown', e => {
     }
     if (s.rulesOff && s.rulesOff.length) p._rulesOff = s.rulesOff.slice();
     p._r2 = { shot: n, cam: camText(s.cam), sid: r3 ? r3.sid : undefined };
+    if (typeof window.__DIRCTL_PAYLOAD__ === 'function') { try { return window.__DIRCTL_PAYLOAD__(p, s) || p; } catch (e) {} }
     return p;
   };
 
@@ -14565,8 +14620,8 @@ document.addEventListener('keydown', e => {
     return out;
   }
   window.__PREP_PAYLOAD__ = (p, extra) => {
-    const off = p._rulesOff, meta = p._r2 || {};
-    delete p._rulesOff; delete p._r2;
+    const off = p._rulesOff, meta = p._r2 || {}, dcInfo = p._dc;
+    delete p._rulesOff; delete p._r2; delete p._dc;
     const derived = !!(extra && (extra.takeOf || extra.extendOf || extra.retake)) ||
                     RULES.some(r => { try { return String(p.prompt || '').includes(r.en(Object.assign({ lang: 'English' }, cfgNow()))); } catch (e) { return false; } });
     let list = [];
@@ -14578,6 +14633,13 @@ document.addEventListener('keydown', e => {
         .filter(r => String(p.prompt || '').includes(r.en));
     }
     const out = { rules: list.map(r => r.zh), cam: meta.cam || '', shot: meta.shot || null, spec: refSpec(p), kept: derived };
+    let dcShow = dcInfo;
+    if (!dcShow && extra && (extra.takeOf || extra.extendOf || extra.retake) && window.__DIRCTL__ && typeof window.__DIRCTL__.derive === 'function') {
+      try {
+        dcShow = window.__DIRCTL__.derive(p, RULES.map(r => { try { return r.en(Object.assign({ lang: 'English' }, cfgNow())); } catch (e) { return ''; } }));
+      } catch (e) { dcShow = null; }
+    }
+    if (dcShow) out.dc = dcShow;
     if (window.__R3__ && typeof window.__R3__.prep === 'function') { try { window.__R3__.prep(out, meta, extra || {}); } catch (e) {} }
     if (window.__R5__ && typeof window.__R5__.prep === 'function') { try { window.__R5__.prep(out, p, extra || {}); } catch (e) {} }
     return out;
@@ -14593,6 +14655,9 @@ document.addEventListener('keydown', e => {
       if (a.rules && a.rules.length) d.append(h('div', null, '固定規則：' + a.rules.join('、')));
       if (a.cam) d.append(h('div', null, '運鏡：' + a.cam));
       box.append(d);
+    }
+    if (a.dc && window.__DIRCTL__ && typeof window.__DIRCTL__.sheet === 'function') {
+      try { const el = window.__DIRCTL__.sheet(a.dc); if (el) box.append(el); } catch (e) {}
     }
     if (a.spec && a.spec.length) {
       const w = h('div', 'r2-sheet');
@@ -16002,6 +16067,7 @@ document.addEventListener('keydown', e => {
         return ref;
       },
       onClose: () => { try { renderShots(); } catch (e) {} },
+      ...(window.__PREVIS_RIG__ && window.__PREVIS_RIG__.isOn() ? window.__PREVIS_RIG__.ctx() : {}),
     };
   }
 
@@ -17097,7 +17163,7 @@ document.addEventListener('keydown', e => {
     try { d = await r.json(); } catch (e) { d = {}; }
     return { ok: r.ok, status: r.status, d };
   }
-  const errText = d => (d && typeof d.error === 'string' ? d.error : JSON.stringify((d && d.error) || d || {}).slice(0, 160));
+  const errText = d => (d && typeof d.error === 'string' ? d.error : (errMsg(d) || '未知錯誤').slice(0, 160));
 
   const TTS_DEFAULT = [['gmi/minimax-speech-2.8-turbo', 'MiniMax Speech 2.8 Turbo'], ['gmi/minimax-speech-2.8-hd', 'MiniMax Speech 2.8 HD'],
                        ['gmi/inworld-tts-2-flash', 'Inworld TTS 2 Flash'], ['gmi/chatterbox-tts', 'Chatterbox']];
@@ -18288,7 +18354,7 @@ document.addEventListener('keydown', e => {
       else if (!j || !j.id || !j.src || c.uid.startsWith('unsent-'))
         issues.push({ lv: 'x', code: 'unready', msg: 'V1 第 ' + (i + 1) + ' 段還沒拍好：換成拍好的版本，或先從時間軸拿掉' });
       else {
-        const d = seamShift(c, i ? v1[i - 1] : null, byUidF, opt.fps);
+        const d = opt.seam === false ? 0 : seamShift(c, i ? v1[i - 1] : null, byUidF, opt.fps);
         video.push({ job: j.id, in: r3((c.in || 0) + d), out: r3(c.out + d) });
         if (d) { shiftOf[j.id] = d; seams.push(i + 1); }
       }
@@ -18351,17 +18417,41 @@ document.addEventListener('keydown', e => {
     list[k] = Object.assign({}, aclips[k], { at: 0, dur: r3(v1Total), loop: true, fade: 1 });
     return { list, bed: list[k] };
   }
-  function seriesTitles(sr) {
-    sr = sr || {};
+  function seriesTitles(sr, p) {
+    sr = sr || {}; p = p || {};
     const ep = (sr.season ? 'S' + sr.season : '') + (sr.episode ? 'E' + sr.episode : '');
     const head = [String(sr.show || '').trim(), ep].filter(Boolean).join(' ');
     const title = String(sr.title || '').trim();
     const open = [head, title].filter(Boolean).join('｜');
     const end = [String(sr.ending || '').trim(), sr.next ? '下集：' + String(sr.next).trim() : ''].filter(Boolean).join('\n');
     const out = {};
-    if (sr.openOn !== false && open) out.open = { text: open, seconds: 2.5 };
-    if (sr.endOn !== false && end) out.end = { text: end, seconds: 3.5 };
+    if (sr.openOn !== false && open) out.open = { text: open, seconds: p.open_seconds != null ? Number(p.open_seconds) : 2.5 };
+    if (sr.endOn !== false && end) out.end = { text: end, seconds: p.end_seconds != null ? Number(p.end_seconds) : 3.5 };
     return out;
+  }
+  const R7_CLIENT_BLOCKS = {
+    seam_trim: (ctx) => { ctx.seam = true; },
+    music_bed: (ctx, p) => {
+      if (!p.on) return;
+      const bd = bedify(ctx.list, ctx.v1T);
+      ctx.list = bd.list; ctx.bed = bd.bed; ctx.bedOn = true;
+    },
+    series_titles: (ctx, p) => { ctx.titles = seriesTitles(ctx.sr, p); },
+  };
+  const R7_CLIENT_ORDER = ['seam_trim', 'music_bed', 'series_titles'];
+  function prepLegacy(ac, v1T, sr) {
+    sr = sr || {};
+    const bd = sr.bed ? bedify(ac, v1T) : { list: ac, bed: null };
+    return { list: bd.list, bed: bd.bed, bedOn: !!sr.bed, titles: seriesTitles(sr) };
+  }
+  function prepClient(ac, v1T, sr, order, params) {
+    sr = sr || {}; params = params || {};
+    const ids = Array.isArray(order) ? order : R7_CLIENT_ORDER;
+    if (ids.slice().sort().join() !== R7_CLIENT_ORDER.slice().sort().join() || new Set(ids).size !== ids.length)
+      throw new Error('client_blocks_mismatch:' + ids.join(','));
+    const ctx = { list: (ac || []).slice(), v1T, sr, bed: null, bedOn: false, titles: {}, seam: false };
+    ids.forEach(id => R7_CLIENT_BLOCKS[id](ctx, Object.assign({}, params[id] || {}, id === 'music_bed' ? { on: !!sr.bed } : {})));
+    return { list: ctx.list, bed: ctx.bed, bedOn: ctx.bedOn, titles: ctx.titles, seam: ctx.seam };
   }
   function uploadPack(sr) {
     sr = sr || {};
@@ -18447,6 +18537,78 @@ document.addEventListener('keydown', e => {
     if (!all.length) return null;
     return { sum: all.length === 1 ? all[0] : all.length + ' 則注意：' + all[0] + '…', all };
   };
+  const R7_CAT_FIELDS = ['format.aspect', 'format.resolution', 'format.fps', 'format.fit', 'client.music_bed', 'subtitles',
+                         'disclosure.on', 'disclosure.text', 'series.show', 'series.season', 'series.episode', 'series.title',
+                         'series.ending', 'series.next', 'series.openOn', 'series.endOn'];
+  const R7_CAT_CONTROLS = ['seg', 'cards', 'switch', 'text', 'number', 'area', 'custom'];
+  function catValidate(cat) {
+    if (!cat || !Array.isArray(cat.panel) || !Array.isArray(cat.blocks)) throw new Error('no_panel');
+    const by = {};
+    cat.blocks.forEach(b => { by[b.id] = b; });
+    (cat.client_blocks || []).forEach(b => { by[b.id] = b; });
+    const seen = {};
+    cat.panel.forEach(s => {
+      if (!s || !/^0[1-6]$/.test(String(s.no)) || !Array.isArray(s.fields)) throw new Error('bad_section');
+      s.fields.forEach(f => {
+        if (!f || !R7_CAT_CONTROLS.includes(f.control)) throw new Error('bad_control:' + (f && f.field));
+        if (f.control === 'custom') return;
+        if (!R7_CAT_FIELDS.includes(f.field)) throw new Error('unknown_field:' + f.field);
+        if (f.param) {
+          const b = by[f.block];
+          if (!b || !(b.params || {})[f.param]) throw new Error('unknown_param:' + f.field);
+          if ((f.control === 'seg' || f.control === 'cards') && !f.values && !(((b.labels || {})[f.param] || {}).values || []).length)
+            throw new Error('no_labels:' + f.field);
+        }
+        seen[f.field] = true;
+      });
+    });
+    const miss = R7_CAT_FIELDS.filter(x => !seen[x]);
+    if (miss.length) throw new Error('missing_field:' + miss.join(','));
+    return { panel: cat.panel, by };
+  }
+  function catOptions(f, by, ctx) {
+    let vals = f.values;
+    if (!vals && f.param) vals = (((by[f.block] || {}).labels || {})[f.param] || {}).values || [];
+    const out = (vals || []).map(v => [v.value, v.label, v.note || '']);
+    if (f.field === 'format.aspect' && ctx && ctx.pa && !out.some(o => o[0] === ctx.pa)) out.push([ctx.pa, ctx.pa, '']);
+    return out;
+  }
+  function catApply(field, value, ctx) {
+    ctx = ctx || {};
+    const d = ctx.d || {};
+    switch (field) {
+      case 'format.aspect': return [{ to: 'opt', patch: { aspect: value === ctx.pa ? null : value } }];
+      case 'format.resolution': return [{ to: 'opt', patch: { resolution: value } }];
+      case 'format.fps': return [{ to: 'opt', patch: { fps: value } }];
+      case 'format.fit': return [{ to: 'ser', patch: { fit: value }, repaint: true }];
+      case 'client.music_bed': return [{ to: 'ser', patch: { bed: !!value }, repaint: true }];
+      case 'subtitles': return [{ to: 'opt', patch: { subs: value } }];
+      case 'disclosure.on': return [{ to: 'disclose', patch: { on: !!value, text: d.text || '' } }];
+      case 'disclosure.text': return [{ to: 'disclose', patch: { on: !!d.on, text: value } }];
+      case 'series.season': case 'series.episode':
+        return [{ to: 'ser', patch: { [field.slice(7)]: Math.max(1, Math.min(999, Number(value) || 1)) } }];
+      case 'series.openOn': case 'series.endOn': return [{ to: 'ser', patch: { [field.slice(7)]: !!value }, repaint: true }];
+      case 'series.show': case 'series.title': case 'series.ending': case 'series.next':
+        return [{ to: 'ser', patch: { [field.slice(7)]: value } }];
+    }
+    throw new Error('unknown_field:' + field);
+  }
+  function legacyApply(field, value, ctx) {
+    ctx = ctx || {};
+    const d = ctx.d || {};
+    if (field === 'format.aspect') return [{ to: 'opt', patch: { aspect: value === ctx.pa ? null : value } }];
+    if (field === 'format.resolution') return [{ to: 'opt', patch: { resolution: value } }];
+    if (field === 'format.fps') return [{ to: 'opt', patch: { fps: value } }];
+    if (field === 'format.fit') return [{ to: 'ser', patch: { fit: value }, repaint: true }];
+    if (field === 'client.music_bed') return [{ to: 'ser', patch: { bed: value }, repaint: true }];
+    if (field === 'subtitles') return [{ to: 'opt', patch: { subs: value } }];
+    if (field === 'disclosure.on') return [{ to: 'disclose', patch: { on: !!value, text: d.text || '' } }];
+    if (field === 'disclosure.text') return [{ to: 'disclose', patch: { on: !!d.on, text: value } }];
+    const k = field.slice(7);
+    if (k === 'season' || k === 'episode') return [{ to: 'ser', patch: { [k]: Math.max(1, Math.min(999, Number(value) || 1)) } }];
+    if (k === 'openOn' || k === 'endOn') return [{ to: 'ser', patch: { [k]: value }, repaint: true }];
+    return [{ to: 'ser', patch: { [k]: value } }];
+  }
 
   let CFG = { enabled: false, reason: '讀取匯出設定中…', price_points: '0', preview: true };
   let HIST = [];
@@ -18473,11 +18635,17 @@ document.addEventListener('keydown', e => {
     const d = disclose();
     const sr = serNow();
     const v1T = v1.reduce((x, c) => x + Math.max(0, (Number(c.out) || 0) - (Number(c.in) || 0)), 0);
-    const bd = sr.bed ? bedify(ac, v1T) : { list: ac, bed: null };
+    let bd = null;
+    const cat = window.__R7CAT__;
+    if (cat && cat.isOn()) {
+      try { bd = prepClient(ac, v1T, sr, cat.clientOrder(), cat.clientParams()); }
+      catch (e) { cat.fallback('client_blocks:' + (e && e.message || e)); bd = null; }
+    }
+    if (!bd) bd = prepLegacy(ac, v1T, sr);
     ac = bd.list;
-    const snap = snapshot(v1, ac, cues, byUid, { title: OPT.title || sr.title || '', aspect: OPT.aspect || projAspect(), resolution: OPT.resolution, fps: OPT.fps, subs: OPT.subs,
-                                                  disclose: { on: d.on, text: d.text, seconds: 4 }, fit: sr.fit, titles: seriesTitles(sr) });
-    if (sr.bed && !bd.bed) snap.issues.push({ lv: 'w', code: 'bed', msg: '「統一配樂」開著，但 A2 上沒有配樂：先在 A2 放一段配樂或音樂' });
+    const snap = snapshot(v1, ac, cues, byUid, Object.assign({ title: OPT.title || sr.title || '', aspect: OPT.aspect || projAspect(), resolution: OPT.resolution, fps: OPT.fps, subs: OPT.subs,
+                                                  disclose: { on: d.on, text: d.text, seconds: 4 }, fit: sr.fit, titles: bd.titles }, bd.seam === undefined ? {} : { seam: bd.seam }));
+    if (bd.bedOn && !bd.bed) snap.issues.push({ lv: 'w', code: 'bed', msg: '「統一配樂」開著，但 A2 上沒有配樂：先在 A2 放一段配樂或音樂' });
     const pf = R3().issues ? (pick => R3().issues(pick)) : null;
     const rights = rightsWarnings(v1, byUid, allShots(), pf, {});
     const models = modelsGuess(v1, byUid, ac);
@@ -18696,6 +18864,130 @@ document.addEventListener('keydown', e => {
   }
   const sec = (no, title, aside) => { const s = h('section', 'r7-sec'); const hd = h('div', 'r7-sh'); hd.append(h('span', 'no', no), h('h4', null, title)); if (aside) hd.append(aside); s.append(hd); return s; };
 
+  const R7CAT = (() => {
+    const KEY = 'iamd-r7-catalog';
+    let on = false, V = null, client = null, loading = false, reason = '';
+    try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
+    const box = byId('r7Cat');
+    if (box) {
+      box.checked = on;
+      box.onchange = () => { on = box.checked; reason = ''; try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {} };
+    }
+    function fallback(code) {
+      reason = String(code || 'error'); V = null; client = null;
+      try { console.warn('[r7cat] fallback=' + reason); } catch (e) {}
+    }
+    function load(repaint) {
+      if (V || loading || reason) return;
+      loading = true;
+      fetch('/api/blocks').then(r => r.ok ? r.json() : null).then(d => {
+        loading = false;
+        try {
+          V = catValidate(d);
+          client = (d.client_blocks || []).map(b => ({ id: b.id, params: Object.fromEntries(Object.entries(b.params || {})
+            .filter(([k]) => k !== 'on').map(([k, v]) => [k, v.default])) }));
+          prepClient([], 0, {}, client.map(b => b.id), {});
+        } catch (e) { fallback(e && e.message || e); return; }
+        if (repaint) repaint();
+      }).catch(() => { loading = false; fallback('fetch'); });
+    }
+    return {
+      wanted: () => on, isOn: () => on && !!V, view: () => V, load, fallback, reason: () => reason,
+      clientOrder: () => client.map(b => b.id),
+      clientParams: () => Object.fromEntries(client.map(b => [b.id, b.params])),
+    };
+  })();
+  window.__R7CAT__ = R7CAT;
+  function catSheet(b, SR, d, extra) {
+    const V = R7CAT.view();
+    const pa = projAspect();
+    let dcur = { on: !!d.on, text: d.text || '' };
+    const cur = {
+      'format.aspect': b.format.aspect, 'format.resolution': OPT.resolution, 'format.fps': OPT.fps, 'format.fit': SR.fit,
+      'client.music_bed': !!SR.bed, subtitles: OPT.subs, 'disclosure.on': dcur.on, 'disclosure.text': dcur.text,
+      'series.show': SR.show, 'series.season': SR.season, 'series.episode': SR.episode, 'series.title': SR.title,
+      'series.ending': SR.ending, 'series.next': SR.next, 'series.openOn': SR.openOn !== false, 'series.endOn': SR.endOn !== false,
+    };
+    const put = (field, v, live) => {
+      catApply(field, v, { pa, d: dcur }).forEach(op => {
+        if (op.to === 'opt') { Object.assign(OPT, op.patch); if (!live) paint(); }
+        else if (op.to === 'ser') serSet(op.patch, !!op.repaint && !live);
+        else if (op.to === 'disclose') { dcur = Object.assign({}, dcur, op.patch); if (R3().setDisclose) R3().setDisclose(dcur); if (!live) paint(); }
+      });
+    };
+    const field = f => {
+      const v = cur[f.field];
+      if (f.control === 'seg') {
+        const row = h('div', 'r7-row');
+        row.append(h('label', null, f.label), seg(catOptions(f, V.by, { pa }).map(o => [o[0], o[1]]), v, x => put(f.field, x)));
+        return row;
+      }
+      if (f.control === 'cards') {
+        const w = h('div', 'r7-cards'); w.setAttribute('role', 'radiogroup');
+        catOptions(f, V.by, { pa }).forEach(([val, label, note]) => {
+          const c = h('button', 'r7-card' + (v === val ? ' on' : '')); c.type = 'button';
+          c.setAttribute('role', 'radio'); c.setAttribute('aria-checked', String(v === val));
+          c.append(h('b', null, label), h('span', null, note));
+          c.onclick = () => put(f.field, val);
+          w.append(c);
+        });
+        return w;
+      }
+      if (f.control === 'switch') {
+        const opts = catOptions(f, V.by, { pa });
+        const txt = (opts.find(o => o[0] === !!v) || [null, f.label])[1];
+        const sw = h('label', 'r7-sw'); const cb = h('input'); cb.type = 'checkbox'; cb.checked = !!v;
+        cb.onchange = () => put(f.field, cb.checked);
+        sw.append(cb, h('span', 'tr'), h('span', null, txt));
+        if (f.field === 'disclosure.on' || /^series\./.test(f.field)) return sw;
+        const row = h('div', 'r7-row'); row.append(h('label', null, f.label), sw); return row;
+      }
+      if (f.control === 'text' || f.control === 'number' || f.control === 'area') {
+        const i = h(f.control === 'area' ? 'textarea' : 'input', 'r7-in');
+        if (f.control !== 'area') i.type = f.control === 'number' ? 'number' : 'text';
+        i.value = v == null ? '' : v;
+        if (f.placeholder) i.placeholder = f.placeholder;
+        if (f.max && f.control !== 'number') i.maxLength = f.max;
+        i.setAttribute('aria-label', f.label);
+        i.oninput = () => put(f.field, i.value, true);
+        i.onchange = () => { put(f.field, i.value, true); paint(); };
+        if (f.field === 'disclosure.text') { i.disabled = !dcur.on; return i; }
+        const w = h('label', 'r7-f'); w.append(h('span', null, f.label), i);
+        return w;
+      }
+      return null;
+    };
+    const out = {};
+    V.panel.forEach(S0 => {
+      if (!['01', '02', '03', '05'].includes(S0.no)) return;
+      let aside = null;
+      if (S0.no === '02') aside = h('span', 'r7-aside', b.cues.length ? 'S1 上 ' + b.cues.length + ' 句' : 'S1 上沒有字幕');
+      if (S0.no === '05') aside = h('span', 'r7-aside', [SR.show, (SR.season ? 'S' + SR.season : '') + (SR.episode ? 'E' + SR.episode : '')].filter(Boolean).join(' ') || '單集');
+      const fs = S0.fields.filter(f => f.control !== 'custom');
+      let sx;
+      if (S0.no === '03') {
+        const swf = fs.find(f => f.field === 'disclosure.on');
+        sx = sec(S0.no, S0.title, swf ? field(swf) : null);
+        fs.filter(f => f !== swf).forEach(f => { const n = field(f); if (n) sx.append(n); });
+      } else {
+        sx = sec(S0.no, S0.title, aside);
+        let ep = null;
+        fs.forEach(f => {
+          const n = field(f);
+          if (!n) return;
+          if (/^series\.(show|season|episode)$/.test(f.field)) { if (!ep) { ep = h('div', 'r7-ep'); sx.append(ep); } ep.append(n); return; }
+          if (/^series\.(openOn|endOn)$/.test(f.field)) { let tg = sx.querySelector(':scope > .r7-tgl'); if (!tg) { tg = h('div', 'r7-tgl'); sx.append(tg); } tg.append(n); return; }
+          sx.append(n);
+        });
+      }
+      (extra[S0.no] || []).forEach(n => sx.append(n));
+      sx.dataset.r7cat = '1';
+      out[S0.no] = sx;
+    });
+    ['01', '02', '03', '05'].forEach(no => { if (!out[no]) throw new Error('missing_section:' + no); });
+    return out;
+  }
+
   function paint() {
     if (!back) return;
     const box = back.querySelector('.r7');
@@ -18833,7 +19125,19 @@ document.addEventListener('keydown', e => {
     acts.append(cp, nextEp, msg);
     s5e.append(g1, tl, en, nx, tg, ds, tgs, acts,
                h('div', 'r7-hint', '字卡疊在畫面上（片頭 2.5 秒在上方、片尾 3.5 秒在字幕上面），不改總長。這份資料跟著專案存。'));
-    sheet.append(s1, s2, s3, s4, s5e);
+    let catS = null;
+    if (R7CAT.wanted() && !SIMPLE_X) {
+      if (!R7CAT.view()) R7CAT.load(() => paint());
+      else {
+        try {
+          catS = catSheet(b, SR, d, { '03': [h('div', 'r7-sub', '片尾另列「使用的 AI 模型」：'), ml,
+                                              h('div', 'r7-hint', '清單以匯出時從生成紀錄取出的為準（這裡是預估）。設定跟專案守則同一份。')],
+                                       '05': [ds, tgs, acts, h('div', 'r7-hint', '字卡疊在畫面上（片頭 2.5 秒在上方、片尾 3.5 秒在字幕上面），不改總長。這份資料跟著專案存。')] });
+        } catch (e) { R7CAT.fallback('render:' + (e && e.message || e)); catS = null; }
+      }
+    }
+    if (catS) sheet.append(catS['01'], catS['02'], catS['03'], s4, catS['05']);
+    else sheet.append(s1, s2, s3, s4, s5e);
     const memeOne = () => { OPT.aspect = '9:16'; OPT.resolution = '1080p'; OPT.fps = 30; serSet({ fit: 'crop' }); submit(current()); };
     if (SIMPLE_X) {
       sheet.textContent = '';
@@ -21603,6 +21907,7 @@ document.addEventListener('keydown', e => {
       const extras = [];
       for (let n = row.nextElementSibling; n && !n.classList.contains('sbrow'); n = n.nextElementSibling) {
         if (n.classList.contains('meta') || n.classList.contains('sb-fold')) continue;
+        if (n.classList.contains('dc-mark')) continue;
         extras.push(n);
       }
       if (!extras.length) return;
@@ -24884,7 +25189,21 @@ document.addEventListener('keydown', e => {
     box.checked = on;
     box.onchange = () => { on = box.checked; try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {} };
   }
-  const OWNED = { fit: ['mode'], fps: ['fps'], subtitles: ['mode'], encode: ['container'] };
+  const OWNED_LEGACY = { fit: ['mode'], fps: ['fps'], subtitles: ['mode'], encode: ['container'] };
+  function ownedFrom(cat) {
+    if (!cat || !Array.isArray(cat.panel)) return OWNED_LEGACY;
+    const out = {};
+    cat.panel.forEach(s => (s.fields || []).forEach(f => {
+      if (!f || !f.block || !f.param) return;
+      out[f.block] = out[f.block] || [];
+      if (!out[f.block].includes(f.param)) out[f.block].push(f.param);
+    }));
+    return out;
+  }
+  function shownParams(b, owned) {
+    return Object.entries(b.params || {}).filter(([k, spec]) => !(owned[b.id] || []).includes(k)
+      && ['enum', 'number', 'bool'].includes(spec.type)).map(([k]) => k);
+  }
   const STAGE_LABEL = { analyze: '分析', source: '① 每段處理', timeline: '② 拼接', overlay: '③ 疊加 · 可拖拉換順序',
                         append: '④ 接在後面', text: '⑤ 字幕層', audio: '⑥ 聲音', output: '⑦ 輸出' };
   let CAT = null, catLoading = null;
@@ -24916,8 +25235,17 @@ document.addEventListener('keydown', e => {
     });
   }
   let lastPreview = null;
+  const SCROLLERS = ['.r7-sheet', '.r7-body'];
+  function keepScroll(repaint) {
+    return () => {
+      const was = SCROLLERS.map(q => { const n = document.querySelector(q); return n ? n.scrollTop : 0; });
+      repaint();
+      SCROLLERS.forEach((q, i) => { const n = document.querySelector(q); if (n && was[i]) n.scrollTop = was[i]; });
+    };
+  }
   function section(sheet, body, repaint) {
     if (!on) return;
+    repaint = keepScroll(repaint);
     if (!CAT) { load(repaint); return; }
     const st = state();
     const old = Array.from(sheet.querySelectorAll(':scope > .r7-sec')).filter(n => !n.querySelector('.r7-ack, .r7-warn'));
@@ -24970,7 +25298,13 @@ document.addEventListener('keydown', e => {
       sw.append(cb, el('span', 'tr'));
       row.append(grip, name, doc, sw);
       Object.entries(b.params || {}).forEach(([k, spec]) => {
-        if ((OWNED[id] || []).includes(k)) return;
+        if ((ownedFrom(CAT)[id] || []).includes(k)) return;
+        const m6 = window.__PB_M6__ ? window.__PB_M6__.control(b, k, spec, st.params[id], v => {
+          const ps = st.params[id] = st.params[id] || {};
+          if (v === undefined) delete ps[k]; else ps[k] = v;
+          st.touched = true; lastPreview = null;
+        }, repaint) : undefined;
+        if (m6 !== undefined) { if (m6) row.append(m6); return; }
         if (spec.type === 'enum') {
           const s = document.createElement('select');
           s.className = 'r7-in pb-param'; s.dataset.param = k;
@@ -25057,5 +25391,927 @@ document.addEventListener('keydown', e => {
     '.pb-old>summary{cursor:pointer}';
   document.head.append(css);
   window.__BLOCKS__ = { section, apply, move, isOn: () => on };
+})();
+
+function uiDescValidate(desc, acts) {
+  const bad = code => { const e = new Error(code); e.code = code; throw e; };
+  if (desc == null || (typeof desc === 'object' && !Array.isArray(desc) && (!desc.panels || !desc.panels.length))) return null;
+  const obj = (d, keys) => { if (!d || typeof d !== 'object' || Array.isArray(d)) bad('not_object');
+    if (Object.keys(d).some(k => !keys.includes(k))) bad('unknown_key'); };
+  const str = (v, n, empty) => { if (typeof v !== 'string' || (!empty && !v.trim()) || [...v].length > n) bad('bad_text');
+    if (/[\x00-\x08\x0b-\x1f]/.test(v)) bad('control_char'); return v; };
+  obj(desc, ['version', 'name', 'panels']);
+  if (desc.version !== 1) bad('bad_version');
+  const name = str(desc.name === undefined ? '' : desc.name, 40, true);
+  if (!Array.isArray(desc.panels) || desc.panels.length > 12) bad('bad_panels');
+  const ids = new Set(), out = [];
+  for (const p of desc.panels) {
+    obj(p, ['id', 'title', 'items']);
+    const id = str(p.id, 32);
+    if (!/^[\p{L}\p{N}_-]+$/u.test(id) || ids.has(id)) bad('bad_id');
+    ids.add(id);
+    if (!Array.isArray(p.items) || !p.items.length || p.items.length > 40) bad('bad_items');
+    const items = [];
+    for (const it of p.items) {
+      const t = it && typeof it === 'object' ? it.type : null;
+      const KEYS = { text: ['type', 'text'], step: ['type', 'label', 'action'], button: ['type', 'label', 'action'] };
+      if (!KEYS[t]) bad('bad_type');
+      obj(it, KEYS[t]);
+      if (t === 'text') { items.push({ type: t, text: str(it.text, 200) }); continue; }
+      if (t === 'step' && it.action == null) { items.push({ type: t, label: str(it.label, 40) }); continue; }
+      if (typeof it.action !== 'string' || !acts || !Object.prototype.hasOwnProperty.call(acts, it.action)) bad('bad_action');
+      items.push({ type: t, label: str(it.label, 40), action: it.action });
+    }
+    out.push({ id, title: str(p.title, 40), items });
+  }
+  return { version: 1, name, panels: out };
+}
+const UI_PREFS_DEFAULT = { version: 1, density: 'standard', lang: 'zh-TW', show_budget: true, previs: false, agent_panel: true,
+                           hide: [], confirm_actions: [] };
+function uiPrefsValidate(prefs, acts) {
+  const bad = code => { const e = new Error(code); e.code = code; throw e; };
+  if (prefs == null || (typeof prefs === 'object' && !Array.isArray(prefs) && !Object.keys(prefs).length)) return null;
+  if (typeof prefs !== 'object' || Array.isArray(prefs)) bad('not_object');
+  if (Object.keys(prefs).some(k => !Object.prototype.hasOwnProperty.call(UI_PREFS_DEFAULT, k))) bad('unknown_key');
+  const out = Object.assign({}, UI_PREFS_DEFAULT, { hide: [], confirm_actions: [] });
+  if ((prefs.version === undefined ? 1 : prefs.version) !== 1) bad('bad_version');
+  const ENUM = { density: ['simple', 'standard', 'pro'], lang: ['zh-TW', 'en'] };
+  for (const k of Object.keys(ENUM)) if (k in prefs) { if (!ENUM[k].includes(prefs[k])) bad('bad_' + k); out[k] = prefs[k]; }
+  for (const k of ['show_budget', 'previs', 'agent_panel']) if (k in prefs) { if (typeof prefs[k] !== 'boolean') bad('bad_' + k); out[k] = prefs[k]; }
+  for (const k of ['hide', 'confirm_actions']) if (k in prefs) {
+    const v = prefs[k];
+    if (!Array.isArray(v) || v.length > Object.keys(acts || {}).length ||
+        v.some(x => typeof x !== 'string' || !acts || !Object.prototype.hasOwnProperty.call(acts, x))) bad('bad_' + k);
+    out[k] = [...new Set(v)];
+  }
+  return out;
+}
+function uiPrefsPlan(prefs) {
+  if (!prefs) return { mode: null, hide: [], budget: true };
+  return { mode: { simple: 'simple', pro: 'advanced' }[prefs.density] || null, hide: prefs.hide.slice(),
+           budget: prefs.show_budget };
+}
+function uiFilterDesc(desc, plan) {
+  if (!desc) return null;
+  const drop = new Set(plan.hide.concat(plan.budget ? [] : ['approve.batch']));
+  const panels = desc.panels.map(p => Object.assign({}, p, { items: p.items.filter(it => !(it.action && drop.has(it.action))) }))
+    .filter(p => p.items.some(it => it.type !== 'text'));
+  return Object.assign({}, desc, { panels });
+}
+function uiProfileLabel(it) {
+  const by = it.saved_by === 'agent' ? 'Agent 存的' : it.saved_by === 'human' ? '你存的' : '';
+  return [it.name + (it.title ? '（' + it.title + '）' : ''), by, it.active ? '正在用' : ''].filter(Boolean).join(' · ');
+}
+function uiOnboardingShow(s) {
+  return !!(s && s.enabled && s.needed && !s.active);
+}
+function uiComposeAnswers(questions, picks) {
+  const out = {};
+  for (const q of questions || []) {
+    const vals = q.options.map(o => o.value);
+    let v = picks ? picks[q.id] : undefined;
+    if (q.type === 'many') v = Array.isArray(v) ? v.filter(x => vals.includes(x)) : [];
+    if (q.type === 'many' ? !v.length : !vals.includes(v)) v = q.default;
+    out[q.id] = v;
+  }
+  return out;
+}
+(() => {
+  const ACT = window.__STUDIO__ && window.__STUDIO__.ui_actions;
+  const KEY = 'iamd-ui-desc';
+  const box = document.getElementById('uiDescOn');
+  let on = false, host = null, last = null, reason = '';
+  try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
+  if (box) box.checked = on;
+  const clear = why => { if (host) { host.remove(); host = null; } if (why) { reason = why; console.warn('[uidesc] fallback=' + why); } };
+  const call = name => {
+    const a = ACT && ACT[name];
+    const m = a && /^__([A-Z0-9_]+)__\.([A-Za-z0-9_]+)$/.exec(a.call);
+    const o = m && window['__' + m[1] + '__'];
+    if (o && typeof o[m[2]] === 'function') { try { o[m[2]](); } catch (e) { console.warn('[uidesc] action_error ' + name); } }
+    else console.warn('[uidesc] missing_hook ' + name);
+  };
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const render = d => {
+    const h = el('aside', 'uidesc');
+    h.setAttribute('aria-label', '介面描述檔：' + (d.name || '自訂面板'));
+    h.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:60;width:280px;max-height:70vh;overflow:auto;' +
+      'background:var(--riser,#1B1F26);color:inherit;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px;' +
+      'box-shadow:0 8px 30px rgba(0,0,0,.35);font-size:13px';
+    const head = el('div'); head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px';
+    head.append(el('b', null, d.name || '自訂面板'));
+    const reset = el('button', 'uidesc-reset', '回預設'); reset.type = 'button';
+    reset.addEventListener('click', () => setOn(false));
+    head.append(reset); h.append(head);
+    for (const p of d.panels) {
+      const sec = el('section'); sec.dataset.panel = p.id;
+      sec.append(el('div', 'uidesc-title', p.title));
+      for (const it of p.items) {
+        if (it.type === 'text') { sec.append(el('p', 'uidesc-text', it.text)); continue; }
+        const b = el(it.action ? 'button' : 'div', 'uidesc-' + it.type, it.label);
+        if (it.action) {
+          b.type = 'button'; b.dataset.action = it.action;
+          if (ACT[it.action].spend === 'confirm') b.title = '會打開確認單（花錢前一定先問你）';
+          b.addEventListener('click', () => call(it.action));
+          b.style.cssText = 'display:block;width:100%;margin:4px 0;text-align:left';
+        }
+        sec.append(b);
+      }
+      h.append(sec);
+    }
+    document.body.append(h);
+    host = h;
+  };
+  let lastPrefs = null;
+  const applyPlan = (prefs, plan, changed) => {
+    const b = document.body.dataset;
+    b.uiDensity = prefs ? prefs.density : ''; b.uiHide = plan.hide.join(' '); b.uiBudget = plan.budget ? 'on' : 'off';
+    const S = window.__SIMPLE__;
+    if (changed && plan.mode && S && typeof S.setMode === 'function' && S.mode !== plan.mode) {
+      try { S.setMode(plan.mode); } catch (e) { console.warn('[uidesc] mode_error'); }
+    }
+  };
+  const unplan = () => { const b = document.body.dataset; delete b.uiDensity; delete b.uiHide; delete b.uiBudget; };
+  const load = async force => {
+    if (!on || !ACT) return;
+    let d, pf;
+    try {
+      const r = await fetch('/api/store?keys=ui-desc,ui-prefs');
+      if (!r.ok) return clear('read_' + r.status);
+      const v = (await r.json()).values || {};
+      d = v['ui-desc']; pf = v['ui-prefs'];
+    } catch (e) { return clear('read_error'); }
+    const s = JSON.stringify([d === undefined ? null : d, pf === undefined ? null : pf]);
+    if (!force && s === last) return;
+    last = s;
+    clear();
+    let prefs = null;
+    try { prefs = uiPrefsValidate(pf, ACT); } catch (e) { console.warn('[uidesc] prefs_ignored=' + (e && e.code)); }
+    const plan = uiPrefsPlan(prefs);
+    const sp = JSON.stringify(prefs);
+    applyPlan(prefs, plan, sp !== lastPrefs);
+    lastPrefs = sp;
+    try {
+      const c = uiDescValidate(d, ACT);
+      const f = c && uiFilterDesc(c, plan);
+      if (f && f.panels.length) { render(f); reason = ''; }
+    } catch (e) { clear(e && e.code ? e.code : 'render_error'); }
+  };
+  const setOn = v => {
+    on = !!v;
+    if (box) box.checked = on;
+    try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {}
+    if (on) load(true); else { clear(); unplan(); last = null; lastPrefs = null; }
+  };
+  if (box) box.addEventListener('change', () => setOn(box.checked));
+  window.__UIDESC__ = { reload: () => load(true), state: () => ({ on, shown: !!host, reason }), set: setOn };
+  if (!ACT) return;
+  setInterval(() => { if (on && !document.hidden) load(false); }, 5000);
+  window.addEventListener('focus', () => { if (on) load(false); });
+  if (on) load(true);
+})();
+
+(() => {
+  const open = () => {
+    const b = document.getElementById('go');
+    if (!b) return false;
+    b.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    try { b.focus({ preventScroll: true }); } catch (e) {}
+    return true;
+  };
+  window.__GENERATE__ = { open: open };
+})();
+
+(() => {
+  const S = window.__STUDIO__;
+  const btn = document.getElementById('uiComposeBtn'), resetBtn = document.getElementById('uiResetBtn');
+  if (!S || !S.local || !btn || !resetBtn) return;
+  const api = (method, path, body) => fetch(path, Object.assign({ method }, body ? {
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {})).then(async r => {
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  });
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const close = dlg => { if (dlg) dlg.remove(); };
+  const preview = (box, r) => {
+    box.textContent = '';
+    for (const p of r.desc.panels) {
+      const sec = el('section', 'uicompose-prev'); sec.append(el('b', null, p.title));
+      sec.append(el('div', null, p.items.map(it => it.text || it.label).join(' → ')));
+      box.append(sec);
+    }
+    if (r.notes && r.notes.length) { const n = el('ul', 'uicompose-notes'); r.notes.forEach(x => n.append(el('li', null, x))); box.append(n); }
+  };
+  const openDialog = async () => {
+    let qs;
+    try { qs = (await api('GET', '/api/local/ui-desc?questions=1')).questions; } catch (e) { say('讀不到訪談題目：' + e.message, false); return; }
+    const dlg = el('div', 'uicompose');
+    dlg.setAttribute('role', 'dialog'); dlg.setAttribute('aria-label', '設定我的介面');
+    dlg.style.cssText = 'position:fixed;inset:10vh 50% auto auto;transform:translateX(50%);z-index:70;width:min(560px,92vw);' +
+      'max-height:80vh;overflow:auto;background:var(--riser,#1B1F26);border:1px solid rgba(255,255,255,.12);border-radius:12px;' +
+      'padding:16px;box-shadow:0 12px 40px rgba(0,0,0,.45)';
+    dlg.append(el('h3', null, '設定我的介面'), el('p', null, '回答幾題，系統替你排一個專屬的導演台；套用前可以先預覽。'));
+    const picks = {};
+    for (const q of qs) {
+      const f = el('fieldset'); f.append(el('legend', null, q.ask));
+      for (const o of q.options) {
+        const id = 'uiq-' + q.id + '-' + String(o.value);
+        const inp = document.createElement('input');
+        inp.type = q.type === 'many' ? 'checkbox' : 'radio'; inp.name = 'uiq-' + q.id; inp.id = id;
+        const on0 = q.type === 'many' ? q.default.includes(o.value) : q.default === o.value;
+        inp.checked = on0;
+        inp.addEventListener('change', () => {
+          if (q.type === 'many') {
+            const cur = new Set(picks[q.id] || q.default);
+            inp.checked ? cur.add(o.value) : cur.delete(o.value);
+            picks[q.id] = [...cur];
+          } else picks[q.id] = o.value;
+        });
+        const lab = el('label', null, o.label); lab.htmlFor = id;
+        const row = el('div'); row.append(inp, lab); f.append(row);
+      }
+      dlg.append(f);
+    }
+    const out = el('div', 'uicompose-out');
+    const bar = el('div'); bar.style.cssText = 'display:flex;gap:8px;margin-top:12px';
+    const bPrev = el('button', null, '預覽'), bApply = el('button', null, '套用'), bCancel = el('button', null, '取消');
+    [bPrev, bApply, bCancel].forEach(b => { b.type = 'button'; });
+    bApply.disabled = true;
+    let last = null;
+    bPrev.addEventListener('click', async () => {
+      try { last = await api('POST', '/api/local/ui-desc', { op: 'preview', answers: uiComposeAnswers(qs, picks) }); preview(out, last); bApply.disabled = false; }
+      catch (e) { out.textContent = '預覽失敗：' + e.message; }
+    });
+    bApply.addEventListener('click', async () => {
+      try {
+        await api('POST', '/api/local/ui-desc', { op: 'save', name: 'mine', answers: last ? last.answers : uiComposeAnswers(qs, picks), title: '我的介面' });
+        await api('POST', '/api/local/ui-desc', { op: 'activate', name: 'mine' });
+        if (window.__UIDESC__) window.__UIDESC__.set(true);
+        close(dlg);
+      } catch (e) { out.textContent = '套用失敗：' + e.message; }
+    });
+    bCancel.addEventListener('click', () => close(dlg));
+    bar.append(bPrev, bApply, bCancel);
+    dlg.append(out, bar);
+    document.body.append(dlg);
+  };
+  btn.addEventListener('click', openDialog);
+  const mine = document.getElementById('uiMine'), pick = document.getElementById('uiProfilePick');
+  const applyBtn = document.getElementById('uiApplyBtn'), undoBtn = document.getElementById('uiUndoBtn');
+  const refreshMine = () => api('GET', '/api/local/ui-desc').then(r => {
+    if (!pick) return;
+    pick.textContent = '';
+    for (const it of r.items || []) { const o = el('option', null, uiProfileLabel(it)); o.value = it.name; o.selected = !!it.active; pick.append(o); }
+    if (applyBtn) applyBtn.disabled = !(r.items || []).length;
+    if (undoBtn) undoBtn.disabled = !r.can_undo;
+  }).catch(() => {});
+  if (applyBtn) applyBtn.addEventListener('click', async () => {
+    if (!pick || !pick.value) return;
+    try { await api('POST', '/api/local/ui-desc', { op: 'activate', name: pick.value }); if (window.__UIDESC__) window.__UIDESC__.set(true); refreshMine(); }
+    catch (e) { say('套用失敗：' + e.message, false); }
+  });
+  if (undoBtn) undoBtn.addEventListener('click', async () => {
+    try { await api('POST', '/api/local/ui-desc', { op: 'undo' }); if (window.__UIDESC__) window.__UIDESC__.reload(); refreshMine(); }
+    catch (e) { say('還原失敗：' + e.message, false); }
+  });
+  resetBtn.addEventListener('click', async () => {
+    try { await api('POST', '/api/local/ui-desc', { op: 'reset' }); if (window.__UIDESC__) window.__UIDESC__.reload(); }
+    catch (e) { say('回預設失敗：' + e.message, false); }
+  });
+  let gate = null, gateTimer = null;
+  const closeGate = () => { if (gate) { gate.remove(); gate = null; } clearInterval(gateTimer); gateTimer = null; };
+  const checkGate = () => api('GET', '/api/local/ui-desc?onboarding=1').then(s => {
+    if (!uiOnboardingShow(s)) { closeGate(); if (s.active && window.__UIDESC__) window.__UIDESC__.set(true); return; }
+    if (gate) return;
+    gate = el('div', 'uionboard');
+    gate.setAttribute('role', 'dialog'); gate.setAttribute('aria-label', '打造你的介面');
+    gate.style.cssText = 'position:fixed;inset:0;z-index:65;display:flex;align-items:center;justify-content:center;' +
+      'background:rgba(13,15,19,.92)';
+    const card = el('div'); card.style.cssText = 'width:min(560px,92vw);background:var(--riser,#1B1F26);border-radius:12px;padding:24px';
+    card.append(el('h2', null, '先打造你的介面'),
+      el('p', null, '每個人拍片的方式不一樣。先跟你的 Agent（Claude Code、影片助手，透過 MCP）聊你想怎麼拍，它會直接幫你排好導演台；'
+        + '或是回答幾題快速建立。之後隨時可以說「回預設」或「還原」。'));
+    const row = el('div'); row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px';
+    const quick = el('button', null, '用幾個問題快速建立'), skip = el('button', null, '先用預設框架');
+    quick.type = skip.type = 'button';
+    quick.addEventListener('click', openDialog);
+    skip.addEventListener('click', () => api('POST', '/api/local/ui-desc', { op: 'skip_onboarding' }).then(closeGate)
+      .catch(e => say('跳過失敗：' + e.message, false)));
+    row.append(quick, skip); card.append(row); gate.append(card);
+    document.body.append(gate);
+    gateTimer = setInterval(checkGate, 3000);
+  }).catch(() => {});
+  api('GET', '/api/local/ui-profiles').then(info => {
+    btn.hidden = resetBtn.hidden = !info.on;
+    if (undoBtn) undoBtn.hidden = !info.on;
+    if (mine) mine.hidden = !info.on;
+    if (info.on) { refreshMine(); if (info.onboarding) checkGate(); }
+  }).catch(() => {});
+})();
+(function studioPbM6() {
+  const KEY = 'iamd-pb-m6';
+  const NEW = { color_grade: 1, watermark: 1, speed: 1, cover: 1 };
+  const box = document.getElementById('pbM6');
+  let on = false;
+  try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
+  if (box) {
+    box.checked = on;
+    box.onchange = () => { on = box.checked; try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {} };
+  }
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  let IMGS = null, imgsLoading = false;
+  function loadImgs(repaint) {
+    if (IMGS || imgsLoading) return;
+    imgsLoading = true;
+    fetch('/api/assets?limit=100').then(r => r.json())
+      .then(d => { IMGS = (d.data || []).filter(a => /^ast_/.test(a.id || '') && /image/.test(String(a.type || a.mime || a.kind || 'image'))); })
+      .catch(() => { IMGS = []; })
+      .finally(() => { imgsLoading = false; repaint(); });
+  }
+  function logoPick(val, set, repaint) {
+    const x = el('select', 'r7-in pb-param');
+    if (!IMGS) { loadImgs(repaint); x.append(el('option', null, '讀取素材中…')); x.disabled = true; return x; }
+    const o0 = el('option', null, IMGS.length ? '— 選一張圖片素材（png／jpeg）' : '素材庫沒有圖片：先到「素材」上傳 logo'); o0.value = ''; x.append(o0);
+    IMGS.forEach(a => { const o = el('option', null, a.name || a.id); o.value = a.id; x.append(o); });
+    if (val && !IMGS.some(a => a.id === val)) { const o = el('option', null, val); o.value = val; x.append(o); }
+    x.value = val || '';
+    x.onchange = () => set(x.value || undefined);
+    return x;
+  }
+
+  function control(b, k, spec, cur, set, repaint) {
+    if (!on || !b || !NEW[b.id] || !spec) return undefined;
+    const lab = (b.labels && b.labels[k]) || {};
+    const val = Object.prototype.hasOwnProperty.call(cur, k) ? cur[k] : spec.default;
+    if (b.id === 'watermark') {
+      const kind = Object.prototype.hasOwnProperty.call(cur, 'kind') ? cur.kind : (b.params.kind || {}).default;
+      if (k === 'logo' && kind !== 'image') return null;
+      if (k === 'text' && kind === 'image') return null;
+    }
+    let input;
+    if (spec.type === 'enum') {
+      input = el('select', 'r7-in pb-param');
+      const names = {};
+      (lab.values || []).forEach(x => { names[String(x.value)] = x.label; });
+      spec.values.forEach(v => {
+        const o = el('option', null, names[String(v)] || String(v)); o.value = String(v);
+        input.append(o);
+      });
+      input.value = String(val);
+      input.onchange = () => { set(spec.values.find(x => String(x) === input.value)); if (k === 'kind') repaint(); };
+    } else if (b.id === 'watermark' && k === 'logo') {
+      input = logoPick(val, set, repaint);
+    } else if (spec.type === 'text') {
+      input = el('input', 'r7-in pb-param'); input.type = 'text';
+      if (spec.max != null) input.maxLength = spec.max;
+      input.value = val == null ? '' : String(val);
+      if (b.id === 'watermark' && k === 'text') input.placeholder = '必填：要疊在畫面上的字';
+      input.oninput = () => set(input.value);
+    } else if (spec.type === 'number') {
+      input = el('input', 'r7-in pb-param'); input.type = 'number';
+      if (spec.min != null) input.min = spec.min;
+      if (spec.max != null) input.max = spec.max;
+      input.step = 'any';
+      input.value = val == null ? '' : String(val);
+      if (spec.nullable) input.placeholder = '空白';
+      input.onchange = () => {
+        const t = String(input.value).trim();
+        if (t === '') set(spec.nullable ? null : undefined);
+        else set(Number(t));
+      };
+    } else if (spec.type === 'bool') {
+      input = el('input', 'pb-param'); input.type = 'checkbox'; input.checked = !!val;
+      input.onchange = () => set(input.checked);
+    } else {
+      return undefined;
+    }
+    input.dataset.param = k;
+    input.setAttribute('aria-label', (b.label || b.id) + '：' + (lab.name || k));
+    const wrap = el('label', 'pb-pl');
+    wrap.append(el('span', null, lab.name || k), input);
+    return wrap;
+  }
+  const css = document.createElement('style');
+  css.textContent = '.pb-pl{display:inline-flex;flex-direction:column;gap:2px;margin:0;font-size:var(--fs-s,12px)}.pb-pl>span{opacity:.7}';
+  let styled = false;
+  window.__PB_M6__ = {
+    control(b, k, spec, cur, set, repaint) {
+      const r = control(b, k, spec, cur || {}, set, repaint);
+      if (r && !styled) { styled = true; document.head.append(css); }
+      return r;
+    },
+    isOn: () => on,
+  };
+})();
+(function studioDirctl() {
+  const DC_XS = { left: 'frame left', center: 'frame center', right: 'frame right' };
+  const DC_DEPTHS = { front: 'in the foreground', mid: 'in the midground', back: 'in the background' };
+  const DC_FACINGS = { camera: 'facing the camera', left: 'facing left', right: 'facing right', away: 'facing away' };
+  const DC_HOLD = 'Characters keep their screen positions.';
+  const DC_LIMIT = { text: 120, name: 40, note: 200, notes: 10, actors: 8 };
+  const DC_TEXT = ['lens', 'style', 'color', 'light', 'location', 'sound'];
+  const dcTxt = (v, lim) => String(v == null ? '' : v).replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, lim);
+  const dcStrip = (s, chars) => { let t = s; while (t && chars.includes(t[t.length - 1])) t = t.slice(0, -1); return t; };
+  function dcWhere(m) {
+    const segs = m.x ? [DC_XS[m.x]] : [];
+    if (m.depth) segs.push(DC_DEPTHS[m.depth]);
+    return segs.join(' ');
+  }
+  function dcMark(x, depth) {
+    const m = {};
+    if (DC_XS[x]) m.x = x;
+    if (DC_DEPTHS[depth]) m.depth = depth;
+    return m;
+  }
+  function dcBlocking(list) {
+    const rows = (Array.isArray(list) ? list : []).map(b => Object.assign({}, b, { name: dcTxt(b && b.name, DC_LIMIT.name) }));
+    const names = new Set(), out = [];
+    rows.forEach(b => {
+      if (out.length >= DC_LIMIT.actors || !b.name || names.has(b.name) || !DC_XS[b.x]) return;
+      names.add(b.name);
+      const one = { name: b.name, at: dcMark(b.x, b.depth) };
+      const fc = dcTxt(b.facing, DC_LIMIT.name);
+      if (fc && fc !== b.name && (DC_FACINGS[fc] || rows.some(o => o.name === fc))) one.facing = fc;
+      const to = dcMark(b.tox, b.todepth);
+      if (to.x || to.depth) one.to = to;
+      const act = dcTxt(b.action, DC_LIMIT.text);
+      if (act) one.action = act;
+      out.push(one);
+    });
+    return out;
+  }
+  function dcBlockingLine(blocking) {
+    if (!blocking.length) return '';
+    const parts = blocking.map(b => {
+      let s = b.name + ' stands ' + dcWhere(b.at);
+      if (b.facing) s += ', ' + (DC_FACINGS[b.facing] || 'facing ' + b.facing);
+      if (b.action) s += ', ' + dcStrip(b.action, ' .。');
+      if (b.to) s += ', then moves to ' + dcWhere(b.to);
+      return s;
+    });
+    let line = 'Blocking: ' + parts.join('; ') + '.';
+    if (blocking.length > 1 && !blocking.some(b => b.to)) line += ' ' + DC_HOLD;
+    return line;
+  }
+  function dcPerformance(list) {
+    const seen = new Set(), out = [];
+    (Array.isArray(list) ? list : []).forEach(p => {
+      const name = dcTxt(p && p.name, DC_LIMIT.name);
+      if (out.length >= DC_LIMIT.actors || !name || seen.has(name)) return;
+      const notes = String((p && p.notes) || '').split('\n').map(n => dcTxt(n, DC_LIMIT.note)).filter(Boolean).slice(0, DC_LIMIT.notes);
+      if (!notes.length) return;
+      seen.add(name);
+      out.push({ name, notes });
+    });
+    return out;
+  }
+  function dcPerformanceLines(perf) {
+    return perf.map(p => 'Performance (' + p.name + '): ' + p.notes.map(n => dcStrip(n, '.。')).join('; ') + '.');
+  }
+  function dcControls(dc, cam) {
+    const c = {};
+    const mv = dc && dc.move;
+    if (mv && !(cam && cam.move)) {
+      c.camera_move = mv;
+      if (dc.speed) c.speed = dc.speed;
+      ['direction', 'end'].forEach(k => { const t = dcTxt(dc[k], DC_LIMIT.text); if (t) c[k] = t; });
+      if (dc.allow_cuts === true) c.allow_cuts = true;
+    }
+    DC_TEXT.forEach(k => { const t = dcTxt(dc && dc[k], DC_LIMIT.text); if (t) c[k] = t; });
+    return Object.keys(c).length ? c : null;
+  }
+  const SC_MOVES = { static: 'static shot', pan_left: 'pan left', pan_right: 'pan right', tilt_up: 'tilt up', tilt_down: 'tilt down',
+    dolly_in: 'dolly in', dolly_out: 'dolly out', zoom_in: 'zoom in', zoom_out: 'zoom out', truck_left: 'truck left', truck_right: 'truck right',
+    pedestal_up: 'pedestal up', pedestal_down: 'pedestal down', arc: 'arc shot around the subject', tracking: 'tracking shot following the subject',
+    handheld: 'handheld camera with slight natural shake', whip_pan: 'whip pan', crane_up: 'crane up', crane_down: 'crane down',
+    aerial: 'aerial drone shot', tiny_planet: 'tiny planet 360-degree view', orbit_360: '360-degree orbit around the subject',
+    bullet_time: 'bullet time, time frozen while the camera moves around the subject', camera_roll: 'camera roll rotating around the lens axis',
+    dolly_zoom: 'dolly zoom (vertigo effect)', rack_focus: 'rack focus from foreground to background', crash_zoom: 'crash zoom',
+    fpv_drone: 'FPV drone flying through the space', top_down_drop: 'top-down dive dropping toward the subject',
+    bolt_cam: 'high-speed robotic arm bolt cam move' };
+  const SC_SPEEDS = { slow: 'slow', medium: '', fast: 'fast' };
+  const SC_TEXT = ['lens', 'color', 'light', 'location', 'sound', 'style'];
+  const SC_LABEL = { lens: 'Lens', color: 'Color', light: 'Light', location: 'Location', sound: 'Sound', style: 'Style' };
+  const SC_CONTINUOUS = 'Single continuous shot from start to end.';
+  const scTxt = v => dcStrip(String(v == null ? '' : v).replace(/[\x00-\x1f\x7f]/g, ' ').trim().replace(/\s{2,}/g, ' ').slice(0, DC_LIMIT.text), ' .。');
+  function dcCtlLines(c) {
+    if (!c) return [];
+    const out = [];
+    const mv = c.camera_move;
+    if (mv && SC_MOVES[mv]) {
+      let head = SC_MOVES[mv];
+      if (mv !== 'static') {
+        const sp = SC_SPEEDS[c.speed || ''] || '';
+        head = (sp ? sp + ' ' : '') + head;
+        const d = scTxt(c.direction);
+        if (d) head += ' ' + d;
+      }
+      let line = 'Camera: ' + head;
+      const e = scTxt(c.end);
+      if (mv !== 'static' && e) line += ', ending on ' + e + ' and then holding still';
+      out.push(line + '.');
+    }
+    SC_TEXT.forEach(k => { const t = scTxt(c[k]); if (t) out.push(SC_LABEL[k] + ': ' + t + '.'); });
+    if (mv && SC_MOVES[mv] && c.allow_cuts !== true) out.push(SC_CONTINUOUS);
+    return out;
+  }
+  function dcInfo(dc, cam) {
+    const lines = [dcBlockingLine(dcBlocking(dc && dc.blocking))].concat(dcPerformanceLines(dcPerformance(dc && dc.perf))).filter(Boolean);
+    return { by: dc && (dc.by === 'agent' || dc.by === 'human') ? dc.by : '', lines, ctl: dcCtlLines(dcControls(dc, cam)) };
+  }
+  const DC_SEG_END = '(?= Performance \\(| Style: | Lens: | Color: | Light: | Location: | Sound: | Single continuous shot|$)';
+  function dcDerive(prompt, controls, stops) {
+    const cutStops = x => (stops || []).reduce((acc, st) => { const k = st ? acc.indexOf(st) : -1; return k > 0 ? acc.slice(0, k) : acc; }, x).trim();
+    const t = String(prompt || '');
+    const lines = [];
+    const b = t.match(new RegExp('Blocking: [\\s\\S]*?' + DC_SEG_END));
+    if (b) lines.push(cutStops(b[0]));
+    (t.match(new RegExp('Performance \\([^)]{1,40}\\): [\\s\\S]*?' + DC_SEG_END, 'g')) || []).forEach(x => lines.push(cutStops(x)));
+    const ctl = dcCtlLines(controls);
+    if (!lines.length && !ctl.length) return null;
+    return { by: '', kept: true, lines: lines.filter(Boolean), ctl };
+  }
+  function dcApply(p, dc, cam) {
+    if (!dc) return p;
+    const extra = [dcBlockingLine(dcBlocking(dc.blocking))].concat(dcPerformanceLines(dcPerformance(dc.perf))).filter(Boolean);
+    const ctl = dcControls(dc, cam);
+    if (!extra.length && !ctl) return p;
+    const out = Object.assign({}, p);
+    if (extra.length) out.prompt = (String(out.prompt || '').trim() + ' ' + extra.join(' ')).trim();
+    if (ctl) out.controls = ctl;
+    out._dc = dcInfo(dc, cam);
+    return out;
+  }
+  function dcDesc(dc, cam, prompt) {
+    const ctl = dcControls(dc, cam) || {};
+    const camera = {};
+    [['camera_move', 'move'], ['speed', 'speed'], ['direction', 'direction'], ['end', 'end'], ['allow_cuts', 'allow_cuts']]
+      .forEach(([a, b]) => { if (ctl[a] !== undefined) camera[b] = ctl[a]; });
+    const d = { version: 1, prompt: dcTxt(prompt, 2000), camera,
+                blocking: dcBlocking(dc && dc.blocking), performance: dcPerformance(dc && dc.perf) };
+    DC_TEXT.forEach(k => { if (ctl[k]) d[k] = ctl[k]; });
+    return d;
+  }
+  window.__DIRCTL_PURE__ = { dcBlocking, dcBlockingLine, dcPerformance, dcPerformanceLines, dcControls, dcApply, dcDesc, dcCtlLines, dcInfo, dcDerive };
+  if (!window.__STUDIO__) return;
+
+  const KEY = 'iamd-dc-panel';
+  const LOCAL = !!window.__STUDIO__.local;
+  const box = document.getElementById('dcPanel');
+  let on = false;
+  try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
+  let CAT = null, loading = null;
+  const repaint = () => { try { if (typeof window.renderShots === 'function') window.renderShots(); } catch (e) {} };
+  function load() {
+    if (CAT || loading) return;
+    loading = fetch('/api/dir-controls').then(r => r.ok ? r.json() : null)
+      .then(d => { loading = null; if (d && Array.isArray(d.moves)) { CAT = d; repaint(); } })
+      .catch(() => { loading = null; });
+  }
+  if (box) {
+    box.checked = on;
+    box.onchange = () => {
+      on = box.checked;
+      try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {}
+      if (on) load();
+      repaint();
+    };
+  }
+  if (on) load();
+
+  window.__DIRCTL_PAYLOAD__ = function (p, s) {
+    if (!s || !s.dc) return p;
+    try { return dcApply(p, s.dc, s.cam); } catch (e) { console.warn('[dirctl] fallback', e && e.name); return p; }
+  };
+
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const XS_ZH = { left: '左', center: '中', right: '右' }, DEPTH_ZH = { front: '前景', mid: '中景', back: '後景' };
+  const FACING_ZH = { camera: '面向鏡頭', left: '面向左', right: '面向右', away: '背對鏡頭' };
+  const SPEED_ZH = { slow: '緩慢', medium: '中速', fast: '快速' };
+  function pick(label, map, val, blank) {
+    const s = el('select');
+    s.setAttribute('aria-label', label);
+    const o0 = el('option', null, blank || '—'); o0.value = ''; s.append(o0);
+    Object.keys(map).forEach(k => { const o = el('option', null, map[k]); o.value = k; if (val === k) o.selected = true; s.append(o); });
+    return s;
+  }
+  function labeled(name, input) { const l = el('label', 'dc-l'); l.append(el('span', null, name), input); return l; }
+  function textIn(label, val, max, ph) {
+    const i = el('input'); i.type = 'text'; i.value = val || ''; i.maxLength = max; i.setAttribute('aria-label', label);
+    if (ph) i.placeholder = ph;
+    return i;
+  }
+
+  function panel(sh, i) {
+    const dc = sh.dc || {};
+    const save = () => {
+      const clean = {};
+      Object.keys(dc).forEach(k => {
+        const v = dc[k];
+        if (v === '' || v === false || v == null || (Array.isArray(v) && !v.length)) return;
+        clean[k] = v;
+      });
+      delete clean.by;
+      if (Object.keys(clean).length) sh.dc = Object.assign(clean, { by: 'human' }); else delete sh.dc;
+      if (sh.sid) touched.add(sh.sid);
+      saveShots();
+    };
+    const wrap = el('details', 'dc-row');
+    wrap.dataset.i = String(i);
+    if (sh.dc) wrap.open = true;
+    wrap.append(el('summary', null, '導演控制 · 走位、表演、運鏡'));
+
+    const moves = {};
+    CAT.moves.forEach(m => { moves[m.id] = m.zh + (m.rare ? '（冷門）' : ''); });
+    const mv = pick('運鏡', moves, dc.move, '— 不指定');
+    const sp = pick('速度', SPEED_ZH, dc.speed);
+    const dir = textIn('方向', dc.direction, CAT.max_text, '例：toward 對方');
+    const end = textIn('停在哪', dc.end, CAT.max_text, '例：a close-up of 對方');
+    const cuts = el('input'); cuts.type = 'checkbox'; cuts.checked = dc.allow_cuts === true; cuts.setAttribute('aria-label', '允許剪接');
+    const camNote = el('div', 'dc-note');
+    const paintNote = () => {
+      camNote.textContent = sh.cam && sh.cam.move && dc.move ? '上方運鏡帶已經設了運鏡，這裡的運鏡不會送（一鏡只收一種）。' : '';
+    };
+    const syncCam = () => {
+      dc.move = mv.value; dc.speed = sp.value; dc.direction = dir.value; dc.end = end.value; dc.allow_cuts = cuts.checked;
+      paintNote(); save();
+    };
+    [mv, sp, cuts].forEach(x => { x.onchange = syncCam; });
+    [dir, end].forEach(x => { x.oninput = syncCam; });
+    const camRow = el('div', 'dc-f');
+    const cutsL = el('label', 'dc-l dc-chk'); cutsL.append(cuts, el('span', null, '允許剪接'));
+    camRow.append(labeled('運鏡', mv), labeled('速度', sp), labeled('方向', dir), labeled('停在哪', end), cutsL);
+    paintNote();
+
+    const txtRow = el('div', 'dc-f');
+    CAT.text_fields.forEach(k => {
+      const inp = textIn(CAT.labels[k] || k, dc[k], CAT.max_text);
+      inp.oninput = () => { dc[k] = inp.value; save(); };
+      txtRow.append(labeled(CAT.labels[k] || k, inp));
+    });
+
+    const blk = el('div', 'dc-list');
+    const paintBlk = () => {
+      blk.textContent = '';
+      blk.append(el('div', 'dc-h', '走位'));
+      (dc.blocking || []).forEach((b, k) => {
+        const r = el('div', 'dc-f dc-item');
+        const nm = textIn('角色名字', b.name, DC_LIMIT.name, '角色');
+        const x = pick('站位 左中右', XS_ZH, b.x), dp = pick('站位 前後', DEPTH_ZH, b.depth);
+        const fc = textIn('面向', FACING_ZH[b.facing] || b.facing, DC_LIMIT.name, '面向鏡頭／另一個角色的名字');
+        fc.setAttribute('list', 'dcFacings');
+        const tx = pick('走到 左中右', XS_ZH, b.tox, '不走動'), td = pick('走到 前後', DEPTH_ZH, b.todepth);
+        const act = textIn('動作', b.action, DC_LIMIT.text, '例：picks up the mop');
+        const rm = el('button', 'r2-mini', '✕'); rm.type = 'button'; rm.title = '移除這個角色';
+        const sync = () => {
+          Object.assign(b, { name: nm.value, x: x.value, depth: dp.value, facing: FACING_KEYS[fc.value] || fc.value,
+                             tox: tx.value, todepth: td.value, action: act.value });
+          save();
+        };
+        [x, dp, tx, td].forEach(e => { e.onchange = sync; });
+        [nm, fc, act].forEach(e => { e.oninput = sync; });
+        rm.onclick = () => { dc.blocking.splice(k, 1); save(); paintBlk(); };
+        r.append(labeled('角色', nm), labeled('站位', x), labeled('前後', dp), labeled('面向', fc),
+                 labeled('走到', tx), labeled('走到前後', td), labeled('動作', act), rm);
+        blk.append(r);
+      });
+      const add = el('button', 'r2-mini', '＋ 加一個角色'); add.type = 'button';
+      add.disabled = (dc.blocking || []).length >= DC_LIMIT.actors;
+      add.onclick = () => { dc.blocking = (dc.blocking || []).concat([{ name: '', x: 'center' }]); save(); paintBlk(); };
+      blk.append(add);
+    };
+    paintBlk();
+
+    const perf = el('div', 'dc-list');
+    const paintPerf = () => {
+      perf.textContent = '';
+      perf.append(el('div', 'dc-h', '表演筆記'));
+      (dc.perf || []).forEach((p, k) => {
+        const r = el('div', 'dc-f dc-item');
+        const nm = textIn('角色名字', p.name, DC_LIMIT.name, '角色');
+        const notes = el('textarea'); notes.value = p.notes || ''; notes.rows = 2;
+        notes.placeholder = '一行一條，例：nervous, avoids eye contact'; notes.setAttribute('aria-label', '表演筆記');
+        const rm = el('button', 'r2-mini', '✕'); rm.type = 'button'; rm.title = '移除這份筆記';
+        nm.oninput = () => { p.name = nm.value; save(); };
+        notes.oninput = () => { p.notes = notes.value; save(); };
+        rm.onclick = () => { dc.perf.splice(k, 1); save(); paintPerf(); };
+        r.append(labeled('角色', nm), labeled('筆記', notes), rm);
+        perf.append(r);
+      });
+      const add = el('button', 'r2-mini', '＋ 加表演筆記'); add.type = 'button';
+      add.disabled = (dc.perf || []).length >= DC_LIMIT.actors;
+      add.onclick = () => { dc.perf = (dc.perf || []).concat([{ name: '', notes: '' }]); save(); paintPerf(); };
+      perf.append(add);
+    };
+    paintPerf();
+
+    wrap.append(camRow, camNote, txtRow, blk, perf);
+
+    if (LOCAL) {
+      const btn = el('button', 'r2-mini', '預覽送出句'); btn.type = 'button';
+      const out = el('div', 'dc-prev');
+      btn.onclick = () => {
+        out.textContent = '組句中…';
+        fetch('/api/dir-controls/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify(dcDesc(dc, sh.cam, sh.prompt)) })
+          .then(r => r.json().then(d => ({ ok: r.ok, d })))
+          .then(({ ok, d }) => {
+            out.textContent = ok ? d.prompt + (d.warnings && d.warnings.length ? '\n⚠ ' + d.warnings.join('、') : '')
+                                 : '組不出來：' + ((d && d.error) || '未知的錯誤');
+          })
+          .catch(() => { out.textContent = '組不出來：連不到本機伺服器'; });
+      };
+      wrap.append(btn, out);
+    }
+    return wrap;
+  }
+  const FACING_KEYS = {};
+  Object.keys(FACING_ZH).forEach(k => { FACING_KEYS[FACING_ZH[k]] = k; });
+
+  const BY_ZH = { agent: 'Agent 寫入', human: '你寫的' };
+  const byText = by => BY_ZH[by] || '來源不明';
+  const CTL_ON = window.__STUDIO__.cast_refs === 'blocks';
+  function infoList(info, box, note) {
+    info.lines.forEach(t => box.append(el('div', 'dc-line', t)));
+    if (info.ctl.length) {
+      if (CTL_ON) info.ctl.forEach(t => box.append(el('div', 'dc-line', t)));
+      else box.append(el('div', note, '另有運鏡／六欄（' + info.ctl.length + ' 句），這個伺服器目前不套用，不會加進提示詞'));
+    }
+  }
+  function mark(sh, i) {
+    const info = dcInfo(sh.dc, sh.cam);
+    const d = el('details', 'dc-mark');
+    d.dataset.i = String(i);
+    d.append(el('summary', null, '🎬 導演控制（' + byText(sh.dc.by) + '）'));
+    const body = el('div', 'dc-mark-b');
+    body.append(el('div', 'dc-note', '送件時加進提示詞的句子：'));
+    infoList(info, body, 'dc-note');
+    const clr = el('button', 'r2-mini', '清除這一鏡的導演控制'); clr.type = 'button';
+    clr.title = '清掉之後送件不再帶；上一版留著，Agent 可以還原';
+    clr.onclick = () => {
+      sh.dc_prev = sh.dc; delete sh.dc;
+      if (sh.sid) touched.add(sh.sid);
+      saveShots(); window.renderShots();
+    };
+    body.append(clr);
+    d.append(body);
+    return d;
+  }
+  function paintMarks() {
+    document.querySelectorAll('#sbTable .sbrow').forEach(row => {
+      const i = Number(row.dataset.i);
+      const sh = typeof shots !== 'undefined' ? shots[i] : null;
+      if (!sh || !sh.dc) return;
+      let after = row;
+      while (after.nextElementSibling && !after.nextElementSibling.classList.contains('sbrow') &&
+             !after.nextElementSibling.classList.contains('dc-mark')) after = after.nextElementSibling;
+      if (after.nextElementSibling && after.nextElementSibling.classList.contains('dc-mark')) return;
+      addCss();
+      after.after(mark(sh, i));
+    });
+  }
+  function sheet(info) {
+    if (!info) return null;
+    const d = el('div', 'r2-sheet');
+    d.dataset.agent = 'dirctl-sheet';
+    d.append(el('div', 't', '導演控制（' + (info.kept ? '沿用原本那一件' : byText(info.by)) + '）'));
+    infoList(info, d, 'dc-sheet-note');
+    return d;
+  }
+
+  const prevRender = window.renderShots;
+  if (typeof prevRender === 'function') {
+    window.renderShots = function () {
+      const r = prevRender.apply(this, arguments);
+      if (!on) { try { paintMarks(); } catch (e) { console.warn('[dirctl] 標記', e && e.name); } return r; }
+      if (!CAT) return r;
+      try {
+        addCss();
+        if (!document.getElementById('dcFacings')) {
+          const dl = el('datalist'); dl.id = 'dcFacings';
+          Object.keys(FACING_ZH).forEach(k => { const o = el('option'); o.value = FACING_ZH[k]; dl.append(o); });
+          document.body.append(dl);
+        }
+        document.querySelectorAll('#sbTable .sbrow').forEach(row => {
+          const i = Number(row.dataset.i);
+          const sh = typeof shots !== 'undefined' ? shots[i] : null;
+          if (!sh) return;
+          let after = row;
+          while (after.nextElementSibling && !after.nextElementSibling.classList.contains('sbrow') &&
+                 !after.nextElementSibling.classList.contains('dc-row')) after = after.nextElementSibling;
+          if (after.nextElementSibling && after.nextElementSibling.classList.contains('dc-row')) return;
+          after.after(panel(sh, i));
+        });
+      } catch (e) { console.warn('[dirctl] 分鏡列', e && e.name); }
+      return r;
+    };
+  }
+
+  let css = null;
+  const addCss = () => {
+    if (css) return;
+    css = el('style');
+    css.textContent = '.dc-row{margin:-4px 0 10px 32px;padding:6px 10px;border:1px dashed var(--edge,rgba(240,236,226,.18));border-radius:8px}' +
+    '.dc-row>summary{cursor:pointer;font-size:var(--fs-s,12px);opacity:.8;padding:2px 0}' +
+    '.dc-f{display:flex;flex-wrap:wrap;gap:6px;align-items:flex-end;margin-top:6px}' +
+    '.dc-l{display:flex;flex-direction:column;gap:3px;margin:0;min-width:7em;flex:1}.dc-l>span{font-size:var(--fs-s,12px);opacity:.7}' +
+    '.dc-chk{flex-direction:row;align-items:center;flex:0 0 auto}.dc-h{margin-top:8px;font-size:var(--fs-s,12px);opacity:.7}' +
+    '.dc-note{font-size:var(--fs-s,12px);color:var(--grease,#e8a33d)}.dc-item textarea{min-height:2.6em}' +
+    '.dc-prev{white-space:pre-wrap;font:var(--fs-s,12px)/1.4 var(--mono,monospace);margin-top:6px;opacity:.85}' +
+    '.dc-mark{margin:-4px 0 10px 32px;font-size:var(--fs-s,12px)}.dc-mark>summary{cursor:pointer;display:inline-block;padding:2px 8px;' +
+    'border:1px solid var(--grease,#e8a33d);border-radius:999px}.dc-mark-b{padding:6px 2px}.dc-line{font-family:var(--mono,monospace)}';
+    document.head.append(css);
+  };
+  let seenKey = null, seenRev = null, pending = false;
+  const touched = new Set();
+  function rowEls(i) {
+    const row = document.querySelector('#sbTable .sbrow[data-i="' + i + '"]');
+    const out = [];
+    for (let n = row; n && (n === row || !n.classList.contains('sbrow')); n = n.nextElementSibling) out.push(n);
+    return out;
+  }
+  const editing = i => { const a = document.activeElement; return !!a && rowEls(i).some(n => n.contains(a)); };
+  function repaintRow(i) {
+    if (!on || !CAT) return;
+    const old = rowEls(i).find(n => n.classList.contains('dc-row'));
+    if (old) old.replaceWith(panel(shots[i], i));
+  }
+  function applyBoard(board) {
+    let left = false;
+    (Array.isArray(board) ? board : []).forEach((srv, k) => {
+      if (!srv || typeof srv !== 'object') return;
+      const i = srv.sid ? shots.findIndex(x => x && x.sid === srv.sid) : k;
+      const sh = shots[i];
+      if (!sh) return;
+      if (JSON.stringify(sh.dc || null) === JSON.stringify(srv.dc || null) &&
+          JSON.stringify(sh.dc_prev || null) === JSON.stringify(srv.dc_prev || null)) return;
+      if (editing(i)) { left = true; return; }
+      if (srv.dc) sh.dc = srv.dc; else delete sh.dc;
+      if (srv.dc_prev) sh.dc_prev = srv.dc_prev; else delete sh.dc_prev;
+      repaintRow(i);
+    });
+    return left;
+  }
+  function pollOnce() {
+    const key = typeof shotsKey === 'function' ? shotsKey() : '';
+    if (!/^sb_/.test(key) || document.hidden) return Promise.resolve();
+    return fetch('/api/works/shot-dirctl?key=' + encodeURIComponent(key)).then(r => r.ok ? r.json() : null).then(d => {
+      if (!d || typeof d.rev !== 'number') return;
+      if (key !== seenKey) { seenKey = key; seenRev = d.rev; pending = false; return; }
+      if (d.rev === seenRev && !pending) return;
+      seenRev = d.rev; touched.clear();
+      return fetch('/api/store?key=' + encodeURIComponent(key)).then(r => r.ok ? r.json() : null)
+        .then(b => { if (b && key === shotsKey()) pending = applyBoard(b.value); });
+    }).catch(() => {});
+  }
+  if (LOCAL) setInterval(pollOnce, 4000);
+
+  function mergeBack(d) {
+    if (typeof d.rev === 'number') { seenRev = d.rev; touched.clear(); pending = false; }
+    const agent = [];
+    (d.merged || []).forEach(m => {
+      const i = shots.findIndex(x => x && x.sid === m.sid);
+      const sh = shots[i];
+      if (!sh) return;
+      if (m.dc) sh.dc = m.dc; else delete sh.dc;
+      if (m.dc_prev) sh.dc_prev = m.dc_prev; else delete sh.dc_prev;
+      if (m.kept === 'agent') { agent.push(i + 1); if (!editing(i)) repaintRow(i); }
+    });
+    if (agent.length && typeof say === 'function') say('Agent 剛改了第 ' + agent.join('、') + ' 鏡的導演控制，已經保留（你這次的修改照樣存了）', true);
+    return d.merged;
+  }
+  const origSave = window.saveShots;
+  if (LOCAL && typeof origSave === 'function') {
+    window.saveShots = function () {
+      const key = typeof shotsKey === 'function' ? shotsKey() : '';
+      if (!/^sb_/.test(key) || key !== seenKey || typeof seenRev !== 'number') return origSave.apply(this, arguments);
+      return fetch('/api/store?key=' + key, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ value: shots, dirctl: { rev: seenRev, touched: Array.from(touched) } }) })
+        .then(r => (r.ok ? r.json().then(d => { if (d && Array.isArray(d.merged)) mergeBack(d); return true; }) : false))
+        .catch(() => false);
+    };
+  }
+  window.__DIRCTL__ = { isOn: () => on, pollOnce, sheet, derive: (p, stops) => dcDerive(p && p.prompt, p && p.controls, stops) };
+})();
+(function studioPrevisRig() {
+  const KEY = 'iamd-previs-rig';
+  const box = document.getElementById('pvRig');
+  let on = false;
+  try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
+  if (box) {
+    box.checked = on;
+    box.onchange = () => { on = box.checked; try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {} };
+  }
+  const LOCAL = !!(window.__STUDIO__ && window.__STUDIO__.local);
+  function rig(scene, spec) {
+    return fetch('/api/previs-rig', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ scene, spec }) })
+      .then(r => r.json().then(d => { if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status)); return d; }));
+  }
+  window.__PREVIS_RIG__ = {
+    isOn: () => on,
+    ctx: () => (LOCAL ? { rigOn: true, rig } : { rigOn: true }),
+  };
 })();
 </script>

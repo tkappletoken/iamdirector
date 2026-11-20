@@ -29,14 +29,14 @@ const SERVER_FILES = [
   'upstream.py', 'studio_store.py', 'studio_tools.py', 'storyboard.py', 'qc.py', 'page_strip.py',
   'export_spec.py', 'export_lambda/render.py', 'export_lambda/twist.py', 'scripts/export_local.py', 'templates.py',
   'cast_refs.py', 'shot_controls.py',
-  'takes.py', 'gen_retry.py', 'local/agent_exec.py',
+  'takes.py', 'gen_retry.py', 'local/agent_exec.py', 'local/ui_profiles.py',
   // the whole filming/ package (tools/oss/export-oss.mjs fails if a .py in filming/ or postblocks/ at the commit is missing here; filming/self_improve.py is excluded there)
   'filming/__init__.py', 'filming/agent_cli.py', 'filming/agent_demo.py', 'filming/agent_loop.py', 'filming/blender.py',
   'filming/blockout.py', 'filming/blockout_frames.py', 'filming/camera_moves.py', 'filming/camera_path.py',
   'filming/camera_rigs.py', 'filming/contract.py', 'filming/dir_controls.py', 'filming/executor.py', 'filming/frames.py',
   'filming/inbox.py', 'filming/lock_qc.py', 'filming/long_plan.py', 'filming/plan_cli.py', 'filming/qc_report.py',
   'filming/registry.py', 'filming/scene.py', 'filming/shots.py', 'filming/ui_actions.py',
-  'filming/ui_schema.py',
+  'filming/ui_cli.py', 'filming/ui_compose.py', 'filming/ui_edit.py', 'filming/ui_schema.py',
   'ui2.html',
   'previs/editor.js', 'previs/core.js', 'previs/vendor/three.module.min.js', 'previs/vendor/OrbitControls.js',
   'previs/vendor/TransformControls.js', 'previs/vendor/mp4-muxer.mjs',
@@ -63,6 +63,7 @@ const SERVER_FILES = [
   'export_lambda/postblocks/subs.py', 'export_lambda/postblocks/transition.py',
   'export_lambda/postblocks/color_grade.py', 'export_lambda/postblocks/cover.py',
   'export_lambda/postblocks/speed.py', 'export_lambda/postblocks/watermark.py',
+  'export_lambda/postblocks/panel.py',
 ];
 const PRUNE = ['test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'lib2to3', 'pydoc_data', 'unittest/test'];
 
@@ -135,10 +136,11 @@ function smoke(pyDir, serverDir) {
   execFileSync(py, ['-I', '-B', '-c',
     'import sys; sys.path[:0]=[sys.argv[1]+"/local", sys.argv[1]]; import studio_local; print("ok")'
     // studio_local loads these lazily (export, cast refs): import them here so a missing file fails the build
-    + '; import postblocks, cast_refs, shot_controls, takes, gen_retry, filming, agent_exec'
+    + '; import postblocks, cast_refs, shot_controls, takes, gen_retry, filming, agent_exec, ui_profiles'
     + '; assert filming.__file__, "filming/__init__.py missing (namespace package)"'
     + '; import pkgutil, importlib; [importlib.import_module("filming." + m.name) for m in pkgutil.iter_modules(filming.__path__)]'
     + '; from filming import agent_loop, blockout_frames'
+    + '; assert postblocks.catalog()["blocks"]'   // catalog() imports postblocks/panel.py lazily
     + '; print("lazy modules ok")', serverDir],
   { stdio: 'inherit' });
   execFileSync(py, ['-I', '-B', '-c', [

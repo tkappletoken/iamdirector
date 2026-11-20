@@ -208,6 +208,48 @@ def build_spec(uid, eid, req, video_keys, video_models, audio_keys, src_bucket, 
         spec["pipeline"] = req["pipeline"]
     return spec
 
+LOGO_ASSET = re.compile(r"^ast_[A-Za-z0-9_-]{1,124}$")
+LOGO_MAX = 20 * 1024 * 1024
+
+def logo_assets(body):
+    pl = body.get("pipeline") if isinstance(body, dict) else None
+    out = []
+    for b in (pl if isinstance(pl, list) else []):
+        p = b.get("params") if isinstance(b, dict) and b.get("use") == "watermark" else None
+        v = p.get("logo") if isinstance(p, dict) else None
+        if isinstance(v, str) and LOGO_ASSET.match(v) and v not in out:
+            out.append(v)
+    return out
+
+def with_logo_keys(body, keys):
+    out = dict(body)
+    out["pipeline"] = []
+    for b in body["pipeline"]:
+        if isinstance(b, dict) and b.get("use") == "watermark" and isinstance(b.get("params"), dict) \
+                and b["params"].get("logo") in keys:
+            b = dict(b, params=dict(b["params"], logo=keys[b["params"]["logo"]]))
+        out["pipeline"].append(b)
+    return out
+
+def image_kind(head):
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if head[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    return None
+
+def pipeline_note(req, engine=None, container="mp4", fontsdir=None):
+    if not req.get("pipeline"):
+        return None
+    import postblocks
+    try:
+        postblocks.preview(preview_spec(req), req["pipeline"], container=container, caption_fontsdir=fontsdir)
+    except postblocks.PipelineError as e:
+        return {"pipeline_ignored": "invalid", "pipeline_error": str(e)[:300]}
+    if postblocks.engine_of(engine) != "blocks":
+        return {"pipeline_ignored": "engine_legacy"}
+    return None
+
 def preview_spec(req, uid="preview"):
     vkeys = {_ref(v): "originals/%s/%064x" % (uid, i + 1) for i, v in enumerate(req["video"])}
     akeys = [("originals/%s/%064x" % (uid, 1000 + i), "preview") for i, _a in enumerate(req["audio"])]

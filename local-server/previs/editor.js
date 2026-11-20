@@ -111,6 +111,7 @@ const CSS = `
 .pv-sws button.clash::after{content:"";position:absolute;right:-3px;top:-3px;width:9px;height:9px;border-radius:50%;background:#e8a33d;box-shadow:0 0 0 2px #111418}
 .pv-sws button:disabled{opacity:.25;cursor:not-allowed}
 .pv-note{font-size:11.5px;color:var(--mute);margin-top:8px;line-height:1.55}
+.pv-chk{align-items:center;gap:6px;font-size:12px;color:#c9ced5;cursor:pointer}.pv-chk input{width:auto;height:auto;flex:none}
 .pv-note.warn{color:#e8a33d}
 .pv-card{display:flex;gap:10px;align-items:center;padding:8px;border-radius:9px;background:var(--panel2);border:1px solid var(--line);margin-bottom:10px}
 .pv-card img{width:44px;height:44px;border-radius:7px;object-fit:cover}
@@ -219,6 +220,12 @@ const ICON = {
   prev: '<path d="M15 5l-7 7 7 7"/>', next: '<path d="M9 5l7 7-7 7"/>',
 };
 const svg = k => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + ICON[k] + '</svg>';
+
+const RIG_TYPES = { ots: '過肩', reverse: '反打（過肩對調）', two_shot: '雙人鏡' };
+const RIG_SIZES1 = { cu: '特寫', mcu: '近景', ms: '中景' };
+const RIG_SIZES2 = { ms: '中景', ws: '遠景' };
+const RIG_NOTES = { ots_widened: '兩人身高差太多，焦距放廣讓兩個頭都入鏡（比要的景別寬；近景建議改單人鏡）',
+                    ots_weak_fg: '前景的人拉不到畫面邊上（建議改近景或特寫，或讓兩人站開一點）' };
 
 let CUR = null;
 
@@ -1220,6 +1227,7 @@ class Editor {
     const r3 = $h('div', 'pv-row');
     r3.append(btn('pv-btn pri', '產生攝影機路徑', '照上面的運鏡、景別、角度與速度，產生起始的攝影機關鍵幀（會取代目前的攝影機路徑，可以復原）', () => this.genPath(sel.value)));
     m.append(r3);
+    if (this.ctx.rigOn === true) this.rigSection(m);
     if (this.pathNote) m.append($h('div', 'pv-note', this.pathNote));
     m.append($h('div', 'pv-note', '最後 1 秒停穩不動（研究：終點沒交代時最後一秒會晃）。產生之後可以在時間軸上拖關鍵幀、或在鏡頭視角直接修。'));
     if (cam.keys.length) {
@@ -1236,7 +1244,13 @@ class Editor {
       if (!ch.length) return null;
       return t => { const p = C.sampleObj(ch[0], t).p; return [p[0], ch[0].size[1] * 0.8 + p[1], p[2]]; };
     })();
-    const res = C.camPath(sc, { target: C.subjectTarget(this.scene, 0, sc.size), dur: this.scene.dur, follow: fol });
+    const pc = { target: C.subjectTarget(this.scene, 0, sc.size), dur: this.scene.dur, follow: fol };
+    if (this.ctx.rigOn === true && this.scene.subject_height != null) {
+      const h = this.tallest();
+      if (h) this.scene.subject_height = h;
+      pc.scale = C.subjectScale(this.scene);
+    }
+    const res = C.camPath(sc, pc);
     this.beginEdit();
     const c = this.scene.cam;
     c.move = move;
@@ -1246,6 +1260,77 @@ class Editor {
     this.pathNote = res.note;
     this.commit(); this.applyTime(); this.renderRight(); this.paintHud();
     this.toast('攝影機路徑：' + ((this.ctx.camMoves()[move] || {}).zh || move) + ' · ' + c.keys.length + ' 個關鍵幀');
+  }
+
+  tallest() {
+    const hs = this.scene.objs.filter(o => o.kind === 'char').map(o => o.size[1]).filter(h => h >= 0.05 && h <= 3);
+    return hs.length ? Math.round(Math.max(...hs) * 1000) / 1000 : null;
+  }
+  rigSection(m) {
+    const hr = $h('label', 'pv-row pv-chk');
+    const cb = $h('input'); cb.type = 'checkbox'; cb.checked = this.scene.subject_height != null;
+    cb.setAttribute('aria-label', '景別照角色身高');
+    cb.onchange = () => {
+      this.beginEdit();
+      const h = this.tallest();
+      if (cb.checked && h) this.scene.subject_height = h; else delete this.scene.subject_height;
+      this.commit(); this.renderRight();
+    };
+    hr.append(cb, document.createTextNode(' 景別照角色身高（小角色不會拍成遠景）'));
+    m.append(hr);
+    if (this.scene.subject_height != null) m.append($h('div', 'pv-note', '主角身高 ' + Math.round(this.scene.subject_height * 100) + ' cm（取最高的角色）：按「產生攝影機路徑」時，景別與移動量照這個比例縮放。'));
+    if (typeof this.ctx.rig !== 'function') return;
+    const chars = this.scene.objs.filter(o => o.kind === 'char');
+    m.append($h('div', 'pv-h', '對準角色'));
+    if (chars.length < 2) { m.append($h('div', 'pv-note', '過肩、反打、雙人鏡要兩個角色：先在左邊加第二個角色。')); return; }
+    const P = this.rigPick = Object.assign({ type: 'ots', a: chars[0].id, b: chars[1].id, size: 'mcu' }, this.rigPick || {});
+    if (!chars.some(o => o.id === P.a)) P.a = chars[0].id;
+    if (!chars.some(o => o.id === P.b) || P.b === P.a) P.b = (chars.find(o => o.id !== P.a) || chars[1]).id;
+    const SIZES = P.type === 'two_shot' ? RIG_SIZES2 : RIG_SIZES1;
+    if (!SIZES[P.size]) P.size = P.type === 'two_shot' ? 'ms' : 'mcu';
+    const pick = (label, map, val, set) => {
+      const x = $h('select'); x.setAttribute('aria-label', label);
+      Object.keys(map).forEach(k => { const o = $h('option', null, map[k]); o.value = k; if (k === val) o.selected = true; x.append(o); });
+      x.onchange = () => { set(x.value); this.renderRight(); };
+      return x;
+    };
+    const names = {};
+    chars.forEach(o => { names[o.id] = o.name || o.id; });
+    const r1 = $h('div', 'pv-row');
+    r1.append(pick('機位', RIG_TYPES, P.type, v => { P.type = v; }), pick('景別', SIZES, P.size, v => { P.size = v; }));
+    m.append(r1);
+    const r2 = $h('div', 'pv-row');
+    r2.append(pick(P.type === 'two_shot' ? '角色 A' : '前景（越過誰的肩）', names, P.a, v => { P.a = v; }),
+              pick(P.type === 'two_shot' ? '角色 B' : '看著誰', names, P.b, v => { P.b = v; }));
+    m.append(r2);
+    const r3 = $h('div', 'pv-row');
+    const go = btn('pv-btn pri', this.rigBusy ? '計算中…' : '對準角色（取 ' + C.fmtT(this.t) + ' 的站位）',
+                   '算一個固定機位（會取代目前的攝影機路徑，可以復原）', () => this.rigNow());
+    go.disabled = !!this.rigBusy || P.a === P.b;
+    r3.append(go);
+    m.append(r3);
+    m.append($h('div', 'pv-note', '反打＝同一條 180 度線的另一支過肩：兩支切來切去時，兩個人一直在畫面同一邊。'));
+  }
+  rigNow() {
+    const P = this.rigPick;
+    if (!P || P.a === P.b) return;
+    const spec = P.type === 'two_shot' ? { rig: 'two_shot', a: P.a, b: P.b }
+      : { rig: 'ots', over: P.type === 'reverse' ? P.b : P.a, at: P.type === 'reverse' ? P.a : P.b };
+    spec.size = P.size;
+    spec.t = Math.min(C.snap(this.t), this.scene.dur);
+    this.rigBusy = true; this.renderRight();
+    return this.ctx.rig(JSON.parse(JSON.stringify(this.scene)), spec).then(cam => {
+      const b = (cam && cam.base) || {};
+      this.beginEdit();
+      const c = this.scene.cam;
+      c.move = 'static'; c.keys = [];
+      c.base = { p: b.p, look: b.look, mm: b.mm, roll: b.roll || 0 };
+      const notes = (cam.notes || []).map(n => RIG_NOTES[n] || n);
+      this.pathNote = RIG_TYPES[P.type] + (notes.length ? '：' + notes.join('；') : '');
+      this.commit(); this.applyTime(); this.paintHud();
+      this.toast('攝影機：' + RIG_TYPES[P.type] + ' · ' + Math.round(b.mm) + 'mm');
+    }).catch(e => { this.toast('對準角色失敗：' + ((e && e.message) || e)); })
+      .finally(() => { this.rigBusy = false; this.renderRight(); });
   }
 
   buildTimelineShell() {

@@ -10,15 +10,20 @@ TEMPLATE_PIPELINES = {
 }
 
 def catalog():
+    import copy
     from . import REGISTRY
+    from .panel import CLIENT_BLOCKS, LABELS, PANEL
     out = []
     for cls in REGISTRY.values():
+        params = {k: dict(v) for k, v in cls.params.items() if not v.get("from_spec")}
         out.append({"id": cls.id, "label": cls.label, "stage": cls.stage, "locked": cls.locked,
                     "sortable": cls.stage == "overlay", "optional": cls.optional, "passes": cls.passes,
-                    "params": {k: dict(v) for k, v in cls.params.items() if not v.get("from_spec")},
-                    "doc": (cls.__doc__ or "").strip().split("\n")[0]})
+                    "params": params,
+                    "doc": (cls.__doc__ or "").strip().split("\n")[0],
+                    "labels": copy.deepcopy({k: v for k, v in LABELS.get(cls.id, {}).items() if k in params})})
     return {"stages": list(STAGES), "blocks": out,
-            "templates": {k: [dict(b) for b in v] for k, v in TEMPLATE_PIPELINES.items()}}
+            "templates": {k: [dict(b) for b in v] for k, v in TEMPLATE_PIPELINES.items()},
+            "client_blocks": copy.deepcopy(CLIENT_BLOCKS), "panel": copy.deepcopy(PANEL)}
 
 def clean_user(blocks):
     from . import REGISTRY
