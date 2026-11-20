@@ -107,6 +107,10 @@ def preview(spec, user=None, caps=None, container="mp4", caption_fontsdir=None, 
     for v in spec["video"] + spec["audio"]:
         files[v["key"]] = "/preview/" + v["key"].replace("/", "_")
         probes[v["key"]] = {"has_video": True, "has_audio": True, "demuxer": "mov", "duration": 0}
+    from . import extra_inputs
+    for k in extra_inputs(user, spec):
+        files[k] = "/preview/" + k.replace("/", "_")
+        probes[k] = {"image": "png", "has_video": False, "has_audio": False}
     caps = caps if caps is not None else {"libass": True, "encoders": {"libx264"}}
     try:
         got = compile_pipeline(dict(pipe, blocks=blocks), files, probes, caps, "/preview", strict=False,

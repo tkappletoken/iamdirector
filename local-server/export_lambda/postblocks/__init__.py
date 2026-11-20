@@ -24,9 +24,16 @@ from .white_flash import WhiteFlash
 from .video_fade import VideoFade
 from .music_duck import MusicDuck
 from .loudness import Loudness
+from .watermark import Watermark
+from .color_grade import ColorGrade
+from .speed import Speed
+from .cover import Cover
 
 REGISTRY = {b.id: b for b in (TwistDetect, SeamCheck, Format, ClipTrim, Fps, Fit, Transition, Concat, PadBlack, WhiteFlash, MemeCaptions, VideoFade,
                               Disclosure, Subtitles, Titles, AudioClip, AudioFade, MusicDuck, Mix, Loudness, Encode)}
+for _b in (ColorGrade, Watermark, Speed, Cover):
+    REGISTRY[_b.id] = _b
+del _b
 
 ENGINES = ("legacy", "blocks", "shadow")
 ENGINE_ENV = "POSTBLOCKS_ENGINE"
@@ -107,3 +114,42 @@ def seam_reports(pipeline, spec, files, ffmpeg):
             cls = REGISTRY["seam_check"]
             return cls().measure(cls().check(b.get("params") or {}), spec, files, ffmpeg)
     return None
+
+def compile_custom(pipe, files, probes, caps, workdir, **kw):
+    try:
+        return compile_pipeline(pipe, files, probes, caps, workdir, **kw), []
+    except Exception as e:
+        first = e
+    why = type(first).__name__
+    cand = [b["use"] for b in pipe["blocks"] if b.get("on", True) and getattr(REGISTRY[b["use"]], "drop_on_fail", False)]
+    tries = [[bid] for bid in cand] + ([cand] if len(cand) > 1 else [])
+    for drop in tries:
+        trial = dict(pipe, blocks=[b for b in pipe["blocks"] if b["use"] not in drop])
+        try:
+            got = compile_pipeline(trial, files, probes, caps, workdir, **kw)
+        except Exception:
+            continue
+        got["warnings"] = list(got["warnings"]) + ["%s 沒做成，已拿掉，其他照常" % REGISTRY[bid].label for bid in drop]
+        return got, [(bid, why) for bid in drop]
+    raise first
+
+def _on(pipeline, bid):
+    for b in clean_user(pipeline or []):
+        if b["use"] == bid and b.get("on", True):
+            cls = REGISTRY[bid]
+            return cls, cls().check(b.get("params") or {})
+    return None
+
+def extra_inputs(pipeline, spec):
+    got = _on(pipeline, "watermark")
+    if not got or got[1]["kind"] != "image":
+        return []
+    key = got[1]["logo"]
+    return [key] if key.startswith("originals/%s/" % spec["user"]) else []
+
+def cover_output(pipeline, src, demuxer, duration, dest, ffmpeg, fps=24):
+    got = _on(pipeline, "cover")
+    if not got:
+        return None
+    path, rep = got[0]().extract(got[1], src, demuxer, duration, dest, ffmpeg, fps=fps)
+    return path, got[1]["format"], rep

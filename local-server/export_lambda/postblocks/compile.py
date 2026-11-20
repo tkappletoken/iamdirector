@@ -28,6 +28,8 @@ class Ctx:
         self.last = None
         self.files = {}
         self.text = {"mode": "none", "card": [], "trows": [], "style": {}}
+        self.alast = "aout"
+        self.soft = False
 
 def compile_pipeline(pipe, files, probes, caps, workdir, strict=True, fontsdir=None, container="mp4",
                      caption_fontsdir=None):
@@ -117,6 +119,8 @@ def compile_pipeline(pipe, files, probes, caps, workdir, strict=True, fontsdir=N
         lanes.setdefault(a.get("lane") or "A1", []).append("[a%d]" % k)
         c.idx += 1
     c.graph += mixer[0].graph(mixer[1], c, alabels, lanes, duck)
+    c.soft = bool(want_soft or soft_card or soft_titles)
+    each("finish")
 
     soft_idx = None
     if want_soft or soft_card or soft_titles:
@@ -135,7 +139,7 @@ def compile_pipeline(pipe, files, probes, caps, workdir, strict=True, fontsdir=N
     webm = container == "webm"
     out = os.path.join(workdir, "out." + container)
     total = c.t["total"]
-    c.argv += ["-filter_complex", ";".join(c.graph), "-map", "[%s]" % c.last, "-map", "[aout]"]
+    c.argv += ["-filter_complex", ";".join(c.graph), "-map", "[%s]" % c.last, "-map", "[%s]" % c.alast]
     if soft_idx is not None:
         c.argv += enc[0].subtitle_map(enc[1], c, soft_idx, webm)
     c.argv += enc[0].codec_args(enc[1], c, webm) + enc[0].tail(enc[1], c, webm, out)
@@ -161,7 +165,7 @@ def _segments(c, multi, soft_idx, webm, enc, out):
         head = head[:-len(srt_in)]
     total = str(c.t["total"])
     mid = _os.path.join(c.workdir, "stage1.mkv")
-    steps = [{"argv": head + ["-filter_complex", argv[cut + 1], "-map", argv[argv.index("-map") + 1], "-map", "[aout]",
+    steps = [{"argv": head + ["-filter_complex", argv[cut + 1], "-map", argv[argv.index("-map") + 1], "-map", "[%s]" % c.alast,
                               "-c:v", "ffv1", "-c:a", "pcm_s16le", "-t", total, mid]}]
     for n, (blk, p) in enumerate(multi, 1):
         prefix = "" if n == 1 else "p%d." % n

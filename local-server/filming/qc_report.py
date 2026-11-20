@@ -12,6 +12,9 @@ DEFECTS = (
     "blocks_shadow_diff",
     "count_mismatch",
     "seam_jump",
+    "framing_drift",
+    "cover_dark",
+    "cover_flat",
 )
 SCOPES = ("shot", "line", "step")
 NOTE_MAX = 120
