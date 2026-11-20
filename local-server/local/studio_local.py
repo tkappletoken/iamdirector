@@ -994,13 +994,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.agentloop_info())
         if path == "/api/local/mcp-direct":
             if not self._human():
-                return self._json(403, {"error": "直送模式要你本人在 App 裡切"})
+                return self._json(403, {"error": "Agent 直送要你本人在 App 裡切"})
             v = body.get("on")
             if v is not None and not isinstance(v, bool):
                 return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
             if not st.set_mcp_direct(v):
                 return self._json(500, {"error": "設定寫不進本機資料夾"})
-            return self._json(200, st.mcp_direct_info())
+            out = st.mcp_direct_info()
+            if not out["on"]:
+                try:
+                    out["revoked"] = st.db.run(lambda c, u: approvals.revoke_direct(c, u))
+                except Exception as e:
+                    sys.stderr.write("[mcp_direct] revoke_failed %s\n" % type(e).__name__)
+            return self._json(200, out)
         if path in ("/api/local/agent/start", "/api/local/agent/step"):
             return self._agentloop(path.rsplit("/", 1)[1], body)
         if path == "/api/local/engine":
@@ -1497,7 +1503,7 @@ class Handler(BaseHTTPRequestHandler):
                "note": "要使用者核准這張卡（或在預先授權上限內），再用 submit_approved 送出"}
         if card.get("direct"):
             out["direct"] = True
-            out["note"] = "直送模式：已在你設的上限內核准，直接用 submit_approved 送出"
+            out["note"] = "Agent 直送：已在你設的上限內核准，直接用 submit_approved 送出"
         return self._json(200, out)
 
     def _spend_run(self, ref, kind):
@@ -1685,7 +1691,8 @@ class Handler(BaseHTTPRequestHandler):
     def _approval_submit(self, body):
         st = self.state
         try:
-            card = st.db.run(lambda c, u: approvals.claim_for_submit(c, u, body.get("id"), body.get("expect_amount")))
+            card = st.db.run(lambda c, u: approvals.claim_for_submit(c, u, body.get("id"), body.get("expect_amount"),
+                                                                      direct_on=st.mcp_direct_on()))
         except approvals.ApprovalError as e:
             return self._json(e.code, {"error": e.message})
         if card.get("payload") and approvals.quote_stale(card):
@@ -1782,7 +1789,8 @@ class Handler(BaseHTTPRequestHandler):
         jid = None
         if card.get("status") == "approved":
             try:
-                c = st.db.run(lambda cn, u: approvals.claim_for_submit(cn, u, card["id"], card.get("amount")))
+                c = st.db.run(lambda cn, u: approvals.claim_for_submit(cn, u, card["id"], card.get("amount"),
+                                                                       direct_on=st.mcp_direct_on()))
                 stop = None
                 if c.get("payload") and approvals.quote_stale(c):
                     c, stop = self._approval_requote(c)
