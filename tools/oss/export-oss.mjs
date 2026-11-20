@@ -81,12 +81,14 @@ function transform(f, buf) {
 const sha = execFileSync('git', ['-C', WEB, 'rev-parse', '--verify', `${COMMIT}^{commit}`], { encoding: 'utf8' }).trim();
 // The file list is local/server_manifest.py run on a clean tree of that commit (it walks its own tree, not the web checkout)
 const TREE = fs.mkdtempSync(path.join(os.tmpdir(), 'export-oss-'));
-let FILES;
+let FILES, NOT_PACKED;
+// Public but not packed into the app: developer tools the guide refers to (each must be in the manifest's not_packed)
+const PUBLIC_ONLY = ['local/dev_fake_upstream.py'];
 try {
   execFileSync('tar', ['-x', '-C', TREE], { input: execFileSync('git', ['-C', WEB, 'archive', sha], { maxBuffer: 1 << 30 }) });
   if (!fs.existsSync(path.join(TREE, 'local', 'server_manifest.py'))) throw new Error(`no local/server_manifest.py at ${sha.slice(0, 7)}`);
-  FILES = JSON.parse(execFileSync('python3', ['-I', '-B', path.join(TREE, 'local', 'server_manifest.py'), '--json'],
-    { encoding: 'utf8' })).files;
+  ({ files: FILES, not_packed: NOT_PACKED } = JSON.parse(execFileSync('python3',
+    ['-I', '-B', path.join(TREE, 'local', 'server_manifest.py'), '--json'], { encoding: 'utf8' })));
 } finally {
   fs.rmSync(TREE, { recursive: true, force: true });
 }
@@ -110,7 +112,9 @@ const LEAKS = {
   'AWS account': /arn:aws:[a-z0-9-]*:[a-z0-9-]*:\d{12}/g,
   'internal name': new RegExp(INTERNAL_NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g'),
 };
-const out = FILES.map((f) => [f, transform(f, execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 }))]);
+const notListed = PUBLIC_ONLY.filter((f) => !(f in NOT_PACKED));
+if (notListed.length) throw new Error('public-only files must be in the manifest not_packed: ' + notListed.join(', '));
+const out = [...FILES, ...PUBLIC_ONLY].map((f) => [f, transform(f, execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 }))]);
 const GUIDE = 'docs/desktop-oss-guide.md';
 const guide = execFileSync('git', ['-C', WEB, 'show', `${sha}:${GUIDE}`], { maxBuffer: 64 << 20 });
 const leaks = [];
@@ -130,4 +134,4 @@ for (const [f, buf] of out) {
 fs.writeFileSync(path.join(OUT, 'SOURCE_COMMIT'), 'oss\n');
 fs.mkdirSync(path.join(ROOT, 'docs'), { recursive: true });
 fs.writeFileSync(path.join(ROOT, 'docs', 'DEVELOPERS.md'), guide);
-console.log(`local-server/: ${FILES.length} files from ${sha.slice(0, 7)}; docs/DEVELOPERS.md from ${GUIDE}`);
+console.log(`local-server/: ${FILES.length} files + ${PUBLIC_ONLY.length} public-only from ${sha.slice(0, 7)}; docs/DEVELOPERS.md from ${GUIDE}`);
