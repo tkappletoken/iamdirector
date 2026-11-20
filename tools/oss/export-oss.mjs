@@ -1,6 +1,7 @@
 // Sync local-server/ from the iamdirector web repo at a given commit.
 // Only the files listed in SERVER_FILES (scripts/prepare-local-server.mjs) are copied, and comments are removed;
 // code is left byte-for-byte as is. Third-party vendor files are copied unchanged.
+// The developer guide (docs/desktop-oss-guide.md) is copied unchanged to docs/DEVELOPERS.md.
 //
 //   cd tools/oss && npm ci
 //   node tools/oss/export-oss.mjs <web repo> <commit>
@@ -102,8 +103,10 @@ const LEAKS = {
   'internal name': new RegExp(INTERNAL_NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g'),
 };
 const out = FILES.map((f) => [f, transform(f, execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 }))]);
+const GUIDE = 'docs/desktop-oss-guide.md';
+const guide = execFileSync('git', ['-C', WEB, 'show', `${sha}:${GUIDE}`], { maxBuffer: 64 << 20 });
 const leaks = [];
-for (const [f, buf] of out) {
+for (const [f, buf] of [...out, [GUIDE, guide]]) {
   if (KEEP_AS_IS.some((r) => r.test(f)) || buf.includes(0)) continue;
   buf.toString('utf8').split('\n').forEach((line, i) => {
     for (const [kind, rx] of Object.entries(LEAKS)) for (const m of line.matchAll(rx)) leaks.push(`${f}:${i + 1} ${kind} "${m[0]}"`);
@@ -117,4 +120,6 @@ for (const [f, buf] of out) {
   fs.writeFileSync(dst, buf);
 }
 fs.writeFileSync(path.join(OUT, 'SOURCE_COMMIT'), 'oss\n');
-console.log(`local-server/: ${FILES.length} files from ${sha.slice(0, 7)}`);
+fs.mkdirSync(path.join(ROOT, 'docs'), { recursive: true });
+fs.writeFileSync(path.join(ROOT, 'docs', 'DEVELOPERS.md'), guide);
+console.log(`local-server/: ${FILES.length} files from ${sha.slice(0, 7)}; docs/DEVELOPERS.md from ${GUIDE}`);
