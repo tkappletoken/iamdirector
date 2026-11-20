@@ -136,6 +136,7 @@ LOCAL_API = (
     "/api/takes", "/api/takes/move", "/api/takes/qc", "/api/takes/pick", "/api/takes/retake-plan",
     "/api/chains", "/api/chains/next", "/api/chains/move",
     "/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/get", "/api/local/agent-loop",
+    "/api/local/mcp-direct",
 )
 
 AGENT_ALLOWED = {
@@ -152,6 +153,7 @@ AGENT_ALLOWED = {
 AGENT_ALLOWED |= set(takes.ROUTES)
 AGENT_ALLOWED |= {("POST", "/api/local/agent/start"), ("POST", "/api/local/agent/step"), ("GET", "/api/local/agent/get"),
                   ("GET", "/api/local/agent-loop")}
+AGENT_ALLOWED |= {("GET", "/api/local/mcp-direct")}
 AGENT_LOOP_OFF = "Filming Agent 主迴圈沒有開（設定 agent_loop.json 或 STUDIO_LOCAL_AGENT_LOOP=on）"
 AGENT_RUN = re.compile(r"^agr_[0-9a-f]{24}$")
 AGENT_SCOPES = ("basic", "full")
@@ -392,6 +394,39 @@ class State:
 
     def set_agentloop(self, value):
         path = os.path.join(self.data_dir, "agent_loop.json")
+        try:
+            if value is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"on": bool(value)}, f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
+
+    def mcp_direct_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "mcp_direct.json"), encoding="utf-8") as f:
+                v = json.load(f).get("on")
+            return v if isinstance(v, bool) else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def mcp_direct_on(self):
+        v = self.mcp_direct_setting()
+        if v is not None:
+            return v
+        return os.environ.get("STUDIO_LOCAL_MCP_DIRECT", "").strip().lower() in ("on", "1", "true")
+
+    def mcp_direct_info(self):
+        env = os.environ.get("STUDIO_LOCAL_MCP_DIRECT", "").strip().lower() or None
+        return {"on": self.mcp_direct_on(), "setting": self.mcp_direct_setting(), "env": env}
+
+    def set_mcp_direct(self, value):
+        path = os.path.join(self.data_dir, "mcp_direct.json")
         try:
             if value is None:
                 if os.path.exists(path):
@@ -794,6 +829,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.agent_scope_info())
         if path == "/api/local/agent-loop":
             return self._json(200, st.agentloop_info())
+        if path == "/api/local/mcp-direct":
+            return self._json(200, st.mcp_direct_info())
         if path == "/api/local/agent/get":
             return self._agentloop("get", {"run": one("run")})
         if path == "/api/blocks":
@@ -955,6 +992,15 @@ class Handler(BaseHTTPRequestHandler):
             if not st.set_agentloop(v):
                 return self._json(500, {"error": "設定寫不進本機資料夾"})
             return self._json(200, st.agentloop_info())
+        if path == "/api/local/mcp-direct":
+            if not self._human():
+                return self._json(403, {"error": "直送模式要你本人在 App 裡切"})
+            v = body.get("on")
+            if v is not None and not isinstance(v, bool):
+                return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
+            if not st.set_mcp_direct(v):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            return self._json(200, st.mcp_direct_info())
         if path in ("/api/local/agent/start", "/api/local/agent/step"):
             return self._agentloop(path.rsplit("/", 1)[1], body)
         if path == "/api/local/engine":
@@ -1291,6 +1337,10 @@ class Handler(BaseHTTPRequestHandler):
                 out["cast_refs"] = cast_info
             if want_card:
                 out["approval"] = self._card_for_quote(qid, cost, open_ended, body, sheet)
+                if self._direct_refused(out["approval"]):
+                    return None
+                if out["approval"].get("direct"):
+                    out["direct"] = True
             if open_ended:
                 out["open_ended"] = True
                 out["billing_note"] = ("帶參考影片：上游按參考影片秒數＋成品秒數計費，實際可能較高，"
@@ -1375,6 +1425,28 @@ class Handler(BaseHTTPRequestHandler):
     def _card_link(self, cid):
         return "iamdirector://approve/%s" % cid
 
+    def _decide_card(self, c, u, card):
+        if not self._human() and self.state.mcp_direct_on():
+            got, stop = approvals.try_direct(c, u, card)
+            return dict(got, _direct_stop=stop) if stop else dict(got, _direct=True)
+        return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
+
+    def _card_public(self, card):
+        out = dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
+        if card.get("_direct_stop"):
+            out["direct_stop"] = list(card["_direct_stop"])
+        elif card.get("_direct"):
+            out["direct"] = True
+        return out
+
+    def _direct_refused(self, card):
+        stop = (card or {}).get("direct_stop") if isinstance(card, dict) else None
+        if not stop:
+            return False
+        self._json(stop[0], {"error": stop[1], "direct": True,
+                             "approval": {k: v for k, v in card.items() if k != "direct_stop"}})
+        return True
+
     def _card_for_quote(self, qid, cost, open_ended, body, sheet):
         charge = {"id": None, "quote_ref": qid, "kind": "video", "payer": "own_key", "points": None, "upstream_cost": cost}
         summ = dict(approvals.summary_of(body), **({"open_ended": True} if open_ended else {}))
@@ -1382,11 +1454,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             def go(c, u):
                 card = approvals.create(c, user_id=u, charge=charge, summary=summ, payload=pl, quote_expires_at=q_exp)
-                return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
+                return self._decide_card(c, u, card)
             card = self.state.db.run(go)
         except Exception as e:
             return {"enabled": False, "error": "核准卡建不起來（%s），請重新報價" % type(e).__name__}
-        return dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
+        return self._card_public(card)
 
     def _agent_card(self, kind, ref, cost, ttl, summary):
         charge = {"id": None, "quote_ref": ref, "kind": kind, "payer": "own_key", "points": None, "upstream_cost": cost}
@@ -1395,11 +1467,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             def go(c, u):
                 card = approvals.create(c, user_id=u, charge=charge, summary=summ, expires_at=exp)
-                return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
+                return self._decide_card(c, u, card)
             card = self.state.db.run(go)
         except Exception as e:
             return {"enabled": False, "error": "核准卡建不起來（%s），請重新報價" % type(e).__name__}
-        return dict(approvals.public(card, self._card_link(card["id"])), enabled=True)
+        return self._card_public(card)
 
     def _spend_hold(self, kind, body, cost=None, summary=None):
         st = self.state
@@ -1413,11 +1485,20 @@ class Handler(BaseHTTPRequestHandler):
             st.spend[ref] = {"kind": kind, "body": body, "t": now, "status": "quoted"}
         summ = summary or {"model": body.get("model"), "prompt": str(body.get("prompt") or "")[:280],
                            "n": body.get("n")}
-        return self._json(200, {"object": "%s.confirmation" % kind, "status": "needs_confirmation", "quote_id": ref,
-                                "kind": kind, "payer": "own_key", "expires_in": SPEND_TTL,
-                                "estimate": {"upstream_cost": str(cost) if cost is not None else None},
-                                "approval": self._agent_card(kind, ref, cost, SPEND_TTL, summ),
-                                "note": "要使用者核准這張卡（或在預先授權上限內），再用 submit_approved 送出"})
+        card = self._agent_card(kind, ref, cost, SPEND_TTL, summ)
+        if self._direct_refused(card):
+            with st.lock:
+                st.spend.pop(ref, None)
+            return None
+        out = {"object": "%s.confirmation" % kind, "status": "needs_confirmation", "quote_id": ref,
+               "kind": kind, "payer": "own_key", "expires_in": SPEND_TTL,
+               "estimate": {"upstream_cost": str(cost) if cost is not None else None},
+               "approval": card,
+               "note": "要使用者核准這張卡（或在預先授權上限內），再用 submit_approved 送出"}
+        if card.get("direct"):
+            out["direct"] = True
+            out["note"] = "直送模式：已在你設的上限內核准，直接用 submit_approved 送出"
+        return self._json(200, out)
 
     def _spend_run(self, ref, kind):
         st = self.state
@@ -2294,6 +2375,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._human():
             out["approval"] = self._agent_card("storyboard", ref, cap, SB_QUOTE_TTL, {
                 "model": storyboard.model_of(q), "prompt": str(q.get("story") or "")[:280], "shots": q.get("shots")})
+            if self._direct_refused(out["approval"]):
+                return None
+            if out["approval"].get("direct"):
+                out["direct"] = True
         return self._json(200, out)
 
     def _storyboard(self, body):
@@ -2403,6 +2488,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._human():
             summ = {"model": body["model"], "prompt": str(body.get("input") or body.get("prompt") or body.get("lyrics") or "")[:280]}
             out["approval"] = self._agent_card(kind, ref, cost, 15 * 60, summ)
+            if self._direct_refused(out["approval"]):
+                return None
+            if out["approval"].get("direct"):
+                out["direct"] = True
         return self._json(200, out)
 
     def _audio_confirm(self, qid, confirm, kind):

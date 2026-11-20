@@ -378,6 +378,31 @@ def try_auto(conn, user_id, card, now=None):
     _mark_approved(conn, user_id, card["id"], card, "auto:%d" % lim["version"])
     return get(conn, user_id, card["id"])
 
+def try_direct(conn, user_id, card, now=None):
+    if card is None or card.get("status") != "pending":
+        return card, None
+    m = measure(card.get("payer"))
+
+    def refuse(code, msg):
+        if _move(conn, user_id, card["id"], "pending", "rejected"):
+            with conn.cursor() as cur:
+                cur.execute("UPDATE approval_cards SET note = %s, decided_by = %s WHERE id = %s AND user_id = %s::uuid",
+                            (msg[:500], "direct", str(card["id"]), str(user_id)))
+        return get(conn, user_id, card["id"]), (code, msg)
+    if not auto_ready(dict(limits_get(conn, user_id), auto_approve=True), m):
+        return refuse(409, "直送模式要先在設定設好單支與每日上限（沒有上限，Agent 就能無上限地花你的錢）。")
+    lock_limits(conn, user_id)
+    lim = limits_get(conn, user_id)
+    if not auto_ready(dict(lim, auto_approve=True), m):
+        return refuse(409, "直送模式要先在設定設好單支與每日上限（沒有上限，Agent 就能無上限地花你的錢）。")
+    why = check_limits(card, lim, used_today(conn, user_id, m, now))
+    if why:
+        return refuse(402, "直送模式：%s到設定調高上限。" % why)
+    if not _move(conn, user_id, card["id"], "pending", "approved"):
+        return get(conn, user_id, card["id"]), (409, "這張卡剛剛被處理過了，請重新報價")
+    _mark_approved(conn, user_id, card["id"], card, "direct")
+    return get(conn, user_id, card["id"]), None
+
 def limits_set(conn, user_id, body):
     vals = []
     for k in LIMIT_KEYS:
