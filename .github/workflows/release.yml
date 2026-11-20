@@ -119,14 +119,14 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
       - run: npm test
-      - name: 本機模式：Python 與本機伺服器
-        shell: bash
-        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
       - name: 本機模式：LGPL ffmpeg
         uses: actions/download-artifact@v4
         with:
           name: ffmpeg-mac-${{ matrix.arch }}
           path: vendor/ffmpeg-${{ matrix.arch }}
+      - name: 本機模式：Python 與本機伺服器
+        shell: bash
+        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
       - name: 檢查本機模式的檔案齊全
         shell: bash
         env:
@@ -235,15 +235,15 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
       - run: npm test
-      - name: 本機模式：Python 與本機伺服器
-        shell: bash
-        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
       - name: 本機模式：LGPL ffmpeg
         if: matrix.arch == 'x64'
         uses: actions/download-artifact@v4
         with:
           name: ffmpeg-linux-${{ matrix.arch }}
           path: vendor/ffmpeg-${{ matrix.arch }}
+      - name: 本機模式：Python 與本機伺服器
+        shell: bash
+        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
       - name: 檢查本機模式的檔案齊全
         shell: bash
         env:
@@ -311,15 +311,15 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
       - run: npm test
-      - name: 本機模式：Python 與本機伺服器
-        shell: bash
-        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
       - name: 本機模式：LGPL ffmpeg
         if: matrix.arch == 'x64'
         uses: actions/download-artifact@v4
         with:
           name: ffmpeg-win-${{ matrix.arch }}
           path: vendor/ffmpeg-${{ matrix.arch }}
+      - name: 本機模式：Python 與本機伺服器
+        shell: bash
+        run: node scripts/prepare-local-server.mjs "${{ matrix.arch }}"
       - name: 檢查本機模式的檔案齊全
         shell: bash
         env:

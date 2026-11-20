@@ -98,6 +98,7 @@ function copyServer(src, files) {
 // and (when this arch's bundled ffmpeg is already in vendor/) an H.264 encoder
 function smoke(pyDir, serverDir, arch) {
   const ff = path.join(VENDOR, `ffmpeg-${arch}`, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  if (fs.existsSync(ff) && process.platform !== 'win32') fs.chmodSync(ff, 0o755);   // CI artifacts lose the exec bit
   execFileSync(pyBin(pyDir), ['-I', '-B', path.join(serverDir, 'local', 'smoke_packaged.py'), serverDir,
     ...(fs.existsSync(ff) ? ['--ffmpeg', ff] : []), '--json'], { stdio: 'inherit' });
 }
