@@ -123,6 +123,9 @@ class Registry:
     def _go_remote(self):
         for name in _LOCAL_FILE_TOOLS:
             self._tools.pop(name, None)
+        if not self.local:
+            for name in _LOCAL_UI_TOOLS:
+                self._tools.pop(name, None)
         self._tools.pop("session_logout", None)
         base = getattr(self.session, "public_url", None) or self.session.base_url
 
@@ -151,6 +154,9 @@ class Registry:
                   "name": {"type": "string"}, "type": {"type": "string"},
                   "tags": {"type": "array", "items": {"type": "string"}}}),
             self._h_asset_upload_remote, t.spends)
+        if not self.local:
+            for name in _LOCAL_DIRCTL_TOOLS:
+                self._tools.pop(name, None)
 
     def _h_asset_upload_remote(self, a):
         url, data = a.get("url"), a.get("data_uri")
@@ -312,6 +318,9 @@ class Registry:
                   "template": {"type": "string", "enum": ["meme"]}, "fields": {"type": "object"},
                   "dry_run": {"type": "boolean"}, "story": {"type": "string"}}, ["name"]),
             lambda a: _work_create(wb, a))
+
+        if self.local:
+            self._add_ui_tools(add)
 
         add("take_list",
             "列一鏡（shot_key）或整個專案的候選（take）：狀態、品管報告、是不是定稿；best＝品管最好的那支。免費。",
@@ -1026,6 +1035,8 @@ class Registry:
                   "seconds": {"type": "integer"}, "resolution": {"type": "string"},
                   "size": {"type": "string"}, "n": {"type": "integer"}}, ["model"]),
             lambda a: wb.estimate(dict(a)))
+        if self.local:
+            self._add_dirctl_tools(add)
         return tools
 
     def _h_capabilities(self, a):
@@ -1198,6 +1209,82 @@ class Registry:
         return {"state": "done", "url": "%s/api/download?id=%s" % (base, jid),
                 "auth": "GET 這個網址時帶同一把權杖：Authorization: Bearer <你的權杖>"}
 
+    def _add_ui_tools(self, add):
+        wb = self.wb
+        s = lambda v: {"type": "string"} if v is None else v
+        add("ui_actions_list",
+            "列出介面上可以擺的積木：動作（action、按鈕文字、會不會花錢）、項目種類（text／step／button）、上限、"
+            "prefs 能設的鍵，以及 ui_edit 能用的 op。先看這個再組介面。免費。",
+            _obj({}), lambda a: self._ui_catalog())
+        add("ui_get",
+            "讀介面描述檔。沒給 name：目前正在用的那份（desc、prefs）、所有 profile（誰存的、何時）、"
+            "「允許 Agent 直接套用介面」開了沒。給 name：讀那一份（含文字預覽）。免費。",
+            _obj({"name": s(None)}), self._h_ui_get)
+        add("ui_compose",
+            "用訪談的 8 題答案組出起點（answers 可以只給一部分，缺的用預設補、notes 會寫），存成工作稿（預設 name=draft）。"
+            "題目：genre（meme／short／long／ad／other）、steps（script／storyboard／cast／generate／select／post／sound／publish）、"
+            "budget、previs、agent（true／false）、publish（youtube／pitch／none）、density（simple／standard／pro）、lang（zh-TW／en）。免費。",
+            _obj({"answers": {"type": "object"}, "name": s(None), "title": s(None)}),
+            lambda a: wb.ui_desc_post({"op": "save", "name": a.get("name") or "draft", "answers": a.get("answers") or {},
+                                       **({"title": a["title"]} if a.get("title") else {})}))
+        add("ui_edit",
+            "細部編輯一份介面（預設 draft）：ops 照順序套用，每一步都過驗證器，任何一步不合法就整批不套用（回 op_index）。"
+            "op：add_panel {id,title,items,at?}、remove_panel {panel}、add_item {panel,item,at?}、remove_item {panel,index|action}、"
+            "move {panel,to}／{panel,item,to,to_panel?}、rename {name}／{panel,title}／{panel,item,label}、set_pref {key,value}。免費。",
+            _obj({"ops": {"type": "array", "items": {"type": "object"}}, "name": s(None)}, ["ops"]), self._h_ui_edit)
+        add("ui_preview",
+            "一份介面的文字預覽（由上往下：面板 → 按鈕，花錢的標出來，最後是偏好）。截圖要等 e2e（還沒開放）。免費。",
+            _obj({"name": s(None)}),
+            lambda a: self._ui_preview(a.get("name") or "draft"))
+        add("ui_save",
+            "把工作稿（from，預設 draft）存成一份正式的介面（name）。記成 Agent 存的。免費。",
+            _obj({"name": s(None), "from": s(None)}, ["name"]),
+            lambda a: wb.ui_desc_post({"op": "copy", "name": a["name"], "from": a.get("from") or "draft"}))
+        add("ui_apply",
+            "套用一份介面：直接生效（描述檔面板開著時 5 秒內重畫），不需要使用者另外允許。套用前會自動存一份上一版的快照，"
+            "所以隨時可以 ui_undo 還原、ui_reset 回預設。免費。",
+            _obj({"name": s(None)}, ["name"]),
+            lambda a: wb.ui_desc_post({"op": "activate", "name": a["name"]}))
+        add("ui_reset",
+            "回預設框架（清掉自訂的介面與偏好）。使用者說「回預設」「回原本的樣子」就用這個；之後可以 ui_undo 回到剛才那一版。免費。",
+            _obj({}), lambda a: wb.ui_desc_post({"op": "reset"}))
+        add("ui_undo",
+            "還原到上一版介面（每次套用、回預設、還原之前都會留快照；連按兩次就回到原本那一版）。免費。",
+            _obj({}), lambda a: wb.ui_desc_post({"op": "undo"}))
+        add("ui_onboarding_status",
+            "使用者是不是還沒建自己的介面（第一次進導演台要先「打造你的介面」）。needed=true 時請主動開始對話："
+            "問他想怎麼拍、常用哪些步驟，用 ui_compose／ui_edit／ui_apply 建好。他也可以在畫面上按「先用預設框架」跳過。免費。",
+            _obj({}), lambda a: wb.ui_desc_get(onboarding=True))
+
+    def _ui_catalog(self):
+        return self.wb.ui_desc_get(catalog=True)
+
+    def _h_ui_get(self, a):
+        if a.get("name"):
+            return self.wb.ui_desc_get(name=a["name"])
+        lst = self.wb.ui_desc_get()
+        out = {"profiles": lst.get("items"), "active": lst.get("active"), "can_undo": lst.get("can_undo")}
+        if lst.get("active"):
+            rec = self.wb.ui_desc_get(name=lst["active"])
+            out.update(desc=rec.get("desc"), prefs=rec.get("prefs"), preview=rec.get("preview"))
+        else:
+            out["preview"] = "（預設框架：沒有自訂面板）"
+        return out
+
+    def _h_ui_edit(self, a):
+        try:
+            return self.wb.ui_desc_post({"op": "edit", "name": a.get("name") or "draft", "ops": a["ops"]})
+        except ApiError as e:
+            p = e.payload if isinstance(e.payload, dict) else {}
+            if "op_index" in p:
+                return {"error": p.get("error"), "op_index": p["op_index"], "unchanged": True}
+            raise
+
+    def _ui_preview(self, name):
+        rec = self.wb.ui_desc_get(name=name)
+        return {"name": name, "text": rec.get("preview"), "screenshot": None,
+                "note": "截圖要起瀏覽器，等 e2e 的 A／B 決定後才開放；文字預覽就是面板由上往下的樣子"}
+
     def _h_quote(self, a):
         sheet = self.wb.request_confirmation(dict(a))
         if not is_confirmation(sheet):
@@ -1254,6 +1341,54 @@ class Registry:
                 "rules": ["花錢的每一步先報價、把金額告訴使用者",
                           "付款方在報價那一刻鎖定，確認時不能改",
                           "pending_confirmation 不是失敗，不要重送"]}
+
+    def _add_dirctl_tools(self, add):
+        wb = self.wb
+        add("dirctl_catalog",
+            "導演控制的選項表：運鏡 id（30 種，含中文與冷門標記）、速度、六欄（lens／style／color／light／location／sound）、"
+            "景別、角度、走位（x：left／center／right，depth：front／mid／back，facing）、對準角色的機位與景別、各欄上限，"
+            "以及 shot_dirctl_set 的 dc 欄位。先看這個再填。免費。",
+            _obj({}), lambda a: wb.dir_controls_get(full=True))
+        add("dirctl_compose",
+            "導演控制描述檔（dir_controls version 1：{version:1, prompt, camera:{move,speed,direction,end,size,angle,allow_cuts,rig}, "
+            "blocking:[{name, at:{x,depth}, facing, to, action}], performance:[{name, notes:[…]}], lens…sound}）→ "
+            "送件時組出來的完整提示詞與 warnings。只預覽、不送件。免費。",
+            _obj({"desc": {"type": "object"}}, ["desc"]), lambda a: wb.dir_controls_preview(a["desc"]))
+        add("previs_rig",
+            "3D 預演的對準角色機位：spec＝{rig: ots|two_shot, over/at（過肩：越過 over 看 at；反打＝兩個對調）或 a/b（雙人）, "
+            "size（ots：cu／mcu／ms；two_shot：ms／ws）, t（取第幾秒的站位）, side（front／back）}。"
+            "場景給 scene（previs v1 物件）或 scene_key（store 裡 previs- 開頭的鍵）。回固定機位 cam 與 notes；只算不寫。免費。",
+            _obj({"spec": {"type": "object"}, "scene": {"type": "object"}, "scene_key": {"type": "string"}}, ["spec"]),
+            self._h_previs_rig)
+        add("shot_dirctl_set",
+            "寫一部作品某一鏡的導演控制（dc）：直接生效、不需要使用者允許；送件時這一鏡有 dc 就帶（跟畫面開關無關），"
+            "開著的導演台幾秒內自動重讀這一格。dc 欄位：move、speed、direction、end、allow_cuts、lens、style、color、light、"
+            "location、sound、blocking[{name,x,depth,facing,tox,todepth,action}]、perf[{name,notes}]（見 dirctl_catalog）。"
+            "安全網：dc=null 清掉（回預設）；undo=true 換回上一版（每次寫入前都留一份）。shot 是第幾鏡（1 起算）或 sid。免費。",
+            _obj({"project_id": {"type": "string"}, "shot": {"type": ["integer", "string"]},
+                  "dc": {"type": ["object", "null"]}, "undo": {"type": "boolean"}}, ["project_id", "shot"]),
+            self._h_shot_dirctl)
+
+    def _h_previs_rig(self, a):
+        scene = a.get("scene")
+        if scene is None:
+            key = a.get("scene_key") or ""
+            if not key.startswith("previs"):
+                raise ValidationError("要給 scene，或 scene_key（previs- 開頭的 store 鍵）")
+            scene = self.wb.store_get(key).get("value")
+            if not isinstance(scene, dict):
+                raise ValidationError("store 裡沒有這個預演場景：%s" % key)
+        return self.wb.previs_rig(scene, a["spec"])
+
+    def _h_shot_dirctl(self, a):
+        body = {"project_id": a["project_id"], "shot": a["shot"]}
+        if a.get("undo") is True:
+            body["undo"] = True
+        elif "dc" in a:
+            body["dc"] = a["dc"]
+        else:
+            raise ValidationError("要給 dc（物件，或 null＝清掉），或 undo: true")
+        return self.wb.work_shot_dirctl(body)
 
     def _h_storyboard_quote(self, a):
         out, total, unknown = [], 0.0, False
@@ -1525,9 +1660,12 @@ _SPENDING_NAMES = ("video_confirm", "submit_approved", "image_generate", "audio_
                    "youtube_upload", "youtube_retry", "youtube_playlist_create", "youtube_auto_set",
                    "pitch_create")
 _DESTRUCTIVE_NAMES = ("project_delete", "asset_delete", "store_delete")
+_LOCAL_DIRCTL_TOOLS = ("dirctl_catalog", "dirctl_compose", "previs_rig", "shot_dirctl_set")
 _LOGOUT_NAMES = ("session_logout",)
 _TOPUP_NAMES = ("wallet_topup_intent",)
 _LOCAL_FILE_TOOLS = ("video_fetch", "post_process_fetch", "audio_music_fetch", "asset_fetch")
+_LOCAL_UI_TOOLS = ("ui_actions_list", "ui_get", "ui_compose", "ui_edit", "ui_preview", "ui_save", "ui_apply", "ui_reset",
+                   "ui_undo", "ui_onboarding_status")
 
 class _NoLedger:
 

@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import urllib.error
 import urllib.request
@@ -159,3 +160,46 @@ def ref_from_catalog(model, listing):
         if m.get("family") == model and p.get("id") == V1_PROVIDER and m.get("ref"):
             return m["ref"]
     return model
+
+IMAGE_RECOVER_SLACK = 30
+IMG_ID = re.compile(r"^img_[0-9a-f]{1,64}$")
+IMAGE_LOST_TEXT = ("等不到這張圖（%s 送出的 %s）。可能已經生成了，但用量紀錄裡找不到唯一對得上的一筆，不替你猜；"
+                   "請到 AppleToken 的用量頁查 %s 之後的圖片紀錄。")
+
+def image_recover_mode():
+    v = os.environ.get("IMAGE_RECOVER", "off").strip().lower()
+    return v if v in ("shadow", "on") else "off"
+
+def dropped(e):
+    return isinstance(e, ConsoleError) and e.code == 502 and isinstance(e.body, str) \
+        and e.body.startswith("連不上 Gateway")
+
+def find_image(get, names, since, until, client_ref=None):
+    try:
+        got = get("/usage?limit=100")
+    except ConsoleError:
+        return "error", None
+    rows = got.get("data") if isinstance(got, dict) else None
+    if not isinstance(rows, list):
+        return "error", None
+    lo, hi = since - IMAGE_RECOVER_SLACK, until + IMAGE_RECOVER_SLACK
+    hits = [r.get("job_id") for r in rows
+            if isinstance(r, dict) and r.get("modality") == "image" and r.get("model") in names
+            and isinstance(r.get("created_at"), (int, float)) and lo <= r["created_at"] <= hi
+            and isinstance(r.get("job_id"), str) and IMG_ID.match(r["job_id"])]
+    if len(hits) == 1:
+        return "found", hits[0]
+    return ("none" if not hits else "multi"), None
+
+def recover_image(get, names, since, until, client_ref=None):
+    outcome, iid = find_image(get, names, since, until, client_ref)
+    if outcome != "found":
+        return None, outcome, None
+    try:
+        got = get("/images/" + iid)
+    except ConsoleError:
+        got = None
+    items = got.get("data") if isinstance(got, dict) else None
+    if not (isinstance(items, list) and any(isinstance(x, dict) and x.get("url") for x in items)):
+        return None, "unfetchable", iid
+    return got, "found", iid

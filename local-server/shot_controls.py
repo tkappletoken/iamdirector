@@ -96,3 +96,7 @@ def apply(prompt, controls):
 
 def catalog():
     return [{"id": k, "en": v[0], "zh": v[1], "rare": k in RARE} for k, v in MOVES.items()]
+
+def director_catalog():
+    return {"moves": catalog(), "speeds": list(SPEEDS), "text_fields": list(TEXT_FIELDS),
+            "labels": dict(LABEL), "max_text": MAX_TEXT}

@@ -62,16 +62,9 @@ TIMEOUT = 15
 GENERATE_TIMEOUT = 120
 IMAGE_TIMEOUT = 610
 IMAGE_TIMEOUTS_KEPT = 50
-IMAGE_RECOVER_SLACK = 30
 IMAGE_RECOVER_KEPT = 50
-IMG_ID = re.compile(r"^img_[0-9a-f]{1,64}$")
-
-def image_recover_mode():
-    v = os.environ.get("IMAGE_RECOVER", "off").strip().lower()
-    return v if v in ("shadow", "on") else "off"
-
-def _dropped(e):
-    return e.code == 502 and isinstance(e.body, str) and e.body.startswith("連不上 Gateway")
+image_recover_mode = upstream.image_recover_mode
+_dropped = upstream.dropped
 CONCAT_MAX = 30
 CONCAT_NAME = re.compile(r"(?:^|/)download\?id=([A-Za-z0-9_-]{1,64})$")
 CONCAT_FILE = re.compile(r"([A-Za-z0-9_-]{1,64})\.mp4")
@@ -132,10 +125,14 @@ LOCAL_API = (
     "/api/works/get", "/api/works/clone",
     "/api/local/engine",
     "/api/blocks", "/api/pipeline/preview",
+    "/api/dir-controls", "/api/dir-controls/preview",
+    "/api/previs-rig",
+    "/api/works/shot-dirctl",
     "/api/local/agent-scope",
     "/api/takes", "/api/takes/move", "/api/takes/qc", "/api/takes/pick", "/api/takes/retake-plan",
     "/api/chains", "/api/chains/next", "/api/chains/move",
     "/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/get", "/api/local/agent-loop",
+    "/api/local/ui-desc", "/api/local/ui-profiles",
     "/api/local/mcp-direct",
 )
 
@@ -153,7 +150,11 @@ AGENT_ALLOWED = {
 AGENT_ALLOWED |= set(takes.ROUTES)
 AGENT_ALLOWED |= {("POST", "/api/local/agent/start"), ("POST", "/api/local/agent/step"), ("GET", "/api/local/agent/get"),
                   ("GET", "/api/local/agent-loop")}
+AGENT_ALLOWED |= {("GET", "/api/local/ui-desc"), ("POST", "/api/local/ui-desc")}
+UI_PROFILES_OFF = "介面描述檔沒有開（設定 ui_profiles.json 或 STUDIO_LOCAL_UI_PROFILES=on）"
 AGENT_ALLOWED |= {("GET", "/api/local/mcp-direct")}
+AGENT_ALLOWED |= {("GET", "/api/dir-controls"), ("POST", "/api/dir-controls/preview"), ("POST", "/api/previs-rig"),
+                  ("POST", "/api/works/shot-dirctl")}
 AGENT_LOOP_OFF = "Filming Agent 主迴圈沒有開（設定 agent_loop.json 或 STUDIO_LOCAL_AGENT_LOOP=on）"
 AGENT_RUN = re.compile(r"^agr_[0-9a-f]{24}$")
 AGENT_SCOPES = ("basic", "full")
@@ -178,11 +179,89 @@ _AGENT_NO_CONFIRM = "本機的 Agent 不能直接確認：這張報價已經附�
 MCP_FILE = "mcp.json"
 JOB_ID_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _LATER = "本機模式還沒有這一項（之後的版本會補上）"
+DIRCTL_OFF = "導演控制的預覽送出句已關閉（STUDIO_LOCAL_DIRCTL=off）"
+DC_KEYS = ("move", "speed", "direction", "end", "allow_cuts", "lens", "style", "color", "light", "location", "sound",
+           "blocking", "perf")
+DC_BLOCK_KEYS = ("name", "x", "depth", "facing", "tox", "todepth", "action")
+
+def dc_clean(dc):
+    if not isinstance(dc, dict):
+        raise ValueError("dc 要是物件")
+    extra = set(dc) - set(DC_KEYS)
+    if extra:
+        raise ValueError("不認得的欄位 %s" % "、".join(sorted(extra)))
+    out = {}
+    for k, v in dc.items():
+        if k == "blocking":
+            if not isinstance(v, list):
+                raise ValueError("blocking 要是清單")
+            rows = []
+            for i, b in enumerate(v):
+                if not isinstance(b, dict) or set(b) - set(DC_BLOCK_KEYS):
+                    raise ValueError("blocking[%d] 只收 %s" % (i, "、".join(DC_BLOCK_KEYS)))
+                rows.append({kk: vv for kk, vv in b.items() if vv not in (None, "")})
+            v = rows
+        elif k == "perf":
+            if not isinstance(v, list) or not all(isinstance(p, dict) and set(p) <= {"name", "notes"} for p in v):
+                raise ValueError("perf 要是 [{name, notes}]")
+            v = [{"name": p.get("name"), "notes": "\n".join(p["notes"]) if isinstance(p.get("notes"), list) else p.get("notes")}
+                 for p in v]
+        elif k == "allow_cuts":
+            if not isinstance(v, bool):
+                raise ValueError("allow_cuts 要是 true／false")
+        elif v is not None and not isinstance(v, str):
+            raise ValueError("%s 要是字串" % k)
+        if v in (None, "", [], False):
+            continue
+        out[k] = v
+    if not out:
+        raise ValueError("dc 是空的（要清掉請給 null）")
+    return out
+
+def dc_controls(dc):
+    c = {"camera_move": dc.get("move"), "speed": dc.get("speed"), "direction": dc.get("direction"), "end": dc.get("end")}
+    if dc.get("allow_cuts"):
+        c["allow_cuts"] = True
+    for k in ("lens", "style", "color", "light", "location", "sound"):
+        c[k] = dc.get(k)
+    return {k: v for k, v in c.items() if v not in (None, "")}
+
+def dc_desc(dc):
+    cam = {k: dc[k] for k in ("move", "speed", "direction", "end") if dc.get(k)}
+    if dc.get("allow_cuts"):
+        cam["allow_cuts"] = True
+    blocking = []
+    for b in dc.get("blocking") or []:
+        one = {"name": b.get("name"), "at": {k: v for k, v in (("x", b.get("x")), ("depth", b.get("depth"))) if v}}
+        if b.get("facing"):
+            one["facing"] = b["facing"]
+        to = {k: v for k, v in (("x", b.get("tox")), ("depth", b.get("todepth"))) if v}
+        if to:
+            one["to"] = to
+        if b.get("action"):
+            one["action"] = b["action"]
+        blocking.append(one)
+    perf = [{"name": p.get("name"), "notes": [n for n in str(p.get("notes") or "").split("\n") if n.strip()]}
+            for p in dc.get("perf") or []]
+    d = {"version": 1, "prompt": "x", "camera": cam, "blocking": blocking, "performance": perf}
+    d.update({k: dc[k] for k in ("lens", "style", "color", "light", "location", "sound") if dc.get(k)})
+    return d
+
+def _shot_index(board, shot):
+    if isinstance(shot, int) and not isinstance(shot, bool):
+        return shot - 1 if 1 <= shot <= len(board) else None
+    if isinstance(shot, str) and shot:
+        for i, s in enumerate(board):
+            if isinstance(s, dict) and s.get("sid") == shot:
+                return i
+    return None
+PREVIS_RIG_OFF = "3D 預演的對準角色已關閉（STUDIO_LOCAL_PREVIS_RIG=off）"
 _LOGIN = "登入 iamdirector 帳號後才有這一項"
 MISSING = {
     "/api/upload": "本機素材改用下方的「素材」", "/api/uploads": "本機素材改用下方的「素材」",
     "/api/rates": "費率由 AppleToken 決定", "/api/timing": _LATER,
     "/api/image-outpaint": _LATER, "/api/check-asset": _LATER,
+    "/api/image-task": "本機生圖不需要輪詢",
     "/api/post-process": _LATER, "/api/post-process-status": _LATER, "/api/post-process-content": _LATER,
     "/api/assets/delete": _LATER, "/api/assets/mirror": "本機模式只有你自己的金鑰，不需要複製素材",
     "/api/assets/uploads": _LATER, "/api/assets/uploads/complete": _LATER, "/api/assets/update": _LATER,
@@ -199,6 +278,25 @@ MISSING = {
     "/api/agent/activity": _LATER, "/api/agent/pending": _LATER, "/api/agent/pending/decide": _LATER,
     "/api/logout": "本機模式不用登入",
 }
+
+UI_DESC_KEY = "ui-desc"
+
+def ui_desc_value(value):
+    try:
+        from filming import ui_schema
+    except ImportError:
+        return None, (503, {"error": "這一版沒有介面描述檔的驗證器，描述檔先不能存"})
+    try:
+        return ui_schema.store_value(value), None
+    except ui_schema.DescError as e:
+        return None, (400, {"error": "描述檔不合法：%s" % e})
+
+def ui_desc_actions():
+    try:
+        from filming import ui_schema
+        return ui_schema.client_actions()
+    except Exception:
+        return None
 
 def last4(key):
     return key[-4:] if isinstance(key, str) and len(key) >= 8 else ""
@@ -245,6 +343,9 @@ class State:
         self.quotes = {}
         self.agent_loop = secrets.token_urlsafe(32)
         self.mcp_token = None
+        self.dirctl_revs = {}
+        self.dirctl_writes = {}
+        self.dirctl_lock = threading.Lock()
         self.mcp_path = os.path.join(data_dir, MCP_FILE)
         self.sb = {}
         self.desktop = None
@@ -387,6 +488,76 @@ class State:
             gen_retry.log("agent_runs_unreadable", type(e).__name__)
             return True
         return any(str(take.get(k)) in ids for k in ("id", "job_id", "approval_id") if take.get(k))
+
+    def uiprofiles_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "ui_profiles.json"), encoding="utf-8") as f:
+                v = json.load(f).get("on")
+            return v if isinstance(v, bool) else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def uiprofiles_on(self):
+        v = self.uiprofiles_setting()
+        if v is not None:
+            return v
+        return os.environ.get("STUDIO_LOCAL_UI_PROFILES", "").strip().lower() in ("on", "1", "true")
+
+    def uiprofiles_onboarding(self):
+        try:
+            with open(os.path.join(self.data_dir, "ui_profiles.json"), encoding="utf-8") as f:
+                v = json.load(f).get("onboarding")
+            if isinstance(v, bool):
+                return v
+        except (OSError, ValueError, AttributeError):
+            pass
+        return os.environ.get("STUDIO_LOCAL_UI_ONBOARDING", "").strip().lower() in ("on", "1", "true")
+
+    def uiprofiles_info(self):
+        env = os.environ.get("STUDIO_LOCAL_UI_PROFILES", "").strip().lower() or None
+        return {"on": self.uiprofiles_on(), "setting": self.uiprofiles_setting(), "env": env,
+                "onboarding": self.uiprofiles_onboarding()}
+
+    _KEEP = object()
+
+    def bump_dirctl(self, key, sid=None):
+        with self.dirctl_lock:
+            self.dirctl_revs[key] = self.dirctl_revs.get(key, 0) + 1
+            if sid:
+                self.dirctl_writes.setdefault(key, {})[sid] = self.dirctl_revs[key]
+            return self.dirctl_revs[key]
+
+    def dirctl_rev_of(self, key):
+        key = key if isinstance(key, str) and key.startswith("sb_") and len(key) <= 40 else ""
+        with self.dirctl_lock:
+            return {"key": key, "rev": self.dirctl_revs.get(key, 0)}
+
+    def set_uiprofiles(self, value=_KEEP, onboarding=_KEEP):
+        path = os.path.join(self.data_dir, "ui_profiles.json")
+        try:
+            cur = {}
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    cur = json.load(f)
+            cur = cur if isinstance(cur, dict) else {}
+            if value is None:
+                cur.pop("on", None)
+            elif value is not self._KEEP:
+                cur["on"] = bool(value)
+            cur.pop("agent_apply", None)
+            if onboarding is not self._KEEP:
+                cur["onboarding"] = bool(onboarding)
+            if "on" not in cur and "onboarding" not in cur:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cur, f)
+            os.replace(tmp, path)
+            return True
+        except (OSError, ValueError):
+            return False
 
     def agentloop_info(self):
         env = os.environ.get("STUDIO_LOCAL_AGENT_LOOP", "").strip().lower() or None
@@ -643,7 +814,11 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return self._plain(401, "missing local token")
         allowed = AGENT_ALLOWED | AGENT_FULL if st.agent_scope_now() == "full" else AGENT_ALLOWED
-        if (self.command if self.command != "HEAD" else "GET", path) not in allowed:
+        want = (self.command if self.command != "HEAD" else "GET", path)
+        if want not in allowed:
+            if want in AGENT_FULL:
+                return self._json(403, {"error": "這一項要到設定開「Agent 可用全部功能」才能用（目前是基本範圍）",
+                                        "agent_scope": "basic"})
             return self._json(403, {"error": "本機的 Agent 只能報價、查詢、建作品和送出已核准的卡；"
                                              "核准、設上限、換金鑰要你本人在 App 裡操作"})
         return True
@@ -718,6 +893,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _json(self, code, obj):
+        if code == 403 and isinstance(obj, dict):
+            obj = dict(obj, local=True)
         self._send(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
 
     def _err(self, e, with_hints=True, **extra):
@@ -789,6 +966,9 @@ class Handler(BaseHTTPRequestHandler):
             "api_base": st.base, "api_is_public": st.base == DEFAULT_BASE,
             "api": list(LOCAL_API), "missing": dict(MISSING),
         }
+        acts = ui_desc_actions()
+        if acts:
+            manifest["ui_actions"] = acts
         web = os.environ.get("STUDIO_PUBLIC_ORIGIN", "").strip().rstrip("/")
         if re.match(r"^https?://[A-Za-z0-9.:-]+$", web):
             manifest["web_origin"] = web
@@ -829,6 +1009,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.agent_scope_info())
         if path == "/api/local/agent-loop":
             return self._json(200, st.agentloop_info())
+        if path == "/api/local/ui-profiles":
+            return self._json(200, st.uiprofiles_info())
+        if path == "/api/local/ui-desc":
+            return self._uiprofiles("GET", None, {"name": one("name"), "questions": one("questions"), "catalog": one("catalog"),
+                                                  "onboarding": one("onboarding")})
         if path == "/api/local/mcp-direct":
             return self._json(200, st.mcp_direct_info())
         if path == "/api/local/agent/get":
@@ -836,6 +1021,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/blocks":
             import postblocks
             return self._json(200, postblocks.catalog())
+        if path == "/api/dir-controls":
+            import shot_controls
+            if one("full") == "1":
+                return self._dirctl_catalog_full(shot_controls.director_catalog())
+            return self._json(200, shot_controls.director_catalog())
+        if path == "/api/works/shot-dirctl":
+            return self._json(200, self.state.dirctl_rev_of(one("key")))
         if path == "/api/twist":
             return self._twist(one("job"))
         if path == "/favicon.ico":
@@ -985,6 +1177,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, dict(self._payer_state(), removed=True))
         if path == "/api/pipeline/preview":
             return self._pipeline_preview(body)
+        if path == "/api/dir-controls/preview":
+            return self._dirctl_preview(body)
+        if path == "/api/previs-rig":
+            return self._previs_rig(body)
+        if path == "/api/works/shot-dirctl":
+            return self._shot_dirctl(body)
+        if path == "/api/local/ui-profiles":
+            v, ob = body.get("on"), body.get("onboarding")
+            if v is not None and not isinstance(v, bool):
+                return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
+            if ob is not None and not isinstance(ob, bool):
+                return self._json(400, {"error": "onboarding 要是 true／false"})
+            kw = {}
+            if "on" in body:
+                kw["value"] = v
+            if ob is not None:
+                kw["onboarding"] = ob
+            if not st.set_uiprofiles(**kw):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            return self._json(200, st.uiprofiles_info())
+        if path == "/api/local/ui-desc":
+            return self._uiprofiles("POST", body, None)
         if path == "/api/local/agent-loop":
             v = body.get("on")
             if v is not None and not isinstance(v, bool):
@@ -1148,7 +1362,15 @@ class Handler(BaseHTTPRequestHandler):
             key = (parse.parse_qs(u.query).get("key") or [""])[0]
             if "value" not in body:
                 return self._json(400, {"error": "缺少 value"})
-            return self._store(studio_store.kv_put, key, body["value"],
+            value = body["value"]
+            if key == UI_DESC_KEY:
+                value, bad = ui_desc_value(value)
+                if bad:
+                    return self._json(*bad)
+            if key.startswith("sb_") and isinstance(body.get("dirctl"), dict) and isinstance(value, list):
+                if self._board_merge(key, value, body["dirctl"]):
+                    return
+            return self._store(studio_store.kv_put, key, value,
                                shape=lambda r: {"ok": True, "bytes": r["bytes"]})
         if path == "/api/projects/create":
             name = (body.get("name") or "").strip() if isinstance(body.get("name"), str) else ""
@@ -1631,6 +1853,139 @@ class Handler(BaseHTTPRequestHandler):
     def _takes(self, method, path, body, q):
         picker = "human" if self._human() else "agent"
         code, out = self.state.db.run(lambda c, u: takes.handle(c, u, method, path, body, q, picker))
+        return self._json(code, out)
+
+    def _dirctl_preview(self, body):
+        if os.environ.get("STUDIO_LOCAL_DIRCTL", "on") == "off":
+            return self._json(501, {"error": DIRCTL_OFF})
+        from filming import dir_controls
+        import shot_controls
+        try:
+            out = dir_controls.compose(body if isinstance(body, dict) else {}, apply_controls=shot_controls.apply)
+        except (dir_controls.DirControlsError, shot_controls.ControlsError) as e:
+            return self._json(400, {"error": str(e)})
+        return self._json(200, {"prompt": out["prompt"], "warnings": out["warnings"]})
+
+    def _dirctl_catalog_full(self, base):
+        from filming import dir_controls as D
+        base = dict(base, director={
+            "sizes": dict(D.SIZE_IDS), "angles": dict(D.ANGLES), "xs": dict(D.XS), "depths": dict(D.DEPTHS),
+            "facings": dict(D.FACINGS), "rigs": {k: list(v) for k, v in D.RIG_SIZES.items()},
+            "limits": {"name": D.MAX_NAME, "note": D.MAX_NOTE, "notes": D.MAX_NOTES, "actors": D.MAX_ACTORS,
+                       "prompt": D.MAX_PROMPT},
+            "dc_keys": list(DC_KEYS), "blocking_keys": list(DC_BLOCK_KEYS)})
+        return self._json(200, base)
+
+    def _shot_dirctl(self, body):
+        from filming import dir_controls as D
+        import shot_controls
+        body = body if isinstance(body, dict) else {}
+        pid, shot = body.get("project_id"), body.get("shot")
+        undo = body.get("undo") is True
+        if not undo and "dc" not in body:
+            return self._json(400, {"error": "要給 dc（物件，或 null＝清掉），或 undo: true"})
+        new = body.get("dc")
+        if not undo and new is not None:
+            try:
+                new = dc_clean(new)
+                D.check(dc_desc(new))
+                shot_controls.check(dc_controls(new))
+            except (ValueError, shot_controls.ControlsError) as e:
+                return self._json(400, {"error": "dc 不合法：%s" % e})
+
+        def tx(conn, uid):
+            studio_store._check_pid(pid)
+            key = studio_store.board_key(pid)
+            board = studio_store.kv_get(conn, uid, key).get("value")
+            if not isinstance(board, list) or not board:
+                raise studio_store.StoreError(404, "not_found", "找不到這部作品的分鏡")
+            idx = _shot_index(board, shot)
+            if idx is None:
+                raise studio_store.StoreError(404, "no_shot", "這部作品沒有這一鏡（shot 用 1 起算的第幾鏡，或 sid）")
+            sh = dict(board[idx])
+            prev = sh.get("dc")
+            nxt = sh.get("dc_prev") if undo else new
+            sh.pop("dc", None)
+            sh.pop("dc_prev", None)
+            if nxt:
+                sh["dc"] = nxt
+            if prev:
+                sh["dc_prev"] = prev
+            board = list(board)
+            board[idx] = sh
+            studio_store.kv_put(conn, uid, key, board)
+            return {"key": key, "shot": idx + 1, "sid": sh.get("sid"), "dc": sh.get("dc"), "prev": prev}
+        try:
+            out = self.state.db.run(tx)
+        except studio_store.StoreError as e:
+            return self._json(e.code, e.body)
+        out["rev"] = self.state.bump_dirctl(out["key"], out.get("sid"))
+        out["note"] = "已寫入這一鏡；送件時有 dc 就帶（跟畫面開關無關）。開著的導演台幾秒內自動重讀這一格"
+        return self._json(200, out)
+
+    def _board_merge(self, key, value, meta):
+        st = self.state
+        sent = meta.get("rev")
+        touched = {x for x in (meta.get("touched") or []) if isinstance(x, str)}
+        with st.dirctl_lock:
+            cur = st.dirctl_revs.get(key, 0)
+            written = dict(st.dirctl_writes.get(key) or {})
+        if not isinstance(sent, int) or isinstance(sent, bool) or sent >= cur:
+            return False
+        late = {sid for sid, r in written.items() if r > sent}
+
+        def tx(conn, uid):
+            srv = studio_store.kv_get(conn, uid, key).get("value")
+            by = {s.get("sid"): s for s in (srv if isinstance(srv, list) else []) if isinstance(s, dict) and s.get("sid")}
+            out, merged = [], []
+            for i, s in enumerate(value):
+                sid = s.get("sid") if isinstance(s, dict) else None
+                if sid not in late or sid not in by:
+                    out.append(s)
+                    continue
+                s, a = dict(s), by[sid]
+                if sid in touched:
+                    if a.get("dc") and a.get("dc") != s.get("dc"):
+                        s["dc_prev"] = a["dc"]
+                    kept = "human"
+                else:
+                    for k in ("dc", "dc_prev"):
+                        s.pop(k, None)
+                        if a.get(k):
+                            s[k] = a[k]
+                    kept = "agent"
+                merged.append({"shot": i + 1, "sid": sid, "kept": kept, "dc": s.get("dc"), "dc_prev": s.get("dc_prev")})
+                out.append(s)
+            r = studio_store.kv_put(conn, uid, key, out)
+            return {"ok": True, "bytes": r["bytes"], "rev": cur, "merged": merged}
+        try:
+            self._json(200, st.db.run(tx))
+        except studio_store.StoreError as e:
+            self._json(e.code, e.body)
+        return True
+
+    def _previs_rig(self, body):
+        if os.environ.get("STUDIO_LOCAL_PREVIS_RIG", "on") == "off":
+            return self._json(501, {"error": PREVIS_RIG_OFF})
+        from filming import camera_rigs
+        body = body if isinstance(body, dict) else {}
+        scene, spec = body.get("scene"), body.get("spec")
+        if not isinstance(scene, dict) or not isinstance(scene.get("objs"), list):
+            return self._json(400, {"error": "scene 要是 3D 預演的場景"})
+        try:
+            return self._json(200, camera_rigs.rig(scene, spec))
+        except (ValueError, KeyError, TypeError, IndexError) as e:
+            return self._json(400, {"error": str(e) or type(e).__name__})
+
+    def _uiprofiles(self, method, body, query):
+        st = self.state
+        if not st.uiprofiles_on():
+            return self._json(501, {"error": UI_PROFILES_OFF})
+        import ui_profiles
+        code, out = ui_profiles.handle(method, body, who="human" if self._human() else "agent", data_dir=st.data_dir,
+                                       put=lambda k, v: st.db.run(studio_store.kv_put, k, v),
+                                       get=lambda k: st.db.run(studio_store.kv_get, k)["value"],
+                                       query=query, onboarding=st.uiprofiles_onboarding())
         return self._json(code, out)
 
     def _agentloop(self, op, body):
@@ -2238,44 +2593,22 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(work, ignore_errors=True)
         return self._json(200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": lossless, "path": kept})
 
-    def _image_find(self, model, since, until, client_ref=None):
+    def _image_names(self, model):
         names = {model}
         if upstream.needs_ref(model):
             try:
                 names.add(upstream.ref_from_catalog(model, self.state.models_cached()[0]))
             except ConsoleError:
                 pass
-        try:
-            got = self.state.call("/usage?limit=100", timeout=TIMEOUT)
-        except ConsoleError:
-            return "error", None
-        rows = got.get("data") if isinstance(got, dict) else None
-        if not isinstance(rows, list):
-            return "error", None
-        lo, hi = since - IMAGE_RECOVER_SLACK, until + IMAGE_RECOVER_SLACK
-        hits = [r.get("job_id") for r in rows
-                if isinstance(r, dict) and r.get("modality") == "image" and r.get("model") in names
-                and isinstance(r.get("created_at"), (int, float)) and lo <= r["created_at"] <= hi
-                and isinstance(r.get("job_id"), str) and IMG_ID.match(r["job_id"])]
-        if len(hits) == 1:
-            return "found", hits[0]
-        return ("none" if not hits else "multi"), None
+        return names
 
     def _image_recover(self, body, started):
         mode = image_recover_mode()
         if mode == "off":
             return None, None
         model = str(body.get("model") or "")[:120]
-        outcome, iid = self._image_find(model, started, int(time.time()))
-        got = None
-        if outcome == "found":
-            try:
-                got = self.state.call("/images/" + iid, timeout=TIMEOUT)
-            except ConsoleError:
-                got = None
-            items = got.get("data") if isinstance(got, dict) else None
-            if not (isinstance(items, list) and any(isinstance(x, dict) and x.get("url") for x in items)):
-                outcome, got = "unfetchable", None
+        got, outcome, iid = upstream.recover_image(lambda p: self.state.call(p, timeout=TIMEOUT),
+                                                   self._image_names(model), started, int(time.time()))
         rec = {"at": started, "model": model, "mode": mode, "outcome": outcome}
         if iid:
             rec["id"] = iid
@@ -2611,6 +2944,9 @@ class Handler(BaseHTTPRequestHandler):
         container = body.pop("container", None) or "mp4"
         if container not in ("mp4", "webm"):
             return self._json(400, {"error": "container 只能是 mp4／webm"})
+        body, stop = self._resolve_logos(body)
+        if stop:
+            return self._json(*stop)
         try:
             req = export_spec.normalize(body)
         except export_spec.ExportError as e:
@@ -2634,6 +2970,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "這台電腦不支援匯出成 %s" % str(container)[:8]})
         if container == "mp4" and cfg["h264"] == "download":
             return self._json(409, {"error": "匯出 MP4 需要 H.264 編碼器", "h264_needed": True})
+        body, stop = self._resolve_logos(body)
+        if stop:
+            return self._json(*stop)
         try:
             req = export_spec.normalize(body)
         except export_spec.ExportError as e:
@@ -2648,7 +2987,47 @@ class Handler(BaseHTTPRequestHandler):
         with st.lock:
             st.exports[eid] = job
         threading.Thread(target=self._export_run, args=(eid, req, container), daemon=True).start()
-        return self._json(202, {"id": eid, "state": "staging"})
+        out = {"id": eid, "state": "staging"}
+        try:
+            note = export_spec.pipeline_note(req, st.engine_now(), container, os.path.join(ROOT, "fonts"))
+        except Exception as e:
+            note = {"pipeline_ignored": "unchecked", "pipeline_error": type(e).__name__} if req.get("pipeline") else None
+        if note:
+            out.update(note)
+        return self._json(202, out)
+
+    def _resolve_logos(self, body):
+        st = self.state
+        aids = export_spec.logo_assets(body)
+        if not aids:
+            return body, None
+        if not st.key():
+            return None, (409, NO_KEY)
+        src_dir = os.path.join(st.exports_root, self.SRC_BUCKET, "originals", self.USER)
+        os.makedirs(src_dir, exist_ok=True)
+        keys = {}
+        for aid in aids:
+            try:
+                resp = st.call("/assets/%s/content" % aid, stream=True, timeout=60)
+            except ConsoleError as e:
+                if e.code in (403, 404):
+                    return None, (404, {"error": "找不到這個素材（logo）：%s" % aid})
+                return None, (e.code if 400 <= e.code < 600 else 502, {"error": "取不到 logo（AppleToken 回 %s）" % e.code})
+            try:
+                raw = resp.read(export_spec.LOGO_MAX + 1)
+            finally:
+                resp.close()
+            if len(raw) > export_spec.LOGO_MAX or export_spec.image_kind(raw[:8]) is None:
+                return None, (400, {"error": "logo 要是 png 或 jpeg，而且小於 20 MB（%s）" % aid})
+            sha = hashlib.sha256(raw).hexdigest()
+            dst = os.path.join(src_dir, sha)
+            if not os.path.exists(dst):
+                tmp = os.path.join(src_dir, ".part-" + secrets.token_hex(6))
+                with open(tmp, "wb") as f:
+                    f.write(raw)
+                os.replace(tmp, dst)
+            keys[aid] = "originals/%s/%s" % (self.USER, sha)
+        return export_spec.with_logo_keys(body, keys), None
 
     def _project_name(self, pid):
         if not isinstance(pid, str) or not PROJECT_ID.match(pid):

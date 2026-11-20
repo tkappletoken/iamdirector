@@ -371,6 +371,18 @@ class Workbench:
         return self.c.post("/api/generate", {"quote_id": quote_id, "confirm": True},
                            spending=True, timeout=TIMEOUT_GENERATE)
 
+    def dir_controls_get(self, full=False):
+        return self.c.get("/api/dir-controls", params={"full": "1"} if full else None)
+
+    def dir_controls_preview(self, desc):
+        return self.c.post("/api/dir-controls/preview", desc)
+
+    def previs_rig(self, scene, spec):
+        return self.c.post("/api/previs-rig", {"scene": scene, "spec": spec})
+
+    def work_shot_dirctl(self, body):
+        return self.c.post("/api/works/shot-dirctl", body)
+
     def work_get(self, project_id):
         _check(project_id, PROJECT_ID_RE, "project id", "^[0-9a-fA-F-]{36}$")
         return self.c.get("/api/works/get", params={"project_id": project_id})
@@ -378,6 +390,14 @@ class Workbench:
     def takes_list(self, project_id=None, shot_key=None, take_id=None):
         params = {k: v for k, v in (("project_id", project_id), ("shot_key", shot_key), ("id", take_id)) if v}
         return self.c.get("/api/takes", params=params)
+
+    def ui_desc_get(self, name=None, questions=False, catalog=False, onboarding=False):
+        flag = "questions" if questions else "catalog" if catalog else "onboarding" if onboarding else None
+        params = {"name": name} if name else ({flag: "1"} if flag else None)
+        return self.c.get("/api/local/ui-desc", params=params)
+
+    def ui_desc_post(self, body):
+        return self.c.post("/api/local/ui-desc", body)
 
     def take_add(self, shot_key, project_id=None, job_id=None, parent_take=None, reason=None, approval_id=None,
                  status="queued"):

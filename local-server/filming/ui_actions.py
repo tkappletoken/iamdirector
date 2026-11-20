@@ -14,6 +14,7 @@ ACTIONS = {
     "pitch.open":     {"feature": "pitch_package", "call": "__PITCH__.open",        "spend": "none",    "label": "投稿包"},
     "agent.open":     {"feature": "agent_activity", "call": "__AGENT_PANEL__.open", "spend": "none",    "label": "Agent 協作"},
     "mode.set":       {"feature": "workflow",      "call": "__SIMPLE__.setMode",    "spend": "none",    "label": "切換模式"},
+    "generate.open":  {"feature": "video_quote",   "call": "__GENERATE__.open",     "spend": "confirm", "label": "開拍"},
 }
 
 NEVER_FEATURES = ("payer_key", "wallet", "topup", "agent_tokens", "logout", "agent_pending")

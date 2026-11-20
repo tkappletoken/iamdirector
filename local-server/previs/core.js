@@ -99,6 +99,7 @@ export function normalize(raw, fallback) {
     fps: FPS,
     aspect: /^\d{1,2}:\d{1,2}$/.test(s.aspect || '') ? s.aspect : (fb.aspect || '16:9'),
     objs, cam,
+    ...(typeof s.subject_height === 'number' && s.subject_height >= 0.05 && s.subject_height <= 3 ? { subject_height: r3(s.subject_height) } : {}),
   };
 }
 function normKeys(list, fix) {
@@ -179,15 +180,22 @@ export function fitKeys(keys, dur) {
 const rad = d => d * Math.PI / 180;
 const around = (T, d, az, y) => [T[0] + d * Math.sin(rad(az)), y, T[2] + d * Math.cos(rad(az))];
 
-export function framing(cam, T) {
+export const REF_HEIGHT = 1.7;
+export function subjectScale(scene) {
+  const h = scene && scene.subject_height;
+  return typeof h === 'number' && h >= 0.05 && h <= 3 ? h / REF_HEIGHT : 1;
+}
+export function framing(cam, T, scale) {
   const c = cam || {};
-  const [hFrame, mm0] = SIZE_FRAME[c.size] || SIZE_FRAME.ms;
+  const s = scale || 1;
+  const [hFrame0, mm0] = SIZE_FRAME[c.size] || SIZE_FRAME.ms;
+  const hFrame = hFrame0 * s;
   const mm = mm0;
   const half = rad(vfov(mm) / 2);
-  const d = clamp(hFrame / 2 / Math.tan(half), 0.6, 60);
-  let y = T[1] + 0.15, roll = 0, top = false;
+  const d = clamp(hFrame / 2 / Math.tan(half), 0.6 * s, 60);
+  let y = T[1] + 0.15 * s, roll = 0, top = false;
   if (c.angle === 'high') y = T[1] + d * 0.55;
-  else if (c.angle === 'low') y = Math.max(0.25, T[1] - d * 0.35);
+  else if (c.angle === 'low') y = Math.max(0.25 * s, T[1] - d * 0.35);
   else if (c.angle === 'top') { y = T[1] + d; top = true; }
   else if (c.angle === 'dutch') roll = 14;
   return { d, mm, y, roll, top };
@@ -198,7 +206,9 @@ export function camPath(cam, ctx) {
   const T = (ctx && ctx.target) || [0, 1.2, 0];
   const dur = clamp(num(ctx && ctx.dur, 5), 0.5, 30);
   const k = SPEED_K[c.speed] || 1;
-  const f = framing(c, T);
+  const s = (ctx && ctx.scale) || 1;
+  const [c24, c04, c11, c22, c7, c26, c008, c005, c006, c004] = [2.4, 0.4, 1.1, 2.2, 7, 2.6, 0.08, 0.05, 0.06, 0.04].map(v => v * s);
+  const f = framing(c, T, s);
   const moveEnd = dur > 2.5 ? dur - 1 : dur;
   const N = 8;
   const out = [];
@@ -217,26 +227,26 @@ export function camPath(cam, ctx) {
     case 'orbit_r': sweep(e => base(60 * k * e, f.d, f.y)); break;
     case 'arc': sweep(e => base(-45 * k + 90 * k * e, f.d, f.y)); break;
     case 'orbit_360': sweep(e => base(360 * e, f.d, f.y)); note = '360 度環繞：旋轉鏡頭要有正反面參考圖（方塊背面是暗色）'; break;
-    case 'crane_up': sweep(e => base(0, f.d, f.y + 2.4 * k * e, [T[0], T[1] + 0.4 * e, T[2]])); break;
-    case 'crane_down': sweep(e => base(0, f.d, f.y + 2.4 * k * (1 - e), [T[0], T[1] + 0.4 * (1 - e), T[2]])); break;
-    case 'tilt_up': sweep(e => base(0, f.d, f.y, [T[0], T[1] - 1.1 * k + 2.2 * k * e, T[2]])); break;
-    case 'tilt_down': sweep(e => base(0, f.d, f.y, [T[0], T[1] + 1.1 * k - 2.2 * k * e, T[2]])); break;
-    case 'drone_rise': sweep(e => base(0, f.d * (1 + 1.5 * e * k), f.y + 7 * k * e, [T[0], T[1] * (1 - e * 0.6), T[2]])); break;
+    case 'crane_up': sweep(e => base(0, f.d, f.y + c24 * k * e, [T[0], T[1] + c04 * e, T[2]])); break;
+    case 'crane_down': sweep(e => base(0, f.d, f.y + c24 * k * (1 - e), [T[0], T[1] + c04 * (1 - e), T[2]])); break;
+    case 'tilt_up': sweep(e => base(0, f.d, f.y, [T[0], T[1] - c11 * k + c22 * k * e, T[2]])); break;
+    case 'tilt_down': sweep(e => base(0, f.d, f.y, [T[0], T[1] + c11 * k - c22 * k * e, T[2]])); break;
+    case 'drone_rise': sweep(e => base(0, f.d * (1 + 1.5 * e * k), f.y + c7 * k * e, [T[0], T[1] * (1 - e * 0.6), T[2]])); break;
     case 'pan_l': case 'pan_r': {
-      const s = mv === 'pan_l' ? -1 : 1;
+      const sg = mv === 'pan_l' ? -1 : 1;
       const P = around(T, f.d, 0, f.y);
       const L = Math.hypot(T[0] - P[0], T[2] - P[2]);
-      sweep(e => { const a = rad(s * 40 * k * (e - 0.5)); return pose(P, [P[0] + L * Math.sin(a), T[1], P[2] - L * Math.cos(a)], f.mm, f.roll); });
+      sweep(e => { const a = rad(sg * 40 * k * (e - 0.5)); return pose(P, [P[0] + L * Math.sin(a), T[1], P[2] - L * Math.cos(a)], f.mm, f.roll); });
       break;
     }
     case 'truck_l': case 'truck_r': {
-      const s = mv === 'truck_l' ? -1 : 1;
-      sweep(e => { const dx = s * 2.6 * k * (e - 0.5); const P = around(T, f.d, 0, f.y); return pose([P[0] + dx, P[1], P[2]], [T[0] + dx, T[1], T[2]], f.mm, f.roll); });
+      const sg = mv === 'truck_l' ? -1 : 1;
+      sweep(e => { const dx = sg * c26 * k * (e - 0.5); const P = around(T, f.d, 0, f.y); return pose([P[0] + dx, P[1], P[2]], [T[0] + dx, T[1], T[2]], f.mm, f.roll); });
       break;
     }
     case 'track': {
       const fol = ctx && typeof ctx.follow === 'function' ? ctx.follow : null;
-      const moving = fol && Math.hypot(...[0, 1, 2].map(i => fol(dur)[i] - fol(0)[i])) > 0.05;
+      const moving = fol && Math.hypot(...[0, 1, 2].map(i => fol(dur)[i] - fol(0)[i])) > c005;
       if (moving) {
         for (let i = 0; i <= N; i++) {
           const t = r3(dur * i / N);
@@ -244,7 +254,7 @@ export function camPath(cam, ctx) {
           out.push(Object.assign({ t }, pose(around(q, f.d, 0, f.y - T[1] + q[1]), q, f.mm, f.roll)));
         }
       } else {
-        sweep(e => { const dz = -2.2 * k * e; const P = around(T, f.d, 0, f.y); return pose([P[0], P[1], P[2] + dz], [T[0], T[1], T[2] + dz], f.mm, f.roll); });
+        sweep(e => { const dz = -c22 * k * e; const P = around(T, f.d, 0, f.y); return pose([P[0], P[1], P[2] + dz], [T[0], T[1], T[2] + dz], f.mm, f.roll); });
         note = '跟拍：主體還沒有移動的關鍵幀，先做成往前推；角色打好走位之後再按一次「產生」';
       }
       break;
@@ -255,8 +265,8 @@ export function camPath(cam, ctx) {
       const M = Math.max(4, Math.round(dur * 3));
       for (let i = 0; i <= M; i++) {
         const P = around(T, f.d, 0, f.y);
-        out.push(Object.assign({ t: r3(dur * i / M) }, pose([P[0] + rnd() * 0.08, P[1] + rnd() * 0.05, P[2] + rnd() * 0.05],
-          [T[0] + rnd() * 0.06, T[1] + rnd() * 0.04, T[2]], f.mm, f.roll + rnd() * 1.6)));
+        out.push(Object.assign({ t: r3(dur * i / M) }, pose([P[0] + rnd() * c008, P[1] + rnd() * c005, P[2] + rnd() * c005],
+          [T[0] + rnd() * c006, T[1] + rnd() * c004, T[2]], f.mm, f.roll + rnd() * 1.6)));
       }
       break;
     }
