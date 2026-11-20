@@ -6795,11 +6795,13 @@ document.addEventListener('keydown', e => {
   }
   async function batchRun(payloads, labels) {
     const rows = [];
-    payloads = payloads.map(p => { const c = JSON.parse(JSON.stringify(p)); delete c._vars;
-      if (typeof window.__PREP_PAYLOAD__ === 'function') { try { window.__PREP_PAYLOAD__(c, { fromBoard: true }); } catch (e) {} }
+    const dcs = [];
+    payloads = payloads.map((p, i) => { const c = JSON.parse(JSON.stringify(p)); delete c._vars;
+      if (typeof window.__PREP_PAYLOAD__ === 'function') { try { const ap = window.__PREP_PAYLOAD__(c, { fromBoard: true }); dcs[i] = ap && ap.dc; } catch (e) {} }
       return c; });
     for (let i = 0; i < payloads.length; i++) {
       const row = { label: (labels && labels[i]) || ('第 ' + (i + 1) + ' 鏡') };
+      if (dcs[i]) row.dc = dcs[i];
       try {
         const r = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(Object.assign({}, payloads[i], { require_confirmation: true })) });
@@ -6847,6 +6849,10 @@ document.addEventListener('keydown', e => {
         else { c2.textContent = '—'; c3.textContent = '拿不到'; c3.style.color = '#B3412E'; }
         if (r.secBlock || r.error) tr.style.color = '#B3412E';
         tr.append(c1, c2, c3); tb.append(tr);
+        if (r.dc && window.__DIRCTL__ && typeof window.__DIRCTL__.sheet === 'function') {
+          const el = window.__DIRCTL__.sheet(r.dc);
+          if (el) { const tr2 = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 3; td.append(el); tr2.append(td); tb.append(tr2); }
+        }
       });
       const sum = document.createElement('div');
       sum.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px;border-radius:10px;background:rgba(232,163,61,.14);border-left:4px solid var(--grease)';
@@ -14614,8 +14620,8 @@ document.addEventListener('keydown', e => {
     return out;
   }
   window.__PREP_PAYLOAD__ = (p, extra) => {
-    const off = p._rulesOff, meta = p._r2 || {};
-    delete p._rulesOff; delete p._r2;
+    const off = p._rulesOff, meta = p._r2 || {}, dcInfo = p._dc;
+    delete p._rulesOff; delete p._r2; delete p._dc;
     const derived = !!(extra && (extra.takeOf || extra.extendOf || extra.retake)) ||
                     RULES.some(r => { try { return String(p.prompt || '').includes(r.en(Object.assign({ lang: 'English' }, cfgNow()))); } catch (e) { return false; } });
     let list = [];
@@ -14627,6 +14633,13 @@ document.addEventListener('keydown', e => {
         .filter(r => String(p.prompt || '').includes(r.en));
     }
     const out = { rules: list.map(r => r.zh), cam: meta.cam || '', shot: meta.shot || null, spec: refSpec(p), kept: derived };
+    let dcShow = dcInfo;
+    if (!dcShow && extra && (extra.takeOf || extra.extendOf || extra.retake) && window.__DIRCTL__ && typeof window.__DIRCTL__.derive === 'function') {
+      try {
+        dcShow = window.__DIRCTL__.derive(p, RULES.map(r => { try { return r.en(Object.assign({ lang: 'English' }, cfgNow())); } catch (e) { return ''; } }));
+      } catch (e) { dcShow = null; }
+    }
+    if (dcShow) out.dc = dcShow;
     if (window.__R3__ && typeof window.__R3__.prep === 'function') { try { window.__R3__.prep(out, meta, extra || {}); } catch (e) {} }
     if (window.__R5__ && typeof window.__R5__.prep === 'function') { try { window.__R5__.prep(out, p, extra || {}); } catch (e) {} }
     return out;
@@ -14642,6 +14655,9 @@ document.addEventListener('keydown', e => {
       if (a.rules && a.rules.length) d.append(h('div', null, '固定規則：' + a.rules.join('、')));
       if (a.cam) d.append(h('div', null, '運鏡：' + a.cam));
       box.append(d);
+    }
+    if (a.dc && window.__DIRCTL__ && typeof window.__DIRCTL__.sheet === 'function') {
+      try { const el = window.__DIRCTL__.sheet(a.dc); if (el) box.append(el); } catch (e) {}
     }
     if (a.spec && a.spec.length) {
       const w = h('div', 'r2-sheet');
@@ -21891,6 +21907,7 @@ document.addEventListener('keydown', e => {
       const extras = [];
       for (let n = row.nextElementSibling; n && !n.classList.contains('sbrow'); n = n.nextElementSibling) {
         if (n.classList.contains('meta') || n.classList.contains('sb-fold')) continue;
+        if (n.classList.contains('dc-mark')) continue;
         extras.push(n);
       }
       if (!extras.length) return;
@@ -25864,6 +25881,57 @@ function uiComposeAnswers(questions, picks) {
     DC_TEXT.forEach(k => { const t = dcTxt(dc && dc[k], DC_LIMIT.text); if (t) c[k] = t; });
     return Object.keys(c).length ? c : null;
   }
+  const SC_MOVES = { static: 'static shot', pan_left: 'pan left', pan_right: 'pan right', tilt_up: 'tilt up', tilt_down: 'tilt down',
+    dolly_in: 'dolly in', dolly_out: 'dolly out', zoom_in: 'zoom in', zoom_out: 'zoom out', truck_left: 'truck left', truck_right: 'truck right',
+    pedestal_up: 'pedestal up', pedestal_down: 'pedestal down', arc: 'arc shot around the subject', tracking: 'tracking shot following the subject',
+    handheld: 'handheld camera with slight natural shake', whip_pan: 'whip pan', crane_up: 'crane up', crane_down: 'crane down',
+    aerial: 'aerial drone shot', tiny_planet: 'tiny planet 360-degree view', orbit_360: '360-degree orbit around the subject',
+    bullet_time: 'bullet time, time frozen while the camera moves around the subject', camera_roll: 'camera roll rotating around the lens axis',
+    dolly_zoom: 'dolly zoom (vertigo effect)', rack_focus: 'rack focus from foreground to background', crash_zoom: 'crash zoom',
+    fpv_drone: 'FPV drone flying through the space', top_down_drop: 'top-down dive dropping toward the subject',
+    bolt_cam: 'high-speed robotic arm bolt cam move' };
+  const SC_SPEEDS = { slow: 'slow', medium: '', fast: 'fast' };
+  const SC_TEXT = ['lens', 'color', 'light', 'location', 'sound', 'style'];
+  const SC_LABEL = { lens: 'Lens', color: 'Color', light: 'Light', location: 'Location', sound: 'Sound', style: 'Style' };
+  const SC_CONTINUOUS = 'Single continuous shot from start to end.';
+  const scTxt = v => dcStrip(String(v == null ? '' : v).replace(/[\x00-\x1f\x7f]/g, ' ').trim().replace(/\s{2,}/g, ' ').slice(0, DC_LIMIT.text), ' .。');
+  function dcCtlLines(c) {
+    if (!c) return [];
+    const out = [];
+    const mv = c.camera_move;
+    if (mv && SC_MOVES[mv]) {
+      let head = SC_MOVES[mv];
+      if (mv !== 'static') {
+        const sp = SC_SPEEDS[c.speed || ''] || '';
+        head = (sp ? sp + ' ' : '') + head;
+        const d = scTxt(c.direction);
+        if (d) head += ' ' + d;
+      }
+      let line = 'Camera: ' + head;
+      const e = scTxt(c.end);
+      if (mv !== 'static' && e) line += ', ending on ' + e + ' and then holding still';
+      out.push(line + '.');
+    }
+    SC_TEXT.forEach(k => { const t = scTxt(c[k]); if (t) out.push(SC_LABEL[k] + ': ' + t + '.'); });
+    if (mv && SC_MOVES[mv] && c.allow_cuts !== true) out.push(SC_CONTINUOUS);
+    return out;
+  }
+  function dcInfo(dc, cam) {
+    const lines = [dcBlockingLine(dcBlocking(dc && dc.blocking))].concat(dcPerformanceLines(dcPerformance(dc && dc.perf))).filter(Boolean);
+    return { by: dc && (dc.by === 'agent' || dc.by === 'human') ? dc.by : '', lines, ctl: dcCtlLines(dcControls(dc, cam)) };
+  }
+  const DC_SEG_END = '(?= Performance \\(| Style: | Lens: | Color: | Light: | Location: | Sound: | Single continuous shot|$)';
+  function dcDerive(prompt, controls, stops) {
+    const cutStops = x => (stops || []).reduce((acc, st) => { const k = st ? acc.indexOf(st) : -1; return k > 0 ? acc.slice(0, k) : acc; }, x).trim();
+    const t = String(prompt || '');
+    const lines = [];
+    const b = t.match(new RegExp('Blocking: [\\s\\S]*?' + DC_SEG_END));
+    if (b) lines.push(cutStops(b[0]));
+    (t.match(new RegExp('Performance \\([^)]{1,40}\\): [\\s\\S]*?' + DC_SEG_END, 'g')) || []).forEach(x => lines.push(cutStops(x)));
+    const ctl = dcCtlLines(controls);
+    if (!lines.length && !ctl.length) return null;
+    return { by: '', kept: true, lines: lines.filter(Boolean), ctl };
+  }
   function dcApply(p, dc, cam) {
     if (!dc) return p;
     const extra = [dcBlockingLine(dcBlocking(dc.blocking))].concat(dcPerformanceLines(dcPerformance(dc.perf))).filter(Boolean);
@@ -25872,6 +25940,7 @@ function uiComposeAnswers(questions, picks) {
     const out = Object.assign({}, p);
     if (extra.length) out.prompt = (String(out.prompt || '').trim() + ' ' + extra.join(' ')).trim();
     if (ctl) out.controls = ctl;
+    out._dc = dcInfo(dc, cam);
     return out;
   }
   function dcDesc(dc, cam, prompt) {
@@ -25884,7 +25953,7 @@ function uiComposeAnswers(questions, picks) {
     DC_TEXT.forEach(k => { if (ctl[k]) d[k] = ctl[k]; });
     return d;
   }
-  window.__DIRCTL_PURE__ = { dcBlocking, dcBlockingLine, dcPerformance, dcPerformanceLines, dcControls, dcApply, dcDesc };
+  window.__DIRCTL_PURE__ = { dcBlocking, dcBlockingLine, dcPerformance, dcPerformanceLines, dcControls, dcApply, dcDesc, dcCtlLines, dcInfo, dcDerive };
   if (!window.__STUDIO__) return;
 
   const KEY = 'iamd-dc-panel';
@@ -25943,7 +26012,8 @@ function uiComposeAnswers(questions, picks) {
         if (v === '' || v === false || v == null || (Array.isArray(v) && !v.length)) return;
         clean[k] = v;
       });
-      if (Object.keys(clean).length) sh.dc = clean; else delete sh.dc;
+      delete clean.by;
+      if (Object.keys(clean).length) sh.dc = Object.assign(clean, { by: 'human' }); else delete sh.dc;
       if (sh.sid) touched.add(sh.sid);
       saveShots();
     };
@@ -26059,11 +26129,63 @@ function uiComposeAnswers(questions, picks) {
   const FACING_KEYS = {};
   Object.keys(FACING_ZH).forEach(k => { FACING_KEYS[FACING_ZH[k]] = k; });
 
+  const BY_ZH = { agent: 'Agent 寫入', human: '你寫的' };
+  const byText = by => BY_ZH[by] || '來源不明';
+  const CTL_ON = window.__STUDIO__.cast_refs === 'blocks';
+  function infoList(info, box, note) {
+    info.lines.forEach(t => box.append(el('div', 'dc-line', t)));
+    if (info.ctl.length) {
+      if (CTL_ON) info.ctl.forEach(t => box.append(el('div', 'dc-line', t)));
+      else box.append(el('div', note, '另有運鏡／六欄（' + info.ctl.length + ' 句），這個伺服器目前不套用，不會加進提示詞'));
+    }
+  }
+  function mark(sh, i) {
+    const info = dcInfo(sh.dc, sh.cam);
+    const d = el('details', 'dc-mark');
+    d.dataset.i = String(i);
+    d.append(el('summary', null, '🎬 導演控制（' + byText(sh.dc.by) + '）'));
+    const body = el('div', 'dc-mark-b');
+    body.append(el('div', 'dc-note', '送件時加進提示詞的句子：'));
+    infoList(info, body, 'dc-note');
+    const clr = el('button', 'r2-mini', '清除這一鏡的導演控制'); clr.type = 'button';
+    clr.title = '清掉之後送件不再帶；上一版留著，Agent 可以還原';
+    clr.onclick = () => {
+      sh.dc_prev = sh.dc; delete sh.dc;
+      if (sh.sid) touched.add(sh.sid);
+      saveShots(); window.renderShots();
+    };
+    body.append(clr);
+    d.append(body);
+    return d;
+  }
+  function paintMarks() {
+    document.querySelectorAll('#sbTable .sbrow').forEach(row => {
+      const i = Number(row.dataset.i);
+      const sh = typeof shots !== 'undefined' ? shots[i] : null;
+      if (!sh || !sh.dc) return;
+      let after = row;
+      while (after.nextElementSibling && !after.nextElementSibling.classList.contains('sbrow') &&
+             !after.nextElementSibling.classList.contains('dc-mark')) after = after.nextElementSibling;
+      if (after.nextElementSibling && after.nextElementSibling.classList.contains('dc-mark')) return;
+      addCss();
+      after.after(mark(sh, i));
+    });
+  }
+  function sheet(info) {
+    if (!info) return null;
+    const d = el('div', 'r2-sheet');
+    d.dataset.agent = 'dirctl-sheet';
+    d.append(el('div', 't', '導演控制（' + (info.kept ? '沿用原本那一件' : byText(info.by)) + '）'));
+    infoList(info, d, 'dc-sheet-note');
+    return d;
+  }
+
   const prevRender = window.renderShots;
   if (typeof prevRender === 'function') {
     window.renderShots = function () {
       const r = prevRender.apply(this, arguments);
-      if (!on || !CAT) return r;
+      if (!on) { try { paintMarks(); } catch (e) { console.warn('[dirctl] 標記', e && e.name); } return r; }
+      if (!CAT) return r;
       try {
         addCss();
         if (!document.getElementById('dcFacings')) {
@@ -26096,7 +26218,9 @@ function uiComposeAnswers(questions, picks) {
     '.dc-l{display:flex;flex-direction:column;gap:3px;margin:0;min-width:7em;flex:1}.dc-l>span{font-size:var(--fs-s,12px);opacity:.7}' +
     '.dc-chk{flex-direction:row;align-items:center;flex:0 0 auto}.dc-h{margin-top:8px;font-size:var(--fs-s,12px);opacity:.7}' +
     '.dc-note{font-size:var(--fs-s,12px);color:var(--grease,#e8a33d)}.dc-item textarea{min-height:2.6em}' +
-    '.dc-prev{white-space:pre-wrap;font:var(--fs-s,12px)/1.4 var(--mono,monospace);margin-top:6px;opacity:.85}';
+    '.dc-prev{white-space:pre-wrap;font:var(--fs-s,12px)/1.4 var(--mono,monospace);margin-top:6px;opacity:.85}' +
+    '.dc-mark{margin:-4px 0 10px 32px;font-size:var(--fs-s,12px)}.dc-mark>summary{cursor:pointer;display:inline-block;padding:2px 8px;' +
+    'border:1px solid var(--grease,#e8a33d);border-radius:999px}.dc-mark-b{padding:6px 2px}.dc-line{font-family:var(--mono,monospace)}';
     document.head.append(css);
   };
   let seenKey = null, seenRev = null, pending = false;
@@ -26168,7 +26292,7 @@ function uiComposeAnswers(questions, picks) {
         .catch(() => false);
     };
   }
-  window.__DIRCTL__ = { isOn: () => on, pollOnce };
+  window.__DIRCTL__ = { isOn: () => on, pollOnce, sheet, derive: (p, stops) => dcDerive(p && p.prompt, p && p.controls, stops) };
 })();
 (function studioPrevisRig() {
   const KEY = 'iamd-previs-rig';

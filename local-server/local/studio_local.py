@@ -181,7 +181,8 @@ JOB_ID_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _LATER = "本機模式還沒有這一項（之後的版本會補上）"
 DIRCTL_OFF = "導演控制的預覽送出句已關閉（STUDIO_LOCAL_DIRCTL=off）"
 DC_KEYS = ("move", "speed", "direction", "end", "allow_cuts", "lens", "style", "color", "light", "location", "sound",
-           "blocking", "perf")
+           "blocking", "perf", "by")
+DC_BY = ("agent", "human")
 DC_BLOCK_KEYS = ("name", "x", "depth", "facing", "tox", "todepth", "action")
 
 def dc_clean(dc):
@@ -206,6 +207,9 @@ def dc_clean(dc):
                 raise ValueError("perf 要是 [{name, notes}]")
             v = [{"name": p.get("name"), "notes": "\n".join(p["notes"]) if isinstance(p.get("notes"), list) else p.get("notes")}
                  for p in v]
+        elif k == "by":
+            if v not in DC_BY:
+                raise ValueError("by 只能是 %s" % "／".join(DC_BY))
         elif k == "allow_cuts":
             if not isinstance(v, bool):
                 raise ValueError("allow_cuts 要是 true／false")
@@ -214,7 +218,7 @@ def dc_clean(dc):
         if v in (None, "", [], False):
             continue
         out[k] = v
-    if not out:
+    if not set(out) - {"by"}:
         raise ValueError("dc 是空的（要清掉請給 null）")
     return out
 
@@ -965,6 +969,7 @@ class Handler(BaseHTTPRequestHandler):
             "has_password": False, "subscription_open": False, "points_enabled": False,
             "api_base": st.base, "api_is_public": st.base == DEFAULT_BASE,
             "api": list(LOCAL_API), "missing": dict(MISSING),
+            "cast_refs": cast_refs.mode(),
         }
         acts = ui_desc_actions()
         if acts:
@@ -1887,7 +1892,7 @@ class Handler(BaseHTTPRequestHandler):
         new = body.get("dc")
         if not undo and new is not None:
             try:
-                new = dc_clean(new)
+                new = dict(dc_clean(new), by="agent")
                 D.check(dc_desc(new))
                 shot_controls.check(dc_controls(new))
             except (ValueError, shot_controls.ControlsError) as e:
