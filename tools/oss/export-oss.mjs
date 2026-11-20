@@ -91,14 +91,14 @@ const missing = ['filming', 'export_lambda/postblocks'].flatMap((dir) =>
     .split('\n').filter((n) => n.endsWith('.py')).map((n) => dir + '/' + n)).filter((f) => !FILES.includes(f) && !NOT_SHIPPED.includes(f));
 if (missing.length) throw new Error('not in SERVER_FILES: ' + missing.join(', '));
 // Docstrings and strings ship verbatim, so the final output is scanned before anything is written.
-// INTERNAL_NAMES matches tests/test_oss_clean.py in the web repo; the prefixes cover pane names added later,
-// Dudu and Nini are the characters of an internal channel
-const INTERNAL_NAMES = ['導演指揮', '模組化畫面', '模組化M2', 'M2生成', '導演控制後端', '影片助手', '桌面-串接', '桌面-畫面',
-  '桌面-發版', '網頁-開發', '共用-整合', 'Navide', 'navide', '桌面-', '網頁-', '共用-', 'Dudu', 'Nini'];
+// INTERNAL_NAMES matches tests/test_oss_clean.py in the web repo
+const INTERNAL_NAMES = ['導演指揮', '指揮線', 'Appletoken指揮', '模組化畫面', '模組化M2', 'M2生成', '導演控制後端', '影片助手',
+  '桌面-', '網頁-', '共用-', 'Navide', 'navide', 'Dudu', 'Nini', 'dudunini'];
 const LEAKS = {
   'instance id': /\bi-0[0-9a-f]{8,17}\b/g,
   'host path': /\/Users\/[^/\s"']+/g,
   'AWS region': /\b(?:us|eu|ap|sa|ca|me|af|il)-(?:north|south|east|west|central|northeast|northwest|southeast|southwest)-\d\b/g,
+  'AWS account': /arn:aws:[a-z0-9-]*:[a-z0-9-]*:\d{12}/g,
   'internal name': new RegExp(INTERNAL_NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g'),
 };
 const out = FILES.map((f) => [f, transform(f, execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 }))]);
