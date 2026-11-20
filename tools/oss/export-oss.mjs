@@ -90,12 +90,31 @@ const missing = ['filming', 'export_lambda/postblocks'].flatMap((dir) =>
   execFileSync('git', ['-C', WEB, 'ls-tree', '--name-only', `${sha}:${dir}`], { encoding: 'utf8' })
     .split('\n').filter((n) => n.endsWith('.py')).map((n) => dir + '/' + n)).filter((f) => !FILES.includes(f) && !NOT_SHIPPED.includes(f));
 if (missing.length) throw new Error('not in SERVER_FILES: ' + missing.join(', '));
+// Docstrings and strings ship verbatim, so the final output is scanned before anything is written.
+// INTERNAL_NAMES matches tests/test_oss_clean.py in the web repo; the prefixes cover pane names added later,
+// Dudu and Nini are the characters of an internal channel
+const INTERNAL_NAMES = ['導演指揮', '模組化畫面', '模組化M2', 'M2生成', '導演控制後端', '影片助手', '桌面-串接', '桌面-畫面',
+  '桌面-發版', '網頁-開發', '共用-整合', 'Navide', 'navide', '桌面-', '網頁-', '共用-', 'Dudu', 'Nini'];
+const LEAKS = {
+  'instance id': /\bi-0[0-9a-f]{8,17}\b/g,
+  'host path': /\/Users\/[^/\s"']+/g,
+  'AWS region': /\b(?:us|eu|ap|sa|ca|me|af|il)-(?:north|south|east|west|central|northeast|northwest|southeast|southwest)-\d\b/g,
+  'internal name': new RegExp(INTERNAL_NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g'),
+};
+const out = FILES.map((f) => [f, transform(f, execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 }))]);
+const leaks = [];
+for (const [f, buf] of out) {
+  if (KEEP_AS_IS.some((r) => r.test(f)) || buf.includes(0)) continue;
+  buf.toString('utf8').split('\n').forEach((line, i) => {
+    for (const [kind, rx] of Object.entries(LEAKS)) for (const m of line.matchAll(rx)) leaks.push(`${f}:${i + 1} ${kind} "${m[0]}"`);
+  });
+}
+if (leaks.length) throw new Error('internal info in shipped files:\n' + leaks.join('\n'));
 fs.rmSync(OUT, { recursive: true, force: true });
-for (const f of FILES) {
-  const buf = execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 });
+for (const [f, buf] of out) {
   const dst = path.join(OUT, f);
   fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.writeFileSync(dst, transform(f, buf));
+  fs.writeFileSync(dst, buf);
 }
 fs.writeFileSync(path.join(OUT, 'SOURCE_COMMIT'), 'oss\n');
 console.log(`local-server/: ${FILES.length} files from ${sha.slice(0, 7)}`);
