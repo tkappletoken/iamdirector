@@ -23521,7 +23521,11 @@ document.addEventListener('keydown', e => {
           tags.hidden = !tags.childNodes.length;
         };
         paintTags();
-        mid.append(tags, lab, ta, meta, err);
+        const dcm = window.__DIRCTL__ && typeof window.__DIRCTL__.cardMark === 'function'
+          ? window.__DIRCTL__.cardMark(x, () => { boardSave(); draw(); paintAct(); }) : null;
+        mid.append(tags);
+        if (dcm) mid.append(dcm);
+        mid.append(lab, ta, meta, err);
         const side = h('div'); side.style.cssText = 'display:flex;flex-direction:column;gap:8px';
         const up = btn('sm-btn', '往前移', () => { if (!i) return; [L[i - 1], L[i]] = [L[i], L[i - 1]]; boardSave(); draw(); paintAct(); });
         up.disabled = !i;
@@ -23587,6 +23591,7 @@ document.addEventListener('keydown', e => {
       const cur = L[i] ? curTake(w, L[i]).cur : null;
       if (cur && cur.unsure && cur.status !== 'completed' && !(await unsureResendOk(cur))) return false;
     }
+    if (window.__DIRCTL__ && typeof window.__DIRCTL__.pollOnce === 'function') { try { await window.__DIRCTL__.pollOnce(true); } catch (e) {} }
     const base = shotBase(w);
     const list = idxs.map(i => payloadOf(base, L[i]));
     const BC = window.__BATCH_CONFIRM__;
@@ -23602,6 +23607,10 @@ document.addEventListener('keydown', e => {
     return true;
   }
   function resendShot(w, pid, i, el) {
+    const fresh = window.__DIRCTL__ && typeof window.__DIRCTL__.pollOnce === 'function' ? window.__DIRCTL__.pollOnce(true) : null;
+    return Promise.resolve(fresh).catch(() => {}).then(() => resendShotNow(w, pid, i, el));
+  }
+  function resendShotNow(w, pid, i, el) {
     const L = board(pid); const sh = L && L[i];
     const t = sh && curTake(w, sh);
     if (!t || t.idx < 0 || typeof window.__TL_RESEND__ !== 'function') {
@@ -25680,6 +25689,19 @@ function uiComposeAnswers(questions, picks) {
     catch (e) { say('回預設失敗：' + e.message, false); }
   });
   let gate = null, gateTimer = null;
+  let watchLast = null;
+  const watchOnce = () => {
+    if (!window.__UIDESC__ || window.__UIDESC__.state().on) return Promise.resolve();
+    return api('GET', '/api/store?keys=ui-desc,ui-prefs').then(d => {
+      const vals = (d && d.values) || {};
+      const v = JSON.stringify([vals['ui-desc'] || null, vals['ui-prefs'] || null]);
+      if (watchLast === null) { watchLast = v; return; }
+      if (v === watchLast) return;
+      watchLast = v;
+      if (vals['ui-desc']) window.__UIDESC__.set(true);
+    }).catch(() => {});
+  };
+  const watchApply = () => { watchOnce(); setInterval(watchOnce, 4000); };
   const closeGate = () => { if (gate) { gate.remove(); gate = null; } clearInterval(gateTimer); gateTimer = null; };
   const checkGate = () => api('GET', '/api/local/ui-desc?onboarding=1').then(s => {
     if (!uiOnboardingShow(s)) { closeGate(); if (s.active && window.__UIDESC__) window.__UIDESC__.set(true); return; }
@@ -25707,6 +25729,7 @@ function uiComposeAnswers(questions, picks) {
     if (undoBtn) undoBtn.hidden = !info.on;
     if (mine) mine.hidden = !info.on;
     if (info.on) { refreshMine(); if (info.onboarding) checkGate(); }
+    if (info.on) watchApply();
   }).catch(() => {});
 })();
 (function studioPbM6() {
@@ -26139,10 +26162,9 @@ function uiComposeAnswers(questions, picks) {
       else box.append(el('div', note, '另有運鏡／六欄（' + info.ctl.length + ' 句），這個伺服器目前不套用，不會加進提示詞'));
     }
   }
-  function mark(sh, i) {
+  function markEl(sh, onClear) {
     const info = dcInfo(sh.dc, sh.cam);
     const d = el('details', 'dc-mark');
-    d.dataset.i = String(i);
     d.append(el('summary', null, '🎬 導演控制（' + byText(sh.dc.by) + '）'));
     const body = el('div', 'dc-mark-b');
     body.append(el('div', 'dc-note', '送件時加進提示詞的句子：'));
@@ -26152,11 +26174,33 @@ function uiComposeAnswers(questions, picks) {
     clr.onclick = () => {
       sh.dc_prev = sh.dc; delete sh.dc;
       if (sh.sid) touched.add(sh.sid);
-      saveShots(); window.renderShots();
+      onClear();
     };
     body.append(clr);
     d.append(body);
     return d;
+  }
+  function mark(sh, i) {
+    const d = markEl(sh, () => { saveShots(); window.renderShots(); });
+    d.dataset.i = String(i);
+    return d;
+  }
+  function cardMark(sh, onClear) {
+    if (!sh || !sh.dc) return null;
+    addCss();
+    const d = markEl(sh, onClear);
+    d.classList.add('dc-card');
+    return d;
+  }
+  const cardOf = sh => (sh && sh.sid ? document.querySelector('.sm-shot[data-sid="' + sh.sid + '"]') : null);
+  function repaintCard(sh) {
+    const card = cardOf(sh);
+    if (!card) return;
+    const old = card.querySelector('.dc-mark');
+    const nu = cardMark(sh, () => { saveShots(); repaintCard(sh); });
+    if (old && nu) old.replaceWith(nu);
+    else if (old) old.remove();
+    else if (nu) { const tags = card.querySelector('.sm-tags'); if (tags) tags.after(nu); else card.append(nu); }
   }
   function paintMarks() {
     document.querySelectorAll('#sbTable .sbrow').forEach(row => {
@@ -26220,7 +26264,8 @@ function uiComposeAnswers(questions, picks) {
     '.dc-note{font-size:var(--fs-s,12px);color:var(--grease,#e8a33d)}.dc-item textarea{min-height:2.6em}' +
     '.dc-prev{white-space:pre-wrap;font:var(--fs-s,12px)/1.4 var(--mono,monospace);margin-top:6px;opacity:.85}' +
     '.dc-mark{margin:-4px 0 10px 32px;font-size:var(--fs-s,12px)}.dc-mark>summary{cursor:pointer;display:inline-block;padding:2px 8px;' +
-    'border:1px solid var(--grease,#e8a33d);border-radius:999px}.dc-mark-b{padding:6px 2px}.dc-line{font-family:var(--mono,monospace)}';
+    'border:1px solid var(--grease,#e8a33d);border-radius:999px}.dc-mark-b{padding:6px 2px}.dc-line{font-family:var(--mono,monospace)}' +
+    '.dc-mark.dc-card{margin:0 0 10px;font-size:var(--fs-m,16px)}.dc-mark.dc-card .dc-line{font-size:var(--fs-s,14px)}';
     document.head.append(css);
   };
   let seenKey = null, seenRev = null, pending = false;
@@ -26231,9 +26276,17 @@ function uiComposeAnswers(questions, picks) {
     for (let n = row; n && (n === row || !n.classList.contains('sbrow')); n = n.nextElementSibling) out.push(n);
     return out;
   }
-  const editing = i => { const a = document.activeElement; return !!a && rowEls(i).some(n => n.contains(a)); };
+  const editing = i => { const a = document.activeElement; if (!a) return false; const c = cardOf(shots[i]);
+    return rowEls(i).some(n => n.contains(a)) || !!(c && c.contains(a)); };
   function repaintRow(i) {
-    if (!on || !CAT) return;
+    repaintCard(shots[i]);
+    if (!on) {
+      const old = rowEls(i).find(n => n.classList.contains('dc-mark'));
+      if (old) old.remove();
+      try { paintMarks(); } catch (e) {}
+      return;
+    }
+    if (!CAT) return;
     const old = rowEls(i).find(n => n.classList.contains('dc-row'));
     if (old) old.replaceWith(panel(shots[i], i));
   }
@@ -26253,19 +26306,19 @@ function uiComposeAnswers(questions, picks) {
     });
     return left;
   }
-  function pollOnce() {
+  function pollOnce(force) {
     const key = typeof shotsKey === 'function' ? shotsKey() : '';
-    if (!/^sb_/.test(key) || document.hidden) return Promise.resolve();
+    if (!/^sb_/.test(key) || (document.hidden && force !== true)) return Promise.resolve();
     return fetch('/api/works/shot-dirctl?key=' + encodeURIComponent(key)).then(r => r.ok ? r.json() : null).then(d => {
       if (!d || typeof d.rev !== 'number') return;
-      if (key !== seenKey) { seenKey = key; seenRev = d.rev; pending = false; return; }
+      if (key !== seenKey) { seenKey = key; seenRev = d.rev; pending = true; }
       if (d.rev === seenRev && !pending) return;
       seenRev = d.rev; touched.clear();
       return fetch('/api/store?key=' + encodeURIComponent(key)).then(r => r.ok ? r.json() : null)
         .then(b => { if (b && key === shotsKey()) pending = applyBoard(b.value); });
     }).catch(() => {});
   }
-  if (LOCAL) setInterval(pollOnce, 4000);
+  if (LOCAL) setInterval(() => pollOnce(), 4000);
 
   function mergeBack(d) {
     if (typeof d.rev === 'number') { seenRev = d.rev; touched.clear(); pending = false; }
@@ -26292,7 +26345,7 @@ function uiComposeAnswers(questions, picks) {
         .catch(() => false);
     };
   }
-  window.__DIRCTL__ = { isOn: () => on, pollOnce, sheet, derive: (p, stops) => dcDerive(p && p.prompt, p && p.controls, stops) };
+  window.__DIRCTL__ = { isOn: () => on, pollOnce, sheet, cardMark, derive: (p, stops) => dcDerive(p && p.prompt, p && p.controls, stops) };
 })();
 (function studioPrevisRig() {
   const KEY = 'iamd-previs-rig';
