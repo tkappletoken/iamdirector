@@ -1,5 +1,6 @@
 import argparse
 import base64
+import binascii
 import datetime
 import hashlib
 import hmac
@@ -66,6 +67,9 @@ IMAGE_RECOVER_KEPT = 50
 image_recover_mode = upstream.image_recover_mode
 _dropped = upstream.dropped
 CONCAT_MAX = 30
+CONCAT_ENGINES = ("legacy", "shadow", "blocks")
+CONCAT_SHADOW_LOAD = 30.0
+_CONCAT_SHADOW = threading.Lock()
 CONCAT_NAME = re.compile(r"(?:^|/)download\?id=([A-Za-z0-9_-]{1,64})$")
 CONCAT_FILE = re.compile(r"([A-Za-z0-9_-]{1,64})\.mp4")
 CAST_IMAGE_DEFAULT = "gpt-image-2"
@@ -93,6 +97,8 @@ ORIGINAL_MAX = 20 * 1024 * 1024
 ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 QID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 ASSET_ID = re.compile(r"^ast_[0-9a-f]{20}$")
+UPLOAD_ID = re.compile(r"^upl_[0-9a-f]{32}$")
+OUTPAINT_MAX = 20 * 1024 * 1024
 ASSET_MIME = re.compile(r"^(image|video|audio)/[A-Za-z0-9.+-]{1,60}$")
 PROJECT_ID = re.compile(r"^[0-9a-fA-F-]{36}$")
 ASSET_URI = re.compile(r"^asset\s*:\s*/*\s*(ast_[0-9a-f]{20})$", re.I)
@@ -114,6 +120,9 @@ LOCAL_API = (
     "/api/check-refs",
     "/api/concat",
     "/api/assets", "/api/assets/support", "/api/assets/content",
+    "/api/assets/update", "/api/check-asset", "/api/qc/rating",
+    "/api/assets/delete", "/api/assets/uploads", "/api/assets/uploads/complete",
+    "/api/image-outpaint", "/api/post-process", "/api/post-process-status", "/api/post-process-content",
     "/api/storyboard/quote", "/api/storyboard", "/api/parse-shots", "/api/captions",
     "/api/store", "/api/projects", "/api/projects/create", "/api/projects/delete",
     "/api/projects/rename", "/api/projects/items",
@@ -124,6 +133,7 @@ LOCAL_API = (
     "/api/works/quote", "/api/works/export", "/api/twist",
     "/api/works/get", "/api/works/clone",
     "/api/local/engine",
+    "/api/local/concat-engine",
     "/api/blocks", "/api/pipeline/preview",
     "/api/dir-controls", "/api/dir-controls/preview",
     "/api/previs-rig",
@@ -133,6 +143,7 @@ LOCAL_API = (
     "/api/chains", "/api/chains/next", "/api/chains/move",
     "/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/get", "/api/local/agent-loop", "/api/local/agent/plan",
     "/api/local/agent/runs", "/api/local/agent/film",
+    "/api/local/work/run",
     "/api/local/agent-qc",
     "/api/local/frame-relay",
     "/api/local/ui-desc", "/api/local/ui-profiles",
@@ -151,9 +162,10 @@ AGENT_ALLOWED = {
     ("GET", "/api/works/get"), ("POST", "/api/works/clone"),
 }
 AGENT_ALLOWED |= set(takes.ROUTES)
+AGENT_ALLOWED |= {("GET", "/api/agent/activity"), ("POST", "/api/agent/activity")}
 AGENT_ALLOWED |= {("POST", "/api/local/agent/start"), ("POST", "/api/local/agent/step"), ("GET", "/api/local/agent/get"),
                   ("POST", "/api/local/agent/plan"), ("GET", "/api/local/agent/runs"), ("GET", "/api/local/agent/film"),
-                  ("GET", "/api/local/agent-loop")}
+                  ("GET", "/api/local/agent-loop"), ("POST", "/api/local/work/run")}
 AGENT_ALLOWED |= {("GET", "/api/local/frame-relay")}
 AGENT_ALLOWED |= {("GET", "/api/local/ui-desc"), ("POST", "/api/local/ui-desc")}
 UI_PROFILES_OFF = "介面描述檔沒有開（設定 ui_profiles.json 或 STUDIO_LOCAL_UI_PROFILES=on）"
@@ -161,6 +173,12 @@ AGENT_ALLOWED |= {("GET", "/api/local/mcp-direct")}
 AGENT_ALLOWED |= {("GET", "/api/local/agent-qc")}
 AGENT_ALLOWED |= {("GET", "/api/dir-controls"), ("POST", "/api/dir-controls/preview"), ("POST", "/api/previs-rig"),
                   ("POST", "/api/works/shot-dirctl")}
+AGENT_ALLOWED |= {("POST", "/api/concat"), ("GET", "/api/assets"), ("POST", "/api/assets"), ("GET", "/api/assets/support"),
+                  ("POST", "/api/projects/create"), ("POST", "/api/projects/rename"), ("POST", "/api/projects/items"),
+                  ("POST", "/api/captions"), ("POST", "/api/assets/update"), ("POST", "/api/check-asset"),
+                  ("GET", "/api/qc/rating"),
+                  ("GET", "/api/local/agent-scope"), ("GET", "/api/local/engine"), ("GET", "/api/local/concat-engine"),
+                  ("GET", "/api/local/ui-profiles")}
 FRAME_RELAY_ENV = "STUDIO_LOCAL_FRAME_RELAY"
 
 def frame_relay_on():
@@ -231,6 +249,10 @@ AGENT_FULL = {
     ("POST", "/api/image-generate"), ("POST", "/api/image"), ("POST", "/api/qc"),
     ("POST", "/api/qc/rate"),
 }
+AGENT_SWITCHES = ("/api/local/agent-loop", "/api/local/mcp-direct", "/api/local/agent-qc", "/api/local/frame-relay",
+                  "/api/local/agent-scope", "/api/local/engine", "/api/local/concat-engine", "/api/local/ui-profiles")
+if {("POST", p) for p in AGENT_SWITCHES} & (AGENT_ALLOWED | AGENT_FULL):
+    raise RuntimeError("開關的 POST 不准放進 AGENT_ALLOWED／AGENT_FULL（只有人能切）")
 SPEND_TTL = 30 * 60
 MCP_PACKAGE_FILES = (
     "cli/appletoken/__init__.py",
@@ -327,16 +349,15 @@ def _shot_index(board, shot):
     return None
 PREVIS_RIG_OFF = "3D 預演的對準角色已關閉（STUDIO_LOCAL_PREVIS_RIG=off）"
 _LOGIN = "登入 iamdirector 帳號後才有這一項"
+ACTIVITY_MAX = 200
+ACTIVITY_TOOLS = {"timeline_place": "place", "timeline_trim": "trim", "export_request": "export"}
+
 MISSING = {
     "/api/upload": "本機素材改用下方的「素材」", "/api/uploads": "本機素材改用下方的「素材」",
-    "/api/rates": "費率由 AppleToken 決定", "/api/timing": _LATER,
-    "/api/image-outpaint": _LATER, "/api/check-asset": _LATER,
+    "/api/rates": "費率由 AppleToken 決定", "/api/timing": "測試站自用的生成耗時統計，本機不收集",
     "/api/image-task": "本機生圖不需要輪詢",
-    "/api/post-process": _LATER, "/api/post-process-status": _LATER, "/api/post-process-content": _LATER,
-    "/api/assets/delete": _LATER, "/api/assets/mirror": "本機模式只有你自己的金鑰，不需要複製素材",
-    "/api/assets/uploads": _LATER, "/api/assets/uploads/complete": _LATER, "/api/assets/update": _LATER,
-    "/api/qc": _LATER, "/api/qc/rate": _LATER, "/api/qc/rating": _LATER,
-    "/api/archive": _LATER,
+    "/api/assets/mirror": "本機模式只有你自己的金鑰，不需要複製素材",
+    "/api/archive": "雲端封存只在網頁版（作品存在你這台電腦，備份用「同步到雲端」）",
     "/api/youtube/status": _LOGIN, "/api/youtube/connect": _LOGIN, "/api/youtube/disconnect": _LOGIN,
     "/api/youtube/playlists": _LOGIN, "/api/youtube/uploads": _LOGIN,
     "/api/youtube/uploads/cancel": _LOGIN, "/api/youtube/uploads/retry": _LOGIN, "/api/youtube/auto": _LOGIN,
@@ -344,8 +365,11 @@ MISSING = {
     "/api/pitch/download": _LOGIN,
     "/api/wallet/balance": _LOGIN, "/api/wallet/history": _LOGIN, "/api/wallet/options": _LOGIN,
     "/api/wallet/intent": _LOGIN, "/api/wallet/subscription": _LOGIN, "/api/wallet/subscribe": _LOGIN,
-    "/api/agent/tokens": _LATER, "/api/agent/tokens/revoke": _LATER, "/api/agent/tokens/update": _LATER,
-    "/api/agent/activity": _LATER, "/api/agent/pending": _LATER, "/api/agent/pending/decide": _LATER,
+    "/api/agent/tokens": "本機的 Agent 用 MCP 連線檔，在設定頁「MCP」那一格看或重新產生",
+    "/api/agent/tokens/revoke": "本機的 Agent 用 MCP 連線檔，在設定頁「MCP」那一格重新產生權杖就等於撤銷",
+    "/api/agent/tokens/update": "本機的 Agent 用 MCP 連線檔，在設定頁「MCP」那一格看或重新產生",
+    "/api/agent/pending": "本機花錢一律走核准卡（request_approval／status），沒有網頁版的確認模式",
+    "/api/agent/pending/decide": "本機花錢一律走核准卡（request_approval／status），沒有網頁版的確認模式",
     "/api/logout": "本機模式不用登入",
 }
 
@@ -367,6 +391,10 @@ def ui_desc_actions():
         return ui_schema.client_actions(local=True)
     except Exception:
         return None
+
+def ui_desc_components():
+    from filming import ui_schema
+    return ui_schema.client_components(local=True)
 
 def last4(key):
     return key[-4:] if isinstance(key, str) and len(key) >= 8 else ""
@@ -426,6 +454,7 @@ class State:
         os.makedirs(self.media, mode=0o700, exist_ok=True)
         self.exports_root = os.path.join(data_dir, "exports")
         self.exports = {}
+        self.activity = []
         self.export_lock = threading.Lock()
         self.media_lock = threading.Lock()
         self.landing = {}
@@ -497,6 +526,39 @@ class State:
         env = os.environ.get("POSTBLOCKS_ENGINE", "").strip().lower() or None
         return {"engine": self.engine_now(), "setting": self.engine_setting(), "env": env,
                 "choices": list(ENGINE_CHOICES)}
+
+    def concat_engine_setting(self):
+        try:
+            with open(os.path.join(self.data_dir, "concat.json"), encoding="utf-8") as f:
+                v = json.load(f).get("engine")
+            return v if v in CONCAT_ENGINES else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def concat_engine(self):
+        v = self.concat_engine_setting()
+        env = os.environ.get("STUDIO_LOCAL_CONCAT_ENGINE", "").strip().lower()
+        return v or (env if env in CONCAT_ENGINES else "legacy")
+
+    def set_concat_engine(self, value):
+        path = os.path.join(self.data_dir, "concat.json")
+        try:
+            if value is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return True
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"engine": value}, f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
+
+    def concat_engine_info(self):
+        env = os.environ.get("STUDIO_LOCAL_CONCAT_ENGINE", "").strip().lower() or None
+        return {"engine": self.concat_engine(), "setting": self.concat_engine_setting(), "env": env,
+                "choices": list(CONCAT_ENGINES)}
 
     def agent_scope_setting(self):
         try:
@@ -843,6 +905,20 @@ class State:
         self.models = (now, got)
         return got, False
 
+    def models_peek(self):
+        hit = self.models
+        return hit[1] if hit and time.monotonic() - hit[0] < MODELS_TTL else None
+
+    def model_constraints(self, model):
+        listing = self.models_peek()
+        if listing is None or not model:
+            return None
+        try:
+            meta = studio_tools.group_models(studio_tools.catalog_from_public(listing)).get("model_meta") or {}
+        except Exception:
+            return None
+        return (meta.get(model) or {}).get("constraints")
+
     def page(self):
         if self._page is None:
             with open(self.ui_path, encoding="utf-8") as f:
@@ -854,7 +930,9 @@ MCP_INSTRUCTIONS = (
     "這是「我是導演」桌面版（本機模式）的 MCP。花錢的規則：先 quote（免費，同時建一張核准卡），"
     "把 approval.approve_url（iamdirector://approve/<id>）交給使用者，等他本人在 App 裡按核准——你自己核准不了。"
     "核准之後用 submit_approved 送出；卡片只能用一次，失敗不要自動重試，要重做就重新 quote。"
-    "status 查進度（排隊再久都不是失敗），result 拿成品在這台電腦上的路徑。付款方一律是使用者自己的 AppleToken 額度。")
+    "status 查進度（排隊再久都不是失敗），result 拿成品在這台電腦上的路徑。付款方一律是使用者自己的 AppleToken 額度。"
+    "第一次連上：先 ui_onboarding_status，needed=true 就照 ui_actions_list 的訪談題目問使用者、ui_compose 組出介面、ui_apply 套用。"
+    "要一路拍到交片：create_work 建作品（帶分鏡），再 work_run 一步一步往下跑，每一步的回應都會寫下一步（next）。")
 
 def _rpc_err(mid, code, message):
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
@@ -1101,9 +1179,12 @@ class Handler(BaseHTTPRequestHandler):
             "api": list(LOCAL_API), "missing": dict(MISSING),
             "cast_refs": cast_refs.mode(),
         }
+        if os.environ.get("STUDIO_LOCAL_MOTION_PICK", "on").strip().lower() != "off":
+            manifest["motion_model_pick"] = True
         acts = ui_desc_actions()
         if acts:
             manifest["ui_actions"] = acts
+            manifest["ui_components"] = ui_desc_components()
         web = os.environ.get("STUDIO_PUBLIC_ORIGIN", "").strip().rstrip("/")
         if re.match(r"^https?://[A-Za-z0-9.:-]+$", web):
             manifest["web_origin"] = web
@@ -1138,8 +1219,32 @@ class Handler(BaseHTTPRequestHandler):
                                     "token_tail": tok[-4:] if tok else None})
         if path == "/api/local/result":
             return self._local_result(one("id"))
+        if path in ("/api/post-process-status", "/api/post-process-content"):
+            pid = one("id") or ""
+            if not re.match(r"^pp_[A-Za-z0-9]{1,64}$", pid):
+                return self._json(400, {"error": "id 不合法"})
+            try:
+                if path == "/api/post-process-status":
+                    return self._json(200, st.call("/post-process/" + pid))
+                return self._relay(st.call("/post-process/%s/content" % pid, stream=True, timeout=180), "video/mp4")
+            except ConsoleError as e:
+                return self._err(e, with_hints=False)
+        if path == "/api/agent/activity":
+            since, lim = one("since"), one("limit")
+            since = since.replace(" ", "+") if since else since
+            if since and not re.match(r"^[0-9T:.+\- ]{10,40}$", since):
+                return self._json(400, {"error": "since 要是 ISO 時間"})
+            try:
+                lim = max(1, min(200, int(lim or 50)))
+            except ValueError:
+                return self._json(400, {"error": "limit 要是整數"})
+            with st.lock:
+                items = [dict(x) for x in st.activity if not since or x["at"] > since]
+            return self._json(200, {"items": items[-lim:]})
         if path == "/api/local/engine":
             return self._json(200, st.engine_info())
+        if path == "/api/local/concat-engine":
+            return self._json(200, st.concat_engine_info())
         if path == "/api/local/agent-scope":
             return self._json(200, st.agent_scope_info())
         if path == "/api/local/agent-loop":
@@ -1228,15 +1333,21 @@ class Handler(BaseHTTPRequestHandler):
             ids = [x for x in one("ids").split(",") if x]
             if len(ids) > 100 or any(not ID.match(x) for x in ids):
                 return self._json(400, {"error": "ids 不合法"})
-            return self._json(200, {"items": {}, "db": False})
+            try:
+                return self._json(200, {"items": self._charges(ids)})
+            except studio_store.StoreError:
+                return self._json(200, {"items": {}, "db": False})
         if path == "/api/assets/support":
             return self._json(200, {"supported": bool(st.key())})
         if path == "/api/assets":
-            qs = "&".join("%s=%s" % (k, parse.quote(one(k))) for k in ("limit", "status", "type", "tag") if one(k))
+            qs = "&".join("%s=%s" % (k, parse.quote(one(k))) for k in ("limit", "status", "type") if one(k))
             try:
-                return self._json(200, st.call("/assets" + ("?" + qs if qs else "")))
+                got = st.call("/assets" + ("?" + qs if qs else ""))
             except ConsoleError as e:
                 return self._err(e, with_hints=False)
+            return self._json(200, self._asset_overlay(got, one("tag")))
+        if path == "/api/qc/rating":
+            return self._qc_rating_local(one("job"))
         if path == "/api/assets/content":
             aid = one("id")
             if not ASSET_ID.match(aid):
@@ -1311,9 +1422,15 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         if ("POST", path) in takes.ROUTES:
             return self._takes("POST", path, body, {})
+        if path == "/api/agent/activity":
+            return self._agent_activity(body)
         if path == "/api/payer/key":
+            if not self._human():
+                return self._json(403, {"error": "金鑰要你本人在 App 裡設定"})
             return self._payer_key(body)
         if path == "/api/payer/key/delete":
+            if not self._human():
+                return self._json(403, {"error": "刪除金鑰要你本人在 App 裡做"})
             st.set_key(None)
             if st.desktop:
                 st.desktop.request({"op": "clear_key"})
@@ -1327,6 +1444,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/works/shot-dirctl":
             return self._shot_dirctl(body)
         if path == "/api/local/ui-profiles":
+            if not self._human():
+                return self._json(403, {"error": "介面描述檔的開關要你本人在 App 裡切"})
             v, ob = body.get("on"), body.get("onboarding")
             if v is not None and not isinstance(v, bool):
                 return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
@@ -1343,6 +1462,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/local/ui-desc":
             return self._uiprofiles("POST", body, None)
         if path == "/api/local/agent-loop":
+            if not self._human():
+                return self._json(403, {"error": "Agent 主迴圈的開關要你本人在 App 裡切"})
             v = body.get("on")
             if v is not None and not isinstance(v, bool):
                 return self._json(400, {"error": "on 要是 true／false，或 null（回到預設）"})
@@ -1384,23 +1505,38 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.frame_relay_info())
         if path in ("/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/plan"):
             return self._agentloop(path.rsplit("/", 1)[1], body)
+        if path == "/api/local/work/run":
+            return self._work_run(body)
         if path == "/api/local/engine":
+            if not self._human():
+                return self._json(403, {"error": "匯出引擎要你本人在 App 裡切"})
             v = body.get("engine")
             if v is not None and v not in ENGINE_CHOICES:
                 return self._json(400, {"error": "engine 只能是 %s，或 null（回到預設）" % "／".join(ENGINE_CHOICES)})
             if not st.set_engine(v):
                 return self._json(500, {"error": "設定寫不進本機資料夾"})
             return self._json(200, st.engine_info())
+        if path == "/api/local/concat-engine":
+            if not self._human():
+                return self._json(403, {"error": "接片引擎要你本人在 App 裡切"})
+            v = body.get("engine")
+            if v is not None and v not in CONCAT_ENGINES:
+                return self._json(400, {"error": "engine 只能是 %s，或 null（回到預設）" % "／".join(CONCAT_ENGINES)})
+            if not st.set_concat_engine(v):
+                return self._json(500, {"error": "設定寫不進本機資料夾"})
+            return self._json(200, st.concat_engine_info())
         if path == "/api/local/agent-scope":
+            if not self._human():
+                return self._json(403, {"error": "Agent 範圍要你本人在 App 裡切"})
             v = body.get("scope")
             if v is not None and v not in AGENT_SCOPES:
                 return self._json(400, {"error": "scope 只能是 %s，或 null（回到預設）" % "／".join(AGENT_SCOPES)})
             if not st.set_agent_scope(v):
                 return self._json(500, {"error": "設定寫不進本機資料夾"})
             return self._json(200, st.agent_scope_info())
-        if path == "/api/qc" and st.agent_scope_now() == "full":
+        if path == "/api/qc" and (self._human() or st.agent_scope_now() == "full"):
             return self._qc(body)
-        if path == "/api/qc/rate" and st.agent_scope_now() == "full":
+        if path == "/api/qc/rate" and (self._human() or st.agent_scope_now() == "full"):
             return self._qc_rate(body)
         if path == "/api/payer/choice":
             return self._json(200, self._payer_state())
@@ -1514,6 +1650,22 @@ class Handler(BaseHTTPRequestHandler):
             if not text and isinstance(body.get("story"), str):
                 text = studio_tools.story_to_script(body["story"])
             return self._json(200, {"shots": studio_tools.parse_shots(text, body.get("model"))})
+        if path == "/api/assets/update":
+            return self._asset_update(body)
+        if path in ("/api/assets/delete", "/api/assets/uploads", "/api/assets/uploads/complete"):
+            return self._asset_upstream(path, body)
+        if path in ("/api/image-outpaint", "/api/post-process"):
+            if not self._human():
+                return self._json(403, {"error": "畫面外擴、後處理的 Agent 版還沒開放：等使用者決定；請人在 App 裡按"})
+            if path == "/api/post-process":
+                try:
+                    return self._json(200, st.call("/post-process", payload=body if isinstance(body, dict) else {},
+                                                   timeout=GENERATE_TIMEOUT))
+                except ConsoleError as e:
+                    return self._err(e)
+            return self._image_outpaint(body)
+        if path == "/api/check-asset":
+            return self._json(200, studio_tools.check_asset(body.get("url") or "", body.get("kind") or "image"))
         if path == "/api/captions":
             try:
                 return self._json(200, studio_tools.build_captions(body))
@@ -1771,8 +1923,46 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, r)
         out = dict(r) if isinstance(r, dict) else {"data": r}
         out.update(payer="own_key", provider="appletoken")
+        self._record_charge(out.get("id"), qid)
         self._auto_take(out.get("id"), qid)
         return self._json(200, out)
+
+    def _record_charge(self, job_id, qid):
+        if not (isinstance(job_id, str) and JOB_ID_OK.match(job_id)):
+            return
+
+        def put(c, _u):
+            with c.cursor() as cur:
+                cur.execute("SELECT upstream_cost FROM local_quotes WHERE quote_id = %s", (qid,))
+                row = cur.fetchone()
+                cur.execute("INSERT INTO local_charges (job_id, quote_id, upstream_cost) VALUES (%s, %s, %s) "
+                            "ON CONFLICT (job_id) DO NOTHING", (job_id, qid, row[0] if row else None))
+        try:
+            self.state.db.run(put)
+        except Exception as e:
+            sys.stderr.write("[charges] record_failed %s\n" % type(e).__name__)
+
+    def _charges(self, ids):
+        if not ids:
+            return {}
+        marks = ",".join(["%s"] * len(ids))
+
+        def get(c, _u):
+            with c.cursor() as cur:
+                cur.execute("SELECT job_id, upstream_cost FROM local_charges WHERE job_id IN (%s)" % marks, tuple(ids))
+                rows = {r[0]: r[1] for r in cur.fetchall()}
+                cur.execute("SELECT job_id, status FROM approval_cards WHERE job_id IN (%s)" % marks, tuple(ids))
+                cards = {r[0]: r[1] for r in cur.fetchall()}
+            return rows, cards
+        rows, cards = self.state.db.run(get)
+        out = {}
+        for j in ids:
+            if j not in rows and j not in cards:
+                continue
+            st = {"failed": "released", "rejected": "released", "expired": "released"}.get(cards.get(j), "charged")
+            out[j] = {"points": None, "status": st, "payer": "own_key", "upstream_cost": rows.get(j),
+                      "reserved": None, "hold_status": None, "charged": None, "refunded": None}
+        return out
 
     def _auto_take(self, job_id, qid):
         m = gen_retry.auto_mode()
@@ -1968,7 +2158,8 @@ class Handler(BaseHTTPRequestHandler):
                 cap = qc.price_cap(qc.find_entry(listing, qc.MODEL), len(frames))
             except ConsoleError:
                 pass
-            return self._spend_hold("qc", send, cap, {"model": qc.MODEL, "prompt": "驗片 %s（%d 格）" % (job, len(frames))})
+            return self._spend_hold("qc", send, cap, {"model": qc.MODEL, "prompt": "驗片 %s（%d 格）" % (job, len(frames)),
+                                                      "frames": len(frames)})
         return self._qc_send(send)
 
     def _qc_rate(self, body):
@@ -2150,9 +2341,91 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(code, out)
 
     def _agentloop(self, op, body):
-        st = self.state
-        if not st.agentloop_on():
+        if not self.state.agentloop_on():
             return self._json(501, {"error": AGENT_LOOP_OFF})
+        return self._json(*self._agentloop_call(op, body))
+
+    def _agentloop_call(self, op, body):
+        code, out = self._agentloop_call0(op, body)
+        if code == 200 and isinstance(out, dict):
+            self._check_media(out.get("action"))
+            if (out.get("summary") or {}).get("phase") == "done" and out.get("run"):
+                self._film_sync_run(out)
+        return code, out
+
+    def _film_sync_run(self, out):
+        try:
+            got = self._film_picks(out["run"])
+            if got:
+                sync = self._film_sync(got[0], got[2], got[1])
+                if sync:
+                    out["mainline"] = sync
+        except Exception as e:
+            out["mainline"] = {"synced": 0, "unmatched": 0, "error": "寫回主線失敗：%s" % e}
+
+    def _check_media(self, act):
+        if not (isinstance(act, dict) and act.get("do") == "check" and isinstance(act.get("take"), str)):
+            return
+        try:
+            t = self.state.db.run(lambda c, u: takes.get(c, u, act["take"]))
+            job = (t or {}).get("job_id")
+            if not (isinstance(job, str) and JOB_ID_OK.match(job)):
+                return
+            act["job_id"] = job
+            act["path"] = self._media_named(self._cache_job(job))[0]
+        except Exception as e:
+            sys.stderr.write("[agent] check_media %s\n" % type(e).__name__)
+
+    def _agentloop_call0(self, op, body):
+        if op in ("plan", "start") and isinstance(body, dict) and isinstance(body.get("model"), str) and body["model"].strip():
+            if op == "plan":
+                code, out = self._agentloop_raw("plan", body)
+                return (self._seconds_gate(body["model"].strip(), out) if code == 200 else (code, out))
+            code, out = self._agentloop_raw("plan", {k: v for k, v in body.items() if k != "payload_extra"})
+            if code == 200:
+                code2, gated = self._seconds_gate(body["model"].strip(), out)
+                if code2 != 200:
+                    return code2, gated
+                body, made = self._agent_project(body)
+                code, out = self._agentloop_raw("start", body)
+                if code == 200 and made:
+                    out = dict(out, project_id=made, project_created=True)
+                if code == 200 and gated.get("seconds_warning"):
+                    out = dict(out, seconds_rule=gated["seconds_rule"], seconds_warning=gated["seconds_warning"])
+                return code, out
+            return code, out
+        return self._agentloop_raw(op, body)
+
+    def _agent_project(self, body):
+        if isinstance(body.get("project_id"), str) and body["project_id"].strip():
+            return body, None
+        stamp = datetime.datetime.now().strftime("%m-%d %H:%M:%S")
+        name = "Agent 拍片：%s（%s）" % (str(body.get("request") or "").strip()[:30] or "未命名", stamp)
+        try:
+            got = self.state.db.run(studio_store.create_project, name)
+        except studio_store.StoreError as e:
+            sys.stderr.write("[agent] project_create_failed %s\n" % type(e).__name__)
+            return body, None
+        pid = (got or {}).get("id") if isinstance(got, dict) else None
+        return (dict(body, project_id=pid), pid) if pid else (body, None)
+
+    def _seconds_gate(self, model, planned):
+        cons = self.state.model_constraints(model)
+        bad, rule = [], None
+        for i, seg in enumerate(planned.get("segments") or [], 1):
+            why, rule = studio_tools.check_seconds(model, seg.get("seconds"), cons)
+            if why:
+                bad.append("第 %d 鏡 %g 秒：%s" % (i, float(seg["seconds"]), why))
+        rule = rule or studio_tools.seconds_rule(model, cons)
+        if bad:
+            return 400, {"error": "；".join(bad), "seconds_rule": rule}
+        out = dict(planned, seconds_rule=rule)
+        if rule["source"] == "table-default":
+            out["seconds_warning"] = "目錄裡讀不到 %s 收幾秒，先照一般的 4–15 秒；送件時上游會再檢查一次" % model
+        return 200, out
+
+    def _agentloop_raw(self, op, body):
+        st = self.state
         import agent_exec
         cli = os.path.join(ROOT, "cli")
         if cli not in sys.path:
@@ -2166,8 +2439,124 @@ class Handler(BaseHTTPRequestHandler):
                                           relay=(lambda take: frame_relay(st, vid_of, take)) if st.frame_relay_on() else None,
                                           auto_qc=st.agent_qc_on(), seam=lambda prev, job: seam_ssim(st, vid_of, prev, job))
         except agent_exec.fexec.ExecutorError as e:
-            return self._json(502, {"error": str(e).replace(st.agent_loop, "…")})
-        return self._json(code, out)
+            return 502, {"error": str(e).replace(st.agent_loop, "…")}
+        return code, out
+
+    WORK_RUN_STEPS = 6
+
+    def _work_run(self, body):
+        st = self.state
+        if not st.agentloop_on():
+            return self._json(501, {"error": AGENT_LOOP_OFF})
+        b = body if isinstance(body, dict) else {}
+        bad = set(b) - {"project_id", "model", "run", "event", "decision"}
+        if bad:
+            return self._json(400, {"error": "work_run 不收這些欄位：%s" % "、".join(sorted(bad))})
+        if b.get("run"):
+            if b.get("project_id") or b.get("model"):
+                return self._json(400, {"error": "續跑只帶 run（和 event 或 decision），不再帶 project_id／model"})
+            if b.get("event") is not None and b.get("decision") is not None:
+                return self._json(400, {"error": "event 與 decision 一次只給一個"})
+            step = {k: b[k] for k in ("run", "event", "decision") if b.get(k) is not None}
+            code, out = self._agentloop_call("step", step)
+        else:
+            start, why = self._work_start_body(b)
+            if why:
+                return self._json(*why)
+            code, out = self._agentloop_call("start", start)
+            if code == 400 and isinstance(out.get("error"), str):
+                out = dict(out, error=re.sub(r"segments\[(\d+)\]", lambda m: "第 %d 鏡" % (int(m.group(1)) + 1), out["error"]))
+        if code != 200:
+            return self._json(code, out)
+        for _ in range(self.WORK_RUN_STEPS):
+            if (out.get("action") or {}).get("do") not in ("generate", "wait_refund", "wait_blockout"):
+                break
+            code, nxt = self._agentloop_call("step", {"run": out["run"]})
+            if code != 200:
+                return self._json(code, dict(nxt, run=out["run"]))
+            out = nxt
+        return self._json(200, self._work_reply(out))
+
+    def _work_start_body(self, b):
+        pid = b.get("project_id")
+        if not isinstance(pid, str) or not pid:
+            return None, (400, {"error": "要給 project_id（作品）或 run（續跑）"})
+        try:
+            work = self.state.db.run(lambda c, u: studio_store.work_get(c, u, pid))
+        except studio_store.StoreError as e:
+            return None, (e.code, e.body)
+        name = work.get("name") or "作品"
+        if work.get("template"):
+            try:
+                tp = templates.build(work["template"], work.get("fields") or {})
+            except templates.TemplateError as e:
+                return None, (e.code, {"error": e.msg})
+            shot = tp["shot"]
+            return {"request": "拍「%s」" % name, "project_id": pid, "model": shot["model"],
+                    "resolution": shot.get("resolution"), "aspect_ratio": shot.get("aspect_ratio"),
+                    "input": {"version": 1, "segments": [{"prompt": shot["prompt"], "seconds": shot["seconds"]}]},
+                    "payload_extra": {k: shot[k] for k in ("negative_prompt", "generate_audio") if shot.get(k) is not None}}, None
+        model = b.get("model")
+        if not isinstance(model, str) or not model.strip():
+            return None, (400, {"error": "這部作品不是範本作品：要給 model（模型 ref，例如 list_models 列出來的）"})
+        shots = work.get("shots") or []
+        if not shots:
+            return None, (400, {"error": "這部作品還沒有分鏡"})
+        segs = []
+        for i, s in enumerate(shots, 1):
+            if not str(s.get("prompt") or "").strip():
+                return None, (400, {"error": "第 %d 鏡沒有提示詞" % i})
+            if s.get("seconds") is None or upstream.bad_seconds({"seconds": s.get("seconds")}):
+                return None, (400, {"error": "第 %d 鏡的秒數不對（%r）" % (i, s.get("seconds"))})
+            segs.append({"prompt": s["prompt"], "seconds": s["seconds"]})
+        return {"request": "拍「%s」" % name, "project_id": pid, "model": model.strip(),
+                "input": {"version": 1, "segments": segs}}, None
+
+    def _work_reply(self, out):
+        run, act = out.get("run"), out.get("action") or {}
+        do = act.get("do")
+        rep = {"run": run, "summary": out.get("summary"), "notes": out.get("notes") or []}
+        if do == "done":
+            code, film = self._capture(self._agent_film, run)
+            rep.update(phase="done", next="拍完了：每一鏡的版本、定稿與接好的成片在 film（換定稿用 agent_pick）")
+            rep["film"] = film if code == 200 else {"error": film.get("error")}
+        elif do == "stopped":
+            rep.update(phase="failed", reason="stopped", next="這一次拍片停了；要重來就用 project_id 再開一次")
+        elif do == "check":
+            rep.update({k: act[k] for k in ("job_id", "path") if act.get(k)})
+            rep.update(phase="needs_check", reason="check", shot_key=act.get("shot_key"),
+                       next="看這一鏡的片（take %s）之後回報：work_run(run, event={type:'checked', reports:[{block:'qc', ok:true／false, "
+                            "defects:[…]}]})；或請使用者打開自動驗片" % act.get("take"))
+        elif do == "ask":
+            reason = act.get("reason")
+            rep.update(phase="waiting_human", reason=reason, options=act.get("options"))
+            if act.get("approve_url"):
+                rep["approve_url"] = act["approve_url"]
+            if reason == "card_pending":
+                rep["next"] = "請使用者在 App 核准這張卡（approve_url）之後，再呼叫 work_run(run, decision='resume')"
+            elif reason == "over_limit":
+                rep["next"] = "Agent 直送被上限擋下：把原因（detail）原話轉給使用者，請他到設定調高上限，再 work_run(run, decision='resume')"
+            elif reason == "retakes_exhausted":
+                rep["next"] = "這一鏡重做用完了：work_run(run, decision='accept_best') 用最好的那一版，或 decision='stop'"
+            else:
+                rep["next"] = "照 options 回覆：work_run(run, decision=…)"
+            rep["detail"] = act.get("detail")
+        else:
+            reason = {"wait_refund": "waiting_refund", "wait_blockout": "waiting_blockout"}.get(do, "generating")
+            rep.update(phase="running", reason=reason, next="還在跑：過一會兒再呼叫 work_run(run) 繼續")
+        return rep
+
+    def _capture(self, fn, *args):
+        sent = {}
+        saved = self.__dict__.pop("_json", None)
+        self._json = lambda code, obj, *a, **k: sent.update(code=code, obj=obj)
+        try:
+            fn(*args)
+        finally:
+            del self._json
+            if saved is not None:
+                self._json = saved
+        return sent.get("code", 500), sent.get("obj") or {}
 
     def _approvals_run(self, fn):
         try:
@@ -2458,7 +2847,32 @@ class Handler(BaseHTTPRequestHandler):
             name = self._cache_job(jid)
         except ConsoleError as e:
             return self._err(e, with_hints=False)
-        return self._json(200, {"path": os.path.join(self.state.media, name), "src": "/api/download?id=" + jid})
+        path, ctype = self._media_named(name)
+        return self._json(200, {"path": path, "content_type": ctype, "src": "/api/download?id=" + jid})
+
+    MEDIA_EXT = {"video/mp4": ".mp4", "audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav", "image/png": ".png",
+                 "image/jpeg": ".jpg", "image/webp": ".webp"}
+
+    def _media_named(self, sha):
+        base = os.path.join(self.state.media, sha)
+        ctype = "video/mp4"
+        try:
+            with open(base + ".json", encoding="utf-8") as f:
+                ctype = json.load(f).get("mime") or ctype
+        except (OSError, ValueError, AttributeError):
+            pass
+        ext = self.MEDIA_EXT.get(ctype)
+        if not ext:
+            return base, ctype
+        named = base + ext
+        try:
+            if not os.path.exists(named):
+                os.link(base, named)
+        except FileExistsError:
+            pass
+        except OSError:
+            return base, ctype
+        return named, ctype
 
     def _mcp(self, payload):
         if isinstance(payload, list):
@@ -2678,6 +3092,49 @@ class Handler(BaseHTTPRequestHandler):
         text = r.get("text") if isinstance(r, dict) else None
         return self._json(200, {"text": text if isinstance(text, str) else "", "payer": "own_key"})
 
+    def _agent_activity(self, body):
+        tool, action = body.get("tool"), body.get("action")
+        if ACTIVITY_TOOLS.get(tool) != action:
+            return self._json(400, {"error": "只收 %s" % "、".join("%s（action=%s）" % kv for kv in ACTIVITY_TOOLS.items())})
+        if action == "export" and not self._human():
+            return self._json(403, {"error": "Agent 請人匯出（export_request）在桌面本機還沒開放：等使用者決定；"
+                                             "要匯出請人在工作台按「匯出」"})
+        a = body.get("args") if isinstance(body.get("args"), dict) else {}
+        if action == "place":
+            ids = a.get("job_ids")
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 50 or not all(isinstance(x, str) and JOB_ID_OK.match(x) for x in ids):
+                return self._json(400, {"error": "job_ids 要是 1–50 個成片 id"})
+            args = {"job_ids": ids}
+        elif action == "trim":
+            if not (isinstance(a.get("job_id"), str) and JOB_ID_OK.match(a["job_id"])):
+                return self._json(400, {"error": "要給 job_id"})
+            args = {"job_id": a["job_id"]}
+            for k in ("in_seconds", "out_seconds"):
+                v = a.get(k)
+                if v is None:
+                    continue
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 3600:
+                    return self._json(400, {"error": "%s 要是 0–3600 的秒數" % k})
+                args[k] = v
+            if "in_seconds" in args and "out_seconds" in args and args["out_seconds"] <= args["in_seconds"]:
+                return self._json(400, {"error": "out_seconds 要大於 in_seconds"})
+        else:
+            args = {"title": str(a.get("title") or "")[:80]}
+        st = self.state
+        it = {"id": "act_" + secrets.token_hex(8), "at": None,
+              "tool": tool, "ok": True, "note": str(body.get("note") or "")[:200], "ref": body.get("ref") if isinstance(body.get("ref"), str) else None,
+              "action": action, "args": args, "token_name": "你" if self._human() else "Agent"}
+        with st.lock:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if st.activity:
+                last = datetime.datetime.fromisoformat(st.activity[-1]["at"])
+                if now <= last:
+                    now = last + datetime.timedelta(microseconds=1)
+            it["at"] = now.isoformat(timespec="microseconds")
+            st.activity.append(it)
+            del st.activity[:-ACTIVITY_MAX]
+        return self._json(200, {"id": it["id"], "at": it["at"]})
+
     def _concat(self, body):
         files = body.get("files")
         if not isinstance(files, list) or not 2 <= len(files) <= CONCAT_MAX:
@@ -2695,6 +3152,150 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(code, out)
 
     def _concat_jobs(self, ids, name):
+        eng = self.state.concat_engine()
+        if eng == "blocks":
+            try:
+                code, out = self._concat_blocks(ids, name)
+                reason = None if code == 200 else "status_%d" % code
+            except ConsoleError:
+                raise
+            except Exception as e:
+                code, out, reason = 0, None, "error:" + type(e).__name__
+            if reason is None:
+                return code, dict(out, engine="blocks")
+            sys.stderr.write("[postblocks] %s\n" % json.dumps({"event": "fallback", "what": "concat", "engine": "blocks",
+                                                               "reason": reason}))
+            code, out = self._concat_legacy(ids, name)
+            return code, (dict(out, engine="legacy(fallback)") if code == 200 else out)
+        code, out = self._concat_legacy(ids, name)
+        if eng == "shadow" and code == 200:
+            self._concat_shadow(ids, out.get("path"), out.get("lossless"))
+        return code, out
+
+    def _concat_shadow(self, ids, legacy_path, lossless=False):
+        def log(ev):
+            sys.stderr.write("[postblocks] %s\n" % json.dumps(dict(ev, what="concat"), ensure_ascii=False))
+
+        def go():
+            try:
+                load = os.getloadavg()[0]
+            except OSError:
+                load = 0.0
+            if load > CONCAT_SHADOW_LOAD:
+                return log({"event": "shadow_skipped", "reason": "load", "load": round(load, 1)})
+            if not _CONCAT_SHADOW.acquire(blocking=False):
+                return log({"event": "shadow_skipped", "reason": "busy"})
+            work = None
+            try:
+                work, path = self._concat_blocks_render(ids)
+                a, b = self._concat_probe(legacy_path), self._concat_probe(path)
+                diffs = [k for k in ("audio", "aspect") if a.get(k) != b.get(k)]
+                if abs((a.get("duration") or 0) - (b.get("duration") or 0)) > 0.1:
+                    diffs.append("duration")
+                if not lossless and a.get("frames") != b.get("frames"):
+                    diffs.append("frames")
+                log({"event": "shadow", "reason": "+".join(diffs) or "same", "legacy": a, "blocks": b})
+            except Exception as e:
+                log({"event": "shadow", "reason": "blocks_error:" + type(e).__name__})
+            finally:
+                _CONCAT_SHADOW.release()
+                if work:
+                    shutil.rmtree(work, ignore_errors=True)
+        t = threading.Timer(1.0, go)
+        t.daemon = True
+        t.start()
+        return t
+
+    def _concat_probe(self, path):
+        st = self.state
+        r = subprocess.run([st.ffprobe, "-v", "error", "-count_packets", "-show_entries",
+                            "format=duration:stream=codec_type,width,height,nb_read_packets", "-of", "json", path],
+                           capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
+        d = json.loads(r.stdout or b"{}")
+        ss = d.get("streams") or []
+        v = next((x for x in ss if x.get("codec_type") == "video"), {})
+        w, h = int(v.get("width") or 0), int(v.get("height") or 0)
+        return {"duration": round(float((d.get("format") or {}).get("duration") or 0), 3),
+                "frames": int(v.get("nb_read_packets") or 0), "aspect": round(w / h, 3) if h else None,
+                "audio": any(x.get("codec_type") == "audio" for x in ss)}
+
+    def _concat_spec_body(self, ids, paths):
+        infos = [self._concat_probe(p) for p in paths]
+        st = self.state
+        r = subprocess.run([st.ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                            "-of", "json", paths[0]], capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+        v0 = (json.loads(r.stdout or b"{}").get("streams") or [{}])[0]
+        w, h = int(v0.get("width") or 1080), int(v0.get("height") or 1920)
+        ratio = lambda a: int(a.split(":")[0]) / int(a.split(":")[1])
+        aspect = min(export_spec.ASPECTS, key=lambda a: abs(ratio(a) - w / h))
+        short = min(w, h)
+        res = min(export_spec.RESOLUTIONS, key=lambda x: abs(int(x[:-1]) - short))
+        video, audio, at = [], [], 0.0
+        for j, info in zip(ids, infos):
+            dur = info["duration"]
+            video.append({"job": j, "in": 0, "out": dur})
+            if info["audio"]:
+                audio.append({"lane": "A1", "job": j, "at": round(at, 3), "in": 0, "dur": dur, "gain": 1.0})
+            at += dur
+        return {"format": {"aspect": aspect, "resolution": res, "fps": 24, "fit": "pad"}, "video": video, "audio": audio,
+                "subtitles": "none", "disclosure": {"on": False}}
+
+    def _concat_blocks_render(self, ids):
+        st = self.state
+        if not (st.ffmpeg and st.ffprobe):
+            raise render.RenderError("這台找不到 ffmpeg，沒辦法合併")
+        paths = [os.path.join(st.media, self._cache_job(j)) for j in ids]
+        req = export_spec.normalize(self._concat_spec_body(ids, paths))
+        eid = "exp_" + secrets.token_hex(10)
+        work = tempfile.mkdtemp(prefix="concat-blocks-", dir=st.data_dir)
+        try:
+            s3 = os.path.join(work, "s3")
+            src_dir = os.path.join(s3, self.SRC_BUCKET, "originals", self.USER)
+            os.makedirs(src_dir)
+            keys = {}
+            for j, p in zip(ids, paths):
+                k = os.path.basename(p)
+                dst = os.path.join(src_dir, k)
+                if not os.path.exists(dst):
+                    try:
+                        os.link(p, dst)
+                    except OSError:
+                        shutil.copyfile(p, dst)
+                keys[j] = "originals/%s/%s" % (self.USER, k)
+            audio_keys = [(keys[a["job"]], "video") for a in req["audio"]]
+            spec = export_spec.build_spec(self.USER, eid, req, keys, {}, audio_keys, self.SRC_BUCKET, self.OUT_BUCKET)
+            r = os.path.join(work, "render")
+            os.makedirs(r)
+            with ffmpeg_env(st.openh264_env() if st.needs_openh264() else None):
+                done = export_local.run(spec, s3, r, strict=False, ffmpeg=st.ffmpeg, ffprobe=st.ffprobe,
+                                        container="mp4", engine="blocks")
+            if done.get("state") not in (None, "done"):
+                raise render.RenderError(done.get("error") or "積木沒有跑完")
+            out = os.path.join(s3, self.OUT_BUCKET, render.out_keys(self.USER, eid)["mp4"])
+            if not os.path.exists(out):
+                raise render.RenderError("積木沒有產出成品")
+            return work, out
+        except BaseException:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+
+    def _concat_blocks(self, ids, name):
+        st = self.state
+        name = safe_filename(name, 60) or "合併"
+        work, out = self._concat_blocks_render(ids)
+        try:
+            with open(out, "rb") as f:
+                sha = self._store_blob(f.read(), "video/mp4")
+            kept_dir = os.path.join(st.data_dir, "merged")
+            os.makedirs(kept_dir, mode=0o700, exist_ok=True)
+            kept = os.path.join(kept_dir, "%s-%s.mp4" % (name, sha[:8]))
+            if not os.path.exists(kept):
+                shutil.copyfile(out, kept)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return 200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": False, "path": kept}
+
+    def _concat_legacy(self, ids, name):
         st = self.state
         if not (st.ffmpeg and st.ffprobe):
             return 409, {"error": "這台找不到 ffmpeg，沒辦法合併"}
@@ -2764,10 +3365,36 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         if not st.agentloop_on():
             return self._json(501, {"error": AGENT_LOOP_OFF})
+        got = self._film_picks(run)
+        if not got:
+            return self._json(404, {"error": "沒有這一次拍片"})
+        plan, rows, shots, files, missing = got
+        out = {"run": run, "phase": plan["phase"], "project_id": plan["project_id"], "shots": shots, "film": None,
+               "missing": missing}
+        sync = self._film_sync(plan, shots, rows)
+        if sync:
+            out["mainline"] = sync
+        if files and not missing:
+            try:
+                if len(files) == 1:
+                    path, ctype = self._media_named(self._cache_job(files[0]))
+                    out["film"] = {"src": "/api/download?id=" + files[0], "path": path, "content_type": ctype}
+                else:
+                    code, f = self._concat_jobs(files, "agent-film")
+                    if code == 200:
+                        out["film"] = f
+                    else:
+                        out["film_error"] = f.get("error")
+            except ConsoleError as e:
+                out["film_error"] = str(e)
+        return self._json(200, out)
+
+    def _film_picks(self, run):
+        st = self.state
         import agent_exec
         plan = agent_exec.film_shots(st.data_dir, run)
         if not plan:
-            return self._json(404, {"error": "沒有這一次拍片"})
+            return None
         mine = {t for s in plan["shots"] for t in s["takes"]}
         rows = []
         if plan["project_id"] and mine:
@@ -2787,22 +3414,93 @@ class Handler(BaseHTTPRequestHandler):
                 files.append(pick["job_id"])
             else:
                 missing.append(s["key"])
-        out = {"run": run, "phase": plan["phase"], "project_id": plan["project_id"], "shots": shots, "film": None,
-               "missing": missing}
-        if files and not missing:
-            try:
-                if len(files) == 1:
-                    out["film"] = {"src": "/api/download?id=" + files[0],
-                                   "path": os.path.join(st.media, self._cache_job(files[0]))}
+        return plan, rows, shots, files, missing
+
+    def _film_sync(self, plan, shots, rows):
+        pid = plan.get("project_id")
+        picks = [(n, s, next((r for r in rows if r["id"] == s.get("picked")), None)) for n, s in enumerate(shots)]
+        picks = [(n, s, r) for n, s, r in picks if r and r.get("job_id")]
+        if not pid or not picks:
+            return None
+        segs = plan.get("shots") or []
+        request, model = str(plan.get("request") or ""), str(plan.get("model") or "")
+
+        def run_sync(c, u):
+            bkey = studio_store.board_key(pid)
+            board = studio_store.kv_get(c, u, bkey).get("value")
+            made = False
+            if not (isinstance(board, list) and board):
+                board = studio_store.normalize_shots([{"prompt": str(g.get("prompt") or request or "（Agent 拍片）")[:studio_store.WORK_PROMPT_MAX],
+                                                        "seconds": g.get("seconds")} for g in segs])
+                studio_store.kv_put(c, u, bkey, board)
+                made = True
+            matched = len(board) == len(segs)
+            jobs = studio_store.kv_get(c, u, "jobs").get("value")
+            jobs = jobs if isinstance(jobs, list) else []
+            works = studio_store.kv_get(c, u, "simple_works").get("value")
+            works = works if isinstance(works, dict) else {}
+            w = works.get(pid) if isinstance(works.get(pid), dict) else {"v": 2, "step": 1, "story": "", "aspect": "9:16",
+                                                                          "shots": [], "jobs": [], "exported": False, "done": {}}
+            wj = w.get("jobs") if isinstance(w.get("jobs"), list) else []
+            before = json.dumps([board, jobs, works.get(pid)], sort_keys=True, ensure_ascii=False, default=str)
+            synced = 0
+            for n, s, r in (picks if matched else []):
+                sid = board[n].get("sid") if isinstance(board[n], dict) else None
+                if not sid:
+                    continue
+                job, uid = r["job_id"], "agent_" + r["id"]
+                for j in jobs:
+                    if isinstance(j, dict) and str(j.get("uid", "")).startswith("agent_") and j.get("uid") != uid \
+                            and (j.get("applied") or {}).get("sid") == sid:
+                        j.pop("applied", None)
+                hit = next((j for j in jobs if isinstance(j, dict) and j.get("id") == job), None)
+                if hit is None:
+                    g = segs[n] if n < len(segs) else {}
+                    jobs.insert(0, {"uid": uid, "id": job, "status": "completed", "src": "/api/download?id=" + job,
+                                    "file": job + ".mp4", "model": model,
+                                    "payload": {"model": model, "prompt": g.get("prompt") or "", "seconds": g.get("seconds")},
+                                    "ts": int(time.time() * 1000), "applied": {"sid": sid},
+                                    "agent": {"run": plan.get("run"), "take": r["id"]}})
+                elif str(hit.get("uid", "")).startswith("agent_"):
+                    hit["applied"] = {"sid": sid}
+                    uid = hit["uid"]
                 else:
-                    code, f = self._concat_jobs(files, "agent-film")
-                    if code == 200:
-                        out["film"] = f
-                    else:
-                        out["film_error"] = f.get("error")
-            except ConsoleError as e:
-                out["film_error"] = str(e)
-        return self._json(200, out)
+                    uid = hit.get("uid") or uid
+                if not any(isinstance(x, dict) and x.get("uid") == uid and x.get("sid") == sid for x in wj):
+                    wj.insert(0, {"uid": uid, "sid": sid})
+                synced += 1
+            w["jobs"] = wj
+            if not str(w.get("story") or "").strip() and request:
+                w["story"] = request
+            if synced and isinstance(w.get("step"), int) and w["step"] < 5:
+                w["step"] = 5
+            works[pid] = w
+            changed = made or before != json.dumps([board, jobs, w], sort_keys=True, ensure_ascii=False, default=str)
+            if changed:
+                studio_store.kv_put(c, u, "jobs", jobs)
+                studio_store.kv_put(c, u, "simple_works", works)
+            return synced, (0 if matched else len(segs)), made, changed
+        try:
+            synced, unmatched, made, changed = self.state.db.run(run_sync)
+        except studio_store.StoreError as e:
+            return {"synced": 0, "unmatched": 0, "error": "寫回主線失敗：%s" % e}
+        out = {"synced": synced, "unmatched": unmatched}
+        if made:
+            out["board_created"] = True
+        if unmatched:
+            out["message"] = "有 %d 鏡沒對上分鏡（這部作品的分鏡鏡數跟 Agent 拍的不一樣），請到主線第 4 步手動指定" % unmatched
+        if changed:
+            st = self.state
+            with st.lock:
+                now = datetime.datetime.now(datetime.timezone.utc)
+                if st.activity and datetime.datetime.fromisoformat(st.activity[-1]["at"]) >= now:
+                    now = datetime.datetime.fromisoformat(st.activity[-1]["at"]) + datetime.timedelta(microseconds=1)
+                st.activity.append({"id": "act_" + secrets.token_hex(8), "at": now.isoformat(timespec="microseconds"),
+                                    "tool": "agent_film", "ok": True, "note": "Agent 拍的 %d 鏡接進主線" % synced, "ref": pid,
+                                    "action": "film_sync", "args": {"project_id": pid, "run": plan.get("run")},
+                                    "token_name": "Agent"})
+                del st.activity[:-ACTIVITY_MAX]
+        return out
 
     def _image_names(self, model):
         names = {model}
@@ -2874,6 +3572,183 @@ class Handler(BaseHTTPRequestHandler):
         out = dict(r) if isinstance(r, dict) else {"data": r}
         out["original"] = self._keep_original(out.get("id"), src)
         return self._json(200, out)
+
+    ASSET_TAGS_MAX, ASSET_TAG_LEN, ASSET_NAME_LEN = 20, 40, 120
+
+    def _image_outpaint(self, body):
+        import outpaint
+        st = self.state
+        if st.ffmpeg and st.ffprobe:
+            outpaint.FFMPEG, outpaint.FFPROBE = st.ffmpeg, st.ffprobe
+        body = dict(body) if isinstance(body, dict) else {}
+        body.pop("payer", None)
+        try:
+            req = outpaint.check_request(body)
+        except outpaint.OutpaintError as e:
+            return self._json(e.code, {"error": e.message})
+        if not outpaint.available():
+            return self._json(503, {"error": "這台找不到 ffmpeg，外擴做不了"})
+        try:
+            listing, _stale = st.models_cached()
+            entry = qc.find_entry(listing, outpaint.MODEL)
+        except ConsoleError:
+            entry = None
+        if entry is None:
+            return self._json(503, {"error": "目前可用的模型裡沒有畫面外擴（%s），所以沒有送出" % outpaint.MODEL,
+                                    "payer": "own_key"})
+        cost = outpaint.request_price(entry)
+        try:
+            if req["asset_id"]:
+                resp = st.call("/assets/%s/content" % req["asset_id"], stream=True, timeout=60)
+                try:
+                    src_raw = resp.read(OUTPAINT_MAX + 1)
+                finally:
+                    resp.close()
+            else:
+                m = re.match(r"^data:image/(?:png|jpe?g);base64,(.*)$", req["source"], re.S | re.I)
+                src_raw = base64.b64decode(m.group(1)) if m else b""
+            if not src_raw or len(src_raw) > OUTPAINT_MAX:
+                return self._json(413 if src_raw else 400, {"error": "原圖讀不出來或太大（上限 %d MB）" % (OUTPAINT_MAX >> 20)})
+            geo, canvas, mask = outpaint.prepare(src_raw, req["aspect"])
+        except ConsoleError as e:
+            return self._json(e.code if 400 <= e.code < 600 else 502, {"error": "原圖拿不到：%s" % e.body})
+        except (binascii.Error, ValueError):
+            return self._json(400, {"error": "原圖讀不出來（要是 PNG 或 JPEG 的 data URI）"})
+        except outpaint.OutpaintError as e:
+            return self._json(e.code, {"error": e.message})
+        shape = {"aspect": req["aspect"], "model": outpaint.MODEL, "sides": geo["sides"],
+                 "source_size": {"w": geo["w"], "h": geo["h"]}, "canvas": {"w": geo["W"], "h": geo["H"]},
+                 "offset": {"x": geo["x"], "y": geo["y"]}, "payer": "own_key"}
+        if body.get("quote"):
+            return self._json(200, dict(shape, est_cost=cost, unit="request"))
+        uri = lambda raw: "data:image/png;base64," + base64.b64encode(raw).decode()
+        try:
+            out = st.call("/images/edits", payload=dict(req["extra"], model=outpaint.MODEL, prompt=req["prompt"],
+                                                         image=uri(canvas), mask=uri(mask)), timeout=GENERATE_TIMEOUT)
+        except ConsoleError as e:
+            return self._err(e)
+        it = (out.get("data") or [None])[0] if isinstance(out, dict) else None
+        it = it if isinstance(it, dict) else {}
+        try:
+            if isinstance(it.get("b64_json"), str) and it["b64_json"]:
+                result = base64.b64decode(it["b64_json"])
+            elif isinstance(it.get("url"), str) and it["url"].startswith("data:"):
+                result = base64.b64decode(it["url"].split(",", 1)[1])
+            else:
+                return self._json(502, {"error": "上游沒有回圖片", "payer": "own_key"})
+            final = outpaint.paste_back(result, src_raw, geo)
+        except (binascii.Error, ValueError):
+            return self._json(502, {"error": "上游回的圖片解不開", "payer": "own_key"})
+        except outpaint.OutpaintError as e:
+            return self._json(502, {"error": "外擴已完成，但貼回原圖失敗：%s" % e.message, "payer": "own_key"})
+        payload = {"source": uri(final), "name": outpaint.asset_name(req["aspect"], req["asset_id"]),
+                   "tags": outpaint.asset_tags(req["aspect"], req["asset_id"])}
+        try:
+            try:
+                asset = st.call("/assets", payload=payload, timeout=GENERATE_TIMEOUT)
+            except ConsoleError as e:
+                if e.code != 400:
+                    raise
+                payload.pop("tags")
+                asset = st.call("/assets", payload=payload, timeout=GENERATE_TIMEOUT)
+        except ConsoleError as e:
+            return self._json(502, {"error": "外擴已完成，但存成素材失敗：%s" % with_hint(e), "payer": "own_key"})
+        aid = str(asset.get("id") or "") if isinstance(asset, dict) else ""
+        res = dict(shape, asset=asset, reference="asset://" + aid if aid else "")
+        if isinstance(out.get("id"), str):
+            res["upstream_id"] = out["id"]
+        res["from"] = {"asset": req["asset_id"], "reference": "asset://" + req["asset_id"] if req["asset_id"] else "",
+                       "sha256": hashlib.sha256(src_raw).hexdigest()}
+        return self._json(200, res)
+
+    def _asset_upstream(self, path, body):
+        st = self.state
+        try:
+            if path == "/api/assets/delete":
+                if not self._human():
+                    return self._json(403, {"error": "刪除素材要你本人在 App 裡按"})
+                aid = str(body.get("id") or "").strip()
+                if not ASSET_ID.match(aid):
+                    return self._json(400, {"error": "素材 id 的格式不對"})
+                st.call("/assets/" + aid, method="DELETE")
+
+                def drop(c, _u):
+                    with c.cursor() as cur:
+                        cur.execute("DELETE FROM local_asset_meta WHERE asset_id = %s", (aid,))
+                try:
+                    st.db.run(drop)
+                except studio_store.StoreError:
+                    pass
+                return self._json(200, {"ok": True, "id": aid})
+            if path == "/api/assets/uploads":
+                mime = body.get("mime")
+                if not isinstance(mime, str) or not mime.strip() or len(mime) > 100:
+                    return self._json(400, {"error": "缺少 mime（例如 image/png、video/mp4）"})
+                payload = {"mime": mime.strip()}
+                if isinstance(body.get("name"), str) and body["name"].strip():
+                    payload["name"] = body["name"].strip()[:self.ASSET_NAME_LEN]
+                if isinstance(body.get("tags"), list):
+                    payload["tags"] = [t for t in body["tags"] if isinstance(t, str)][:self.ASSET_TAGS_MAX]
+                r = st.call("/assets/uploads", payload=payload)
+                if not (isinstance(r, dict) and UPLOAD_ID.match(str(r.get("id") or ""))):
+                    raise ConsoleError(502, "上游沒回直傳 id")
+                return self._json(201, r)
+            upid = str(body.get("id") or "").strip()
+            if not UPLOAD_ID.match(upid):
+                return self._json(400, {"error": "直傳 id 的格式不對"})
+            return self._json(200, st.call("/assets/uploads/%s/complete" % upid, payload={}))
+        except ConsoleError as e:
+            return self._err(e, with_hints=False)
+
+    def _asset_update(self, body):
+        aid = str(body.get("id") or "").strip()
+        if not ASSET_ID.match(aid):
+            return self._json(400, {"error": "素材 id 的格式不對"})
+        patch = {}
+        if "name" in body and (body["name"] is None or isinstance(body["name"], str)):
+            patch["name"] = None if body["name"] is None else body["name"].strip()[:self.ASSET_NAME_LEN]
+        if isinstance(body.get("tags"), list):
+            tags = [t.strip() for t in body["tags"] if isinstance(t, str) and t.strip()]
+            if len(tags) > self.ASSET_TAGS_MAX or any(len(t) > self.ASSET_TAG_LEN for t in tags):
+                return self._json(400, {"error": "標籤最多 %d 個、每個 %d 字以內" % (self.ASSET_TAGS_MAX, self.ASSET_TAG_LEN)})
+            patch["tags"] = list(dict.fromkeys(tags))
+        if not patch:
+            return self._json(400, {"error": "要帶 name 或 tags"})
+
+        def put(c, _u):
+            with c.cursor() as cur:
+                cur.execute("SELECT patch FROM local_asset_meta WHERE asset_id = %s", (aid,))
+                row = cur.fetchone()
+                merged = dict((row[0] if row else None) or {}, **patch)
+                cur.execute("INSERT INTO local_asset_meta (asset_id, patch) VALUES (%s, %s) ON CONFLICT (asset_id) DO UPDATE "
+                            "SET patch = excluded.patch, updated_at = now()",
+                            (aid, json.dumps(merged, ensure_ascii=False)))
+                return merged
+        merged = self.state.db.run(put)
+        return self._json(200, dict({"id": aid, "local": True}, **merged))
+
+    def _asset_overlay(self, got, tag=None):
+        if not isinstance(got, dict) or not isinstance(got.get("data"), list):
+            return got
+
+        def read(c, _u):
+            with c.cursor() as cur:
+                cur.execute("SELECT asset_id, patch FROM local_asset_meta")
+                return {r[0]: r[1] for r in cur.fetchall()}
+        meta = self.state.db.run(read)
+        items = [dict(x, **meta[x["id"]]) if isinstance(x, dict) and x.get("id") in meta else x for x in got["data"]]
+        if tag:
+            items = [x for x in items if isinstance(x, dict) and tag in (x.get("tags") or [])]
+        return dict(got, data=items)
+
+    def _qc_rating_local(self, job):
+        if not isinstance(job, str) or not ID.match(job):
+            return self._json(400, {"error": "job 不合法（上游的影片 id）"})
+        t = self.state.db.run(lambda c, u: takes.by_job(c, u, job))
+        if not t:
+            return self._json(404, {"error": "本機沒有這支片的品管紀錄（還沒驗過，或不是在這台拍的）"})
+        return self._json(200, {"job": job, "source": "local", "take": t["id"], "shot_key": t.get("shot_key"),
+                                "rating": {"ok": t.get("qc_ok"), "reports": t.get("qc") or []}})
 
     def _keep_original(self, aid, src):
         m = DATA_URI.match(src)

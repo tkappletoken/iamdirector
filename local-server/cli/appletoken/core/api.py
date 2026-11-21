@@ -406,6 +406,9 @@ class Workbench:
     def agent_runs(self):
         return self.c.get("/api/local/agent/runs")
 
+    def work_run(self, body):
+        return self.c.post("/api/local/work/run", body)
+
     def agent_film(self, run):
         return self.c.get("/api/local/agent/film", params={"run": run})
 
@@ -553,6 +556,24 @@ class Workbench:
 
     def export_status(self, export_id):
         return self.c.get("/api/export/status", params={"id": export_id})
+
+    LOCAL_SWITCHES = {"agent-loop": "/api/local/agent-loop", "mcp-direct": "/api/local/mcp-direct",
+                      "agent-qc": "/api/local/agent-qc", "frame-relay": "/api/local/frame-relay",
+                      "agent-scope": "/api/local/agent-scope", "engine": "/api/local/engine",
+                      "concat-engine": "/api/local/concat-engine", "ui-profiles": "/api/local/ui-profiles"}
+
+    def local_switch(self, name):
+        if name not in self.LOCAL_SWITCHES:
+            raise ValueError("沒有這個開關：%s" % name)
+        return self.c.get(self.LOCAL_SWITCHES[name])
+
+    def concat(self, job_ids, name=None):
+        for j in job_ids:
+            _check(j, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
+        body = {"files": ["/api/download?id=%s" % j for j in job_ids]}
+        if name:
+            body["name"] = name
+        return self.c.post("/api/concat", body)
 
     def local_result(self, job_id):
         _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")

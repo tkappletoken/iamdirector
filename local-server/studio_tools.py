@@ -21,6 +21,8 @@ DURATION_RULES = [
     ("NSFW-Seedance-2",     {"min": 4, "max": 15}),
     ("ByteDance-Seedance",  {"min": 4, "max": 15}),
     ("NSFW-Seedance-1",     {"min": 4, "max": 15}),
+    ("Seedance-2.5",        {"min": 4, "max": 30}),
+    ("Seedance-2",          {"min": 4, "max": 15}),
     ("veo",                 {"allowed": [4, 6, 8]}),
     ("sora",                {"allowed": [4, 8, 12]}),
     ("happyhorse",          {"min": 3, "max": 10}),
@@ -54,6 +56,60 @@ def duration_rule(model):
         if name.startswith(prefix.lower()):
             return rule
     return {"min": 4, "max": 15}
+
+def _pos(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 and not isinstance(v, bool) else None
+
+def seconds_rule(model, constraints=None):
+    c = constraints if isinstance(constraints, dict) else {}
+    allow = sorted({int(x) if float(x).is_integer() else x for x in (_pos(v) for v in (c.get("allowed_seconds") or []))
+                    if x is not None}) if isinstance(c.get("allowed_seconds"), list) else []
+    mn, mx, df = _pos(c.get("min_seconds")), _pos(c.get("max_seconds")), _pos(c.get("default_seconds"))
+    if allow or mn is not None or mx is not None:
+        out = {"source": "catalog"}
+        if allow:
+            out["allowed"] = allow
+        else:
+            if mn is not None:
+                out["min"] = mn
+            if mx is not None:
+                out["max"] = mx
+        out["default"] = df if df is not None else (allow[0] if allow else (mn if mn is not None else 5))
+        return out
+    name = (model or "").rsplit("/", 1)[-1].lower()
+    for prefix, rule in sorted(DURATION_RULES, key=lambda x: -len(x[0])):
+        if name.startswith(prefix.lower()):
+            out = dict(rule, source="table")
+            out["default"] = out["allowed"][0] if "allowed" in out else out["min"]
+            return out
+    return {"source": "table-default", "min": 4, "max": 15, "default": 5}
+
+def seconds_text(rule):
+    if rule.get("allowed"):
+        return "只收 %s 秒" % "／".join("%g" % v for v in rule["allowed"])
+    lo, hi = rule.get("min"), rule.get("max")
+    if lo is not None and hi is not None:
+        return "收 %g–%g 秒" % (lo, hi)
+    return ("最短 %g 秒" % lo) if lo is not None else ("最長 %g 秒" % hi)
+
+def check_seconds(model, seconds, constraints=None):
+    rule = seconds_rule(model, constraints)
+    if rule["source"] == "table-default":
+        return None, rule
+    try:
+        s = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return "秒數不是數字", rule
+    sent = "" if float(seconds) == s else "（%g 秒送出去是 %d 秒）" % (float(seconds), s)
+    if rule.get("allowed"):
+        ok = s in rule["allowed"]
+    else:
+        ok = (rule.get("min") is None or s >= rule["min"]) and (rule.get("max") is None or s <= rule["max"])
+    return (None if ok else "%s %s%s" % (model or "這個模型", seconds_text(rule), sent)), rule
 
 def align_seconds(model, wanted):
     rule = duration_rule(model)

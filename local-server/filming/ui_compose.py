@@ -32,12 +32,15 @@ TEXT = {
               "publish": "上架", "assist": "協作", "agentrun": "Agent 拍片",
               "agentrun_hint": "Agent 從頭拍到尾：這裡看進度、回答它的提問；花錢照舊走核准卡",
               "meme_hint": "挑範本 → 改字卡 → 匯出", "plan_hint": "先寫腳本、拆分鏡（照下面的順序）",
+              "plan_hint_script": "先寫腳本（照下面的順序）", "plan_hint_board": "先拆分鏡（照下面的順序）",
+              "plan_hint_cast": "先把角色定好",
               "step_script": "1. 腳本", "step_board": "2. 分鏡", "step_cast": "角色", "previs_hint": "站位與運鏡用 3D 鎖住再生成",
               "make_hint": "按開拍照舊先報價、再確認"},
     "en": {"meme": "Meme", "plan": "Plan", "previs": "Previs", "make": "Generate", "pick": "Takes", "post": "Post & export",
            "publish": "Publish", "assist": "Assist", "agentrun": "Agent shoot",
            "agentrun_hint": "The Agent shoots end to end: watch progress and answer its questions here; spending still goes through approval cards",
            "meme_hint": "Pick a template → edit captions → export", "plan_hint": "Script first, then storyboard",
+           "plan_hint_script": "Script first", "plan_hint_board": "Storyboard first", "plan_hint_cast": "Set up the cast first",
            "step_script": "1. Script", "step_board": "2. Storyboard", "step_cast": "Cast",
            "previs_hint": "Lock blocking and camera in 3D", "make_hint": "Shooting still quotes first, then asks you"},
 }
@@ -129,7 +132,9 @@ def compose(answers=None, name=None):
         if "cast" in steps or pro:
             plan.append(step(T["step_cast"]) if "cast.turn" in hide else button("cast.turn"))
         if plan:
-            panels.append({"id": "plan", "title": T["plan"], "items": [{"type": "text", "text": T["plan_hint"]}] + plan})
+            hint = T["plan_hint"] if {"script", "storyboard"} <= set(steps) else \
+                T["plan_hint_script"] if "script" in steps else T["plan_hint_board"] if "storyboard" in steps else T["plan_hint_cast"]
+            panels.append({"id": "plan", "title": T["plan"], "items": [{"type": "text", "text": hint}] + plan})
         if (a["previs"] or pro) and "previs.open" not in hide:
             pv = [{"type": "text", "text": T["previs_hint"]}, button("previs.open")]
             if "puppet.open" not in hide:

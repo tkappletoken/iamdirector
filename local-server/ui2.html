@@ -905,9 +905,44 @@ pre.err { color:var(--ng); }
           <div class="hint" id="pbEngineNote">切換之後下一次匯出就生效，不用重開 App。</div>
         </div>
         
-        <div id="frameRelayWrap" hidden style="margin-top:10px">
-          <div class="chk"><input type="checkbox" id="frameRelay"><label for="frameRelay">首幀接力<span class="note"> · Agent 拍長片時，用上一鏡定稿的最後一格當下一鏡的首幀（測試中）</span></label></div>
-          <div class="hint" id="frameRelayNote">打開之後，每接一鏡會用你自己的 AppleToken 金鑰上傳一張圖（上一鏡的最後一格）。預設關。</div>
+        <div id="concatEngineWrap" hidden style="margin-top:10px">
+          <label for="concatEngine">接片引擎<span class="note"> · 合併成一部、交片預覽（測試中）</span></label>
+          <select id="concatEngine">
+            <option value="legacy">原本的做法（預設）</option>
+            <option value="shadow">原本的做法，背景比對後製積木</option>
+            <option value="blocks">走後製積木（出問題自動退回原本的）</option>
+          </select>
+          <div class="hint" id="concatEngineNote">切換之後下一次合併就生效，不用重開 App。</div>
+        </div>
+        
+        <div id="agentSwitchesWrap" hidden style="margin-top:14px">
+          <div class="printed" style="font-weight:600">Agent</div>
+          <div id="agLoopWrap" hidden style="margin-top:6px">
+            <div class="chk"><input type="checkbox" id="agLoop"><label for="agLoop">Agent 主迴圈<span class="note"> · 讓 Agent 從規劃、生成、檢查到交片一路自己跑</span></label></div>
+            <div class="hint" id="agLoopNote"></div>
+          </div>
+          <div id="agDirectWrap" hidden style="margin-top:6px">
+            <div class="chk"><input type="checkbox" id="agDirect"><label for="agDirect">Agent 直送<span class="note"> · 在你設的上限內，Agent 報價後直接送出</span></label>
+              <button type="button" id="agDirectLimits" class="ghost" style="margin-left:6px">上限</button></div>
+            <div class="hint" id="agDirectNote"></div>
+          </div>
+          <div id="agScopeWrap" hidden style="margin-top:6px">
+            <label for="agScope">Agent 範圍<span class="note"> · Agent 經 MCP 能用到哪些功能</span></label>
+            <select id="agScope">
+              <option value="basic">基本</option>
+              <option value="full">完整</option>
+            </select>
+            <div class="hint" id="agScopeNote"></div>
+          </div>
+          <div id="agQcWrap" hidden style="margin-top:6px">
+            <div class="chk"><input type="checkbox" id="agQc"><label for="agQc">自動驗片<span class="note"> · 每拍好一鏡，自動送一張驗片</span></label></div>
+            <div class="hint" id="agQcNote"></div>
+          </div>
+          
+          <div id="frameRelayWrap" hidden style="margin-top:10px">
+            <div class="chk"><input type="checkbox" id="frameRelay"><label for="frameRelay">首幀接力<span class="note"> · Agent 拍長片時，用上一鏡定稿的最後一格當下一鏡的首幀（測試中）</span></label></div>
+            <div class="hint" id="frameRelayNote">打開之後，每接一鏡會用你自己的 AppleToken 金鑰上傳一張圖（上一鏡的最後一格）。預設關。</div>
+          </div>
         </div>
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pbPanel"><label for="pbPanel">匯出面板用積木清單（測試中，預設是原本的面板）</label></div>
@@ -915,6 +950,8 @@ pre.err { color:var(--ng); }
         <div class="chk" style="margin-top:6px"><input type="checkbox" id="r7Cat"><label for="r7Cat">匯出面板照積木目錄畫（測試中，預設是原本的面板）</label></div>
         
         <div class="chk" style="margin-top:6px"><input type="checkbox" id="uiDescOn"><label for="uiDescOn">依介面描述檔多一個面板（測試中，預設關）</label></div>
+        
+        <div class="chk" id="uiV2Row" hidden style="margin-top:6px"><input type="checkbox" id="uiV2On"><label for="uiV2On">照描述檔的版面排（面板放左、右、底，可收合；主區分欄；測試中，預設關）</label></div>
         
         <div style="margin-top:6px;display:flex;gap:8px"><button type="button" id="uiComposeBtn" hidden>設定我的介面</button><button type="button" id="uiResetBtn" hidden>回預設</button><button type="button" id="uiUndoBtn" hidden>還原上一步</button></div>
         
@@ -927,7 +964,10 @@ pre.err { color:var(--ng); }
         <div class="chk" id="agRunRow" hidden style="margin-top:10px"><input type="checkbox" id="agRun"><label for="agRun">右下角顯示「Agent 拍片進度」（第幾鏡、花了多少、Agent 的提問、交片；測試中，預設關）</label></div>
         
         <div id="uiMine" hidden style="margin-top:6px"><label for="uiProfilePick">我的介面</label>
-          <select id="uiProfilePick"></select> <button type="button" id="uiApplyBtn">套用</button></div>
+          <select id="uiProfilePick"></select> <button type="button" id="uiApplyBtn">套用</button>
+          <button type="button" id="uiDeleteBtn">刪除這份介面</button>
+          <span id="uiDeleteAsk" hidden role="group" aria-label="確認刪除"><span id="uiDeleteQ"></span>
+            <button type="button" id="uiDeleteYes">確定刪除</button> <button type="button" id="uiDeleteNo">取消</button></span></div>
         <details style="margin-top:12px">
           <summary class="printed" style="cursor:pointer;padding:5px 0">這個模型的計價規則</summary>
           <textarea id="rateJson" class="mono" style="min-height:118px;margin-top:8px"
@@ -4328,7 +4368,15 @@ document.addEventListener('keydown', e => {
     forbidden: '這把憑證沒有權限送這一支。',
     unauthorized: '登入狀態過期了，重新整理一次。',
     studio_unavailable: '這個功能還沒搬到創作者後台。',
+    model_ref_required: '這個模型名稱要更新：重新整理頁面，再從模型清單選一次。',
+    upstream_busy: '供應商現在很忙，這一次沒有送出、也沒有扣錢，等一下再送就好。',
+    circuit_open: '供應商暫時連不上，這一次沒有送出、也沒有扣錢，等一下再送就好。',
+    upstream_unavailable: '這家供應商暫時連不上，這一次沒有送出、也沒有扣錢，過幾分鐘再試。',
+    maintenance: '供應商正在維護，這一次沒有送出、也沒有扣錢，稍後再試。',
   };
+  const ERR_SENT = [
+    [/確認單已過期/, '報價超過 15 分鐘過期了，重新報價一次就好（過期的報價不會扣錢）。'],
+  ];
 
   function errText(e) {
     const dig = (x, depth) => {
@@ -4338,6 +4386,7 @@ document.addEventListener('keydown', e => {
       if (x instanceof Error) return x.message || String(x);
       if (x.error !== undefined) return dig(x.error, depth + 1);
       const code = x.code || x.type;
+      if (x.reason && ERR_TEXT[x.reason]) return ERR_TEXT[x.reason];
       if (code && ERR_TEXT[code]) return ERR_TEXT[code];
       if (x.message) return String(x.message);
       if (code) return String(code);
@@ -4347,6 +4396,9 @@ document.addEventListener('keydown', e => {
     try { t = dig(e, 0); } catch (_) { t = ''; }
     t = String(t || '').trim();
     if (/計價依解析度區分|請指定 resolution/.test(t)) t = '這個模型要指定解析度（在「解析度」選 720p 或 1080p 再送）';
+    for (const [re, say] of ERR_SENT) if (re.test(t)) { t = say; break; }
+    const rt = e && typeof e === 'object' && e.retry;
+    if (t && rt && rt.retryable === true && Number(rt.after) > 0) t += '（大約 ' + Math.ceil(Number(rt.after)) + ' 秒後可以再送）';
     if (!t) {
       try { t = JSON.stringify(e).slice(0, 120); } catch (_) { t = String(e); }
       t = t && t !== '{}' ? '未知錯誤：' + t : '未知錯誤（沒有更多資訊）';
@@ -6044,6 +6096,8 @@ document.addEventListener('keydown', e => {
     '.thumbs .a-op{display:block;width:100%;margin-top:3px;height:18px;padding:0;font-size:var(--fs-s);line-height:16px;',
     'border:1px solid var(--edge2);border-radius:4px;background:var(--riser);color:var(--pencil);cursor:pointer}',
     '.thumbs .a-op:hover,.thumbs .a-op:focus-visible{color:var(--paper);border-color:var(--grease)}',
+    '.op-entry{width:auto;min-height:28px;margin-left:6px;padding:0 10px;border:1px solid var(--edge2);border-radius:6px;background:none;color:var(--label);font-size:var(--fs-s);cursor:pointer;flex:none}',
+    '.op-entry:hover,.op-entry:focus-visible{color:var(--paper);border-color:var(--grease)}',
     '.op-back{position:fixed;inset:0;z-index:90;background:rgba(8,9,12,.72);display:flex;align-items:center;justify-content:center;padding:16px}',
     '.op-dlg{width:min(560px,100%);max-height:calc(100vh - 32px);overflow:auto;background:var(--slate);color:var(--paper);',
     'border:1px solid var(--edge2);border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.45);padding:22px 24px 18px;box-sizing:border-box}',
@@ -6157,6 +6211,20 @@ document.addEventListener('keydown', e => {
     return back;
   }
   window.__openOutpaint__ = openOutpaint;
+  window.__OP_BUTTON__ = (id, name, src) => {
+    if (!(window.__STUDIO__ && window.__STUDIO__.outpaint_entry === true)) return null;
+    if (!/^ast_[0-9a-f]{20}$/.test(id || '')) return null;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'op-entry';
+    b.textContent = '⇔ 改比例'; b.title = '轉成 9:16／16:9（只補兩側，原圖不動）；會先報價，按了才送'; b.setAttribute('aria-label', b.title);
+    b.onclick = ev => {
+      ev.stopPropagation(); ev.preventDefault();
+      const f = document.createElement('figure');
+      const cap = document.createElement('figcaption'); cap.textContent = String(name || id); f.append(cap);
+      if (src) { const im = document.createElement('img'); im.src = src; f.append(im); }
+      openOutpaint(f, id);
+    };
+    return b;
+  };
   function decorateOutpaint(f) {
     const id = (f.dataset.ref || '').replace(/^asset:\/\//, '');
     if (!/^ast_[0-9a-f]{20}$/.test(id) || f.querySelector('.a-op') || kindOf(f.dataset.mime || '') !== 'image') return;
@@ -6724,7 +6792,7 @@ document.addEventListener('keydown', e => {
     if (sh.quote_id !== it.quote_id || sheetPts(sh) !== it.pts)
       return { ok: false, stop: true, why: '第 ' + (idx + 1) + ' 鏡的報價跟總確認單上的不一致' };
     if (sh.expires_at && Date.parse(sh.expires_at) <= now)
-      return { ok: false, stop: true, why: '第 ' + (idx + 1) + ' 鏡的報價已經過期' };
+      return { ok: false, stop: true, why: '第 ' + (idx + 1) + ' 鏡的報價已經過期（超過 15 分鐘），按「再試一次」就會重新報價' };
     return { ok: true };
   }
   function batchAfter(B, idx, resp) {
@@ -9408,7 +9476,10 @@ document.addEventListener('keydown', e => {
         if (!imgs.length) grpImages.body.append(emptyNote('上傳的圖片會出現在這裡；拿來當參考圖或首尾幀，不能放進時間軸。'));
         imgs.forEach(a => { const el = chip('', String(a.name || a.id).slice(0, 16),
           a.status === 'active' ? '圖片' : '處理中',
-          (a.name || a.id) + '\n圖片拿來當參考圖或首尾幀（左欄點它就填進去），不能放進時間軸', true); el.dataset.asset = a.id; grpImages.body.append(el); });
+          (a.name || a.id) + '\n圖片拿來當參考圖或首尾幀（左欄點它就填進去），不能放進時間軸', true); el.dataset.asset = a.id;
+          const ob = a.status === 'active' && typeof window.__OP_BUTTON__ === 'function' ? window.__OP_BUTTON__(a.id, a.name, null) : null;
+          if (ob) el.append(ob);
+          grpImages.body.append(el); });
       }
 
       grpCaps.body.textContent = '';
@@ -11200,6 +11271,7 @@ document.addEventListener('keydown', e => {
     setTimeout(() => {
       try {
         const K = 'studio-canvas-seen';
+        if (window.__STUDIO__ && window.__STUDIO__.studio_open === false) return;
         if (localStorage.getItem(K)) return;
         localStorage.setItem(K, '1');
         const CANVAS_NOTICE = ('工作台改版了：中間是「畫布」（素材、分鏡、影片在同一張圖上），' +
@@ -13421,6 +13493,7 @@ document.addEventListener('keydown', e => {
     b.textContent = '付款與金鑰';
     b.onclick = async () => {
       menu.hidden = true;
+      const bar = menu.closest('.slatebar'); if (bar) bar.classList.remove('who-open');
       await load();
       openSheet();
     };
@@ -15482,12 +15555,13 @@ document.addEventListener('keydown', e => {
     if (secIn) secIn.addEventListener('input', () => { paintDur(); });
     paintDur();
     if (sh.motion && sh.motion.ref) {
-      const ok = videoOk(model());
+      const mOn = motionPickOn(), mm = mOn ? shotActual(sh) : model();
+      const ok = videoOk(mm);
       const p = h('span', 'r3-pill ' + (ok ? 'ok' : 'warn'), '▶ ' + (sh.motion.name || '動作來源'));
       p.title = ok ? '送件時排在參考包第一張：只取它的動作與運鏡，外觀照素材表'
-                   : window.__VIDEO_REF_WHY__(model()) + '：這一鏡送件時不會附動作來源';
+                   : window.__VIDEO_REF_WHY__(mm) + (mOn && !motionCandidate() ? '；' + MOTION_NONE : '') + '：這一鏡送件時不會附動作來源';
       const x = h('button', 'x', '✕'); x.type = 'button'; x.title = '拿掉動作來源';
-      x.onclick = () => { delete sh.motion; saveShots(); renderShots(); };
+      x.onclick = () => { if (mOn) motionUnpick(sh); delete sh.motion; saveShots(); renderShots(); };
       p.append(x); row.append(p);
     } else {
       const b = h('button', 'r3-pill', '＋ 動作來源影片'); b.type = 'button';
@@ -15519,6 +15593,43 @@ document.addEventListener('keydown', e => {
     wrap.append(row);
     if (strip.childNodes.length) wrap.append(strip);
   }
+  const MOTION_NONE = '目錄裡沒有收參考影片的模型';
+  const motionPickOn = () => !!(window.__STUDIO__ && window.__STUDIO__.motion_model_pick);
+  const catalogVideo = () => (typeof MODELS !== 'undefined' && MODELS && Array.isArray(MODELS.video) ? MODELS.video : []);
+  const shotActual = s => (window.__R5__ && typeof window.__R5__.shotModel === 'function' && window.__R5__.shotModel(s)) || model();
+  const motionCandidate = () => catalogVideo().find(m => typeof m === 'string' && videoOk(m)) || '';
+  function motionPick(sh) {
+    if (!motionPickOn() || !sh || !sh.motion) return '';
+    const cur = shotActual(sh);
+    if (videoOk(cur)) return '';
+    const m = motionCandidate();
+    if (!m) return '';
+    sh.motionPick = { model: m, from: cur, prev: typeof sh.model === 'string' ? sh.model : null };
+    sh.model = m;
+    return m;
+  }
+  function motionUnpick(sh) {
+    const p = sh && sh.motionPick;
+    if (!p) return;
+    if (sh.model === p.model) { if (p.prev == null) delete sh.model; else sh.model = p.prev; }
+    delete sh.motionPick;
+  }
+  function motionSheet(job, box, a) {
+    const s = shots.find(x => x.sid === a.sid);
+    if (!s || !s.motion || !s.motion.ref) return;
+    const pm = String((job.payload && job.payload.model) || '');
+    const d = h('div', 'r2-sheet');
+    if (s.motionPick && s.motionPick.model === pm) {
+      d.append(h('div', 't', '因為有動作來源，改用 ' + pm.split('/').pop()));
+      d.append(h('div', null, (s.motionPick.from ? '左欄的 ' + s.motionPick.from.split('/').pop() + ' ' : '原本的模型') +
+                              '不收參考影片；上面的金額是改模型之後的報價。要換回去，回分鏡按 ★ 上的 ✕'));
+    } else if (!videoOk(pm)) {
+      d.style.borderColor = 'var(--grease)';
+      d.append(h('div', 't', '有動作來源，但不會附上'));
+      d.append(h('div', 'r2-warn-l', window.__VIDEO_REF_WHY__(pm) + (motionCandidate() ? '' : '；' + MOTION_NONE) + '：這一鏡送件時不會附動作來源'));
+    } else return;
+    box.append(d);
+  }
   function pickMotion(sh) {
     const f = document.createElement('input');
     f.type = 'file'; f.accept = 'video/mp4,video/quicktime,video/webm';
@@ -15533,8 +15644,10 @@ document.addEventListener('keydown', e => {
         if (!ref) throw new Error('上游沒回素材 id');
         sh.motion = { ref, name: file.name.slice(0, 28) };
         RIGHTS[ref] = RIGHTS[ref] || {}; saveRights();
+        const picked = motionPick(sh);
         saveShots(); renderShots();
-        say('動作來源已附上，送件時排在參考包第一張', true);
+        say(picked ? '動作來源已附上；左欄的模型不收參考影片，這一鏡改用 ' + picked.split('/').pop() + '（分鏡上 ★ 的 ✕ 可以換回）'
+                   : '動作來源已附上，送件時排在參考包第一張', true);
       } catch (e) { if (!upCancelled(e)) say('上傳失敗：' + e.message); }
     };
     f.click();
@@ -15805,6 +15918,7 @@ document.addEventListener('keydown', e => {
   function sheet(job, box) {
     const a = job && job.applied;
     if (!a || !a.sid) return [];
+    if (motionPickOn()) motionSheet(job, box, a);
     const st0 = shotStats(a.sid, jobs.filter(j => j !== job), CHG);
     const hit = capHit(st0, pcfg());
     if (!hit) return [];
@@ -15939,6 +16053,7 @@ document.addEventListener('keydown', e => {
     };
   }
   window.__R3__ = { shotRefs, prep, sheet, issues, prePanel, textBoard, openBoard, cfg: () => pcfg(), charges: () => CHG,
+                    motionPick, motionUnpick,
                     slotRefs, pickAngles, needAngles, slotNote, preflight, classifyReject, refundNote, trimPlan, shotStats,
                     costOf, capHit, durFor, durWarn, splitShot, colorClash, colorNote, dominantColors, usedModels, dialogueOf, scriptOf,
                     keys: () => pcfg().keys, setKeys: list => setP({ keys: list }), clash: hex => colorClash(hex, palettes()),
@@ -16661,10 +16776,12 @@ document.addEventListener('keydown', e => {
       const own = typeof sh.model === 'string';
       const pf = prefFor(sh.type);
       const name = own ? m : (pf && pf.name) || m;
-      const pill = h('span', 'r3-pill r5-pref', '★ ' + name);
-      pill.title = own ? '這一鏡指定用 ' + m : '試拍勝出的模型（' + (pf && pf.score && pf.score.length ? '勝在 ' + pf.score.join('、') : '挑版時選中') + '）：這一類鏡頭預設用它，送件確認單會列出模型';
-      const x = h('button', 'x', '✕'); x.type = 'button'; x.title = '這一鏡改回跟左欄的模型';
-      x.onclick = () => { sh.model = ''; try { saveShots(); renderShots(); } catch (e) {} };
+      const mp = own && sh.motionPick && sh.motionPick.model === m;
+      const pill = h('span', 'r3-pill r5-pref', '★ ' + (mp ? m.split('/').pop() + '（因為有動作來源）' : name));
+      pill.title = mp ? (sh.motionPick.from ? '左欄的 ' + sh.motionPick.from + ' ' : '原本的模型') + '不收參考影片，這一鏡改用 ' + m + '；按 ✕ 換回'
+                      : own ? '這一鏡指定用 ' + m : '試拍勝出的模型（' + (pf && pf.score && pf.score.length ? '勝在 ' + pf.score.join('、') : '挑版時選中') + '）：這一類鏡頭預設用它，送件確認單會列出模型';
+      const x = h('button', 'x', '✕'); x.type = 'button'; x.title = mp ? '換回原本的模型（動作來源就不會附上）' : '這一鏡改回跟左欄的模型';
+      x.onclick = () => { if (mp && window.__R3__ && window.__R3__.motionUnpick) window.__R3__.motionUnpick(sh); else sh.model = ''; try { saveShots(); renderShots(); } catch (e) {} };
       pill.append(x);
       put(pill);
     });
@@ -18616,6 +18733,30 @@ document.addEventListener('keydown', e => {
     if (k === 'openOn' || k === 'endOn') return [{ to: 'ser', patch: { [k]: value }, repaint: true }];
     return [{ to: 'ser', patch: { [k]: value } }];
   }
+  const R7_TEXTS = { rights: ['ok', 'warn', 'where', 'ack', 'clean'], captions: ['on', 'off', 'add', 'del', 'row'],
+                     'effects.white_flash': ['label'], twist: ['redo', 'detecting', 'none'] };
+  function catField(V, field) {
+    for (const s of V.panel) for (const f of s.fields) if (f.field === field) return { sec: s, f };
+    return null;
+  }
+  function catTexts(V, field) {
+    const x = catField(V, field), t = x && x.f.texts;
+    if (!t || (R7_TEXTS[field] || []).some(k => typeof t[k] !== 'string' || !t[k])) throw new Error('no_texts:' + field);
+    return Object.assign({ no: String(x.sec.no), title: x.sec.title }, t);
+  }
+  function fmtText(tpl, vars) { return String(tpl).replace(/\{(\w+)\}/g, (m, k) => (Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m)); }
+  function catMemeLabels(V) {
+    const cap = catField(V, 'captions'), one = catField(V, 'meme.one_click');
+    const L = ((((V.by.meme_captions || {}).labels) || {}).items) || {};
+    const F = L.fields || {};
+    const vals = k => ((F[k] || {}).values || []).map(v => [v.value, v.label]);
+    const texts = f => { const { no, title, ...t } = catTexts(V, f); return t; };
+    if (!cap || !one || !one.f.label || !F.text || !(F.text.max > 0) || !F.text.placeholder || !F.start || !F.start.note ||
+        !vals('pos').length || !vals('style').length || !(L.max > 0)) throw new Error('no_meme_labels');
+    return { no: String(cap.sec.no), title: cap.sec.title, max: L.max, textMax: F.text.max, placeholder: F.text.placeholder,
+             timeTitle: F.start.note, pos: vals('pos'), style: vals('style'), cap: texts('captions'),
+             flash: texts('effects.white_flash'), twist: texts('twist'), one: one.f.label };
+  }
 
   let CFG = { enabled: false, reason: '讀取匯出設定中…', price_points: '0', preview: true };
   let HIST = [];
@@ -18905,6 +19046,19 @@ document.addEventListener('keydown', e => {
     };
   })();
   window.__R7CAT__ = R7CAT;
+  function rights4(T) {
+    const rcount = S.rights.length;
+    const s4 = sec(T.no, T.title, h('span', 'r7-aside ' + (rcount ? 'warn' : 'ok'), rcount ? fmtText(T.warn, { n: rcount }) : T.ok));
+    if (rcount) {
+      const ul = h('ul', 'r7-warn');
+      S.rights.forEach(w => { const li = h('li'); li.append(h('span', null, w.msg)); if (w.where.length) li.append(h('em', null, fmtText(T.where, { where: w.where.join('、') }))); ul.append(li); });
+      const ack = h('label', 'r7-ack'); const ab = h('input'); ab.type = 'checkbox'; ab.checked = OPT.ack;
+      ab.onchange = () => { OPT.ack = ab.checked; paint(); };
+      ack.append(ab, h('span', null, T.ack));
+      s4.append(ul, ack);
+    } else s4.append(h('div', 'r7-clean', T.clean));
+    return s4;
+  }
   function catSheet(b, SR, d, extra) {
     const V = R7CAT.view();
     const pa = projAspect();
@@ -19143,7 +19297,12 @@ document.addEventListener('keydown', e => {
         } catch (e) { R7CAT.fallback('render:' + (e && e.message || e)); catS = null; }
       }
     }
-    if (catS) sheet.append(catS['01'], catS['02'], catS['03'], s4, catS['05']);
+    let s4c = null, memeL;
+    if (catS) {
+      try { s4c = rights4(catTexts(R7CAT.view(), 'rights')); } catch (e) { console.warn('[r7cat] legacy=04:' + (e && e.message || e)); }
+      try { memeL = catMemeLabels(R7CAT.view()); } catch (e) { console.warn('[r7cat] legacy=06:' + (e && e.message || e)); }
+    }
+    if (catS) sheet.append(catS['01'], catS['02'], catS['03'], s4c || s4, catS['05']);
     else sheet.append(s1, s2, s3, s4, s5e);
     const memeOne = () => { OPT.aspect = '9:16'; OPT.resolution = '1080p'; OPT.fps = 30; serSet({ fit: 'crop' }); submit(current()); };
     if (SIMPLE_X) {
@@ -19167,7 +19326,7 @@ document.addEventListener('keydown', e => {
       q2.append(endIn, h('div', 'r7-hint', '畫面：依作品比例（' + b.format.aspect + '）、1080p、24 fps。片尾的字會在最後 3.5 秒出現在畫面上。'));
       sheet.append(q1, q2, s3, s4);
     }
-    if (window.__MEME__) { const ms = window.__MEME__.section(b, T, () => paint(), memeOne); if (ms) sheet.append(ms); }
+    if (window.__MEME__) { const ms = window.__MEME__.section(b, T, () => paint(), memeOne, memeL); if (ms) sheet.append(ms); }
     if (window.__BLOCKS__) window.__BLOCKS__.section(sheet, b, () => paint());
     if (S.snap.issues.length) {
       const ul = h('ul', 'r7-notes');
@@ -20961,6 +21120,9 @@ document.addEventListener('keydown', e => {
     if (it.tool === 'video_confirm' && a.job_id && !it.action) injectJob(it);
     if (a.pending_id) { it._pendingHint = true; setTimeout(() => pollPending(true), 0); }
     if (it.tool === 'asset_upload') { try { refreshAssets(); } catch (_) {} }
+    if (it.action === 'film_sync' && a.project_id && typeof window.__MAINLINE_FILM_SYNC__ === 'function') {
+      try { window.__MAINLINE_FILM_SYNC__(String(a.project_id)); } catch (_) {}
+    }
     if (it.action === 'place' && Array.isArray(a.job_ids)) tryPlace(a.job_ids.map(String), it);
     if (it.action === 'trim' && a.job_id) {
       const cv = canvas(); const j = uidsFor([String(a.job_id)])[0];
@@ -21969,6 +22131,21 @@ document.addEventListener('keydown', e => {
   const NO_PUB = LOCALM;
   const SPINE = NO_PUB ? '主線' : '七步主線';
   const STEPS = ['故事', '角色', '分鏡', '生成', '聲音', '剪輯字幕', PUB('上架', '')].slice(0, NO_PUB ? 6 : 7);
+  const GATED = !LOCALM && window.__STUDIO__.studio_open === false;
+  function soonPanel(pid) {
+    const box = h('section', 'sm-soon');
+    box.setAttribute('role', 'status');
+    box.append(h('p', 'k', '我是導演・導演台'), h('h1', null, '即將開放'),
+      h('p', 'lead', '導演台正在做最後的調整，開放時會在這裡等你。'),
+      h('p', 'help', PUB('你的作品、下載和上架照常可以使用。', '你的作品和下載照常可以使用。')));
+    const row = h('div', 'go');
+    const back = h('a', 'sm-soon-back', '← 回我的作品'); back.href = '/projects';
+    back.onclick = e => { e.preventDefault(); go('/projects'); };
+    row.append(back);
+    if (pid && !NO_PUB) row.append(btn('sm-link', PUB('到第 7 步上架', ''), () => { work(pid).step = 7; saveWorks(); render(); }));
+    box.append(row);
+    return box;
+  }
   const ASPECTS = [['9:16', '手機直的', '適合 Shorts、Reels、抖音'], ['16:9', '電視橫的', '適合 YouTube、電腦看']];
   const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const btn = (cls, text, fn) => { const b = h('button', cls, text); b.type = 'button'; if (fn) b.onclick = fn; return b; };
@@ -21977,7 +22154,19 @@ document.addEventListener('keydown', e => {
   st.textContent = [
     '.sm{position:fixed;inset:0;z-index:60;background:var(--slate);color:var(--paper);overflow:auto;font-size:var(--fs-m);line-height:1.6}',
     '.sm[hidden]{display:none}',
+    '.sm-soon{position:relative;max-width:640px;margin:64px auto 48px;padding:48px 44px 40px;border:1px solid var(--edge);border-radius:16px;',
+      'background:radial-gradient(120% 90% at 100% 0%,rgba(232,163,61,.16),transparent 60%),radial-gradient(90% 80% at 0% 100%,rgba(91,200,216,.10),transparent 60%),var(--ink);overflow:hidden}',
+    '.sm-soon .k{margin:0 0 10px;color:var(--grease);font-size:var(--fs-s);letter-spacing:.14em}',
+    '.sm-soon h1{margin:0 0 14px;font-size:clamp(34px,5vw,48px);line-height:1.15;letter-spacing:.02em}',
+    '.sm-soon .lead{margin:0 0 6px;font-size:var(--fs-l);color:var(--paper)}',
+    '.sm-soon .help{margin:0 0 28px;color:var(--pencil)}',
+    '.sm-soon .go{display:flex;align-items:center;gap:18px;flex-wrap:wrap}',
+    '.sm-soon-back{display:inline-flex;align-items:center;min-height:48px;padding:0 22px;border-radius:10px;background:var(--grease);color:#14171C;font-weight:700;text-decoration:none}',
+    '.sm-soon-back:focus-visible{outline:3px solid var(--rolling);outline-offset:3px}',
+    'body.sm-gated .sm-seg{display:none}',
+    '.sm-tprice{margin:-4px 0 14px;color:var(--label)}.sm-tprice b{color:var(--grease);font-family:var(--mono)}',
     'body.sm-on{overflow:hidden}',
+    'body.sm-on .slatebar.who-open{z-index:40}',
     'body.sm-on #studioWallet{z-index:70;top:76px}',
     'body.sm-on #undoBar{bottom:100px}',
     '.sm-top{position:sticky;top:0;z-index:2;height:68px;display:flex;align-items:center;gap:14px;padding:0 28px;',
@@ -22257,12 +22446,21 @@ document.addEventListener('keydown', e => {
     ITEMS = (d && d.items) || {};
   }
   let saveT = null;
+  window.addEventListener('pagehide', () => {
+    if (!saveT) return;
+    clearTimeout(saveT); saveT = null;
+    try {
+      const body = JSON.stringify({ value: WORKS });
+      if (body.length < 60000) fetch('/api/store?key=simple_works', { method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json' }, body });
+    } catch (_) { }
+  });
   function saveWorks(now) {
     clearTimeout(saveT);
     const p0 = curPid(); if (p0 && WORKS[p0]) WORKS[p0].t = Date.now();
     const go = () => storeSet('simple_works', WORKS).then(ok => { if (!ok) say('進度存不進伺服器，先別關掉這一頁'); paintSaved(ok); });
     if (now) return go();
-    saveT = setTimeout(go, 600);
+    saveT = setTimeout(() => { saveT = null; go(); }, 600);
   }
   const OLD_STEP = { 1: 1, 2: 3, 3: 4, 4: 6 };
   const DEF_ASPECT = '9:16';
@@ -22305,12 +22503,17 @@ document.addEventListener('keydown', e => {
     return ADV_ON ? m : 'simple';
   }
   function setMode(m, save) {
+    if (GATED) { m = 'simple'; save = false; }
     MODE = m;
     if (m !== 'simple') { XP = 0; root.classList.remove('sm-x'); document.body.classList.remove('sm-xon'); root.style.height = ''; }
     if (save) storeSet('ui_mode', m);
     document.body.classList.toggle('sm-on', m === 'simple');
     document.querySelectorAll('.sm-seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.m === m)));
     document.querySelectorAll('.sm-back').forEach(b => { b.hidden = m === 'simple'; });
+    if (m === 'simple') {
+      document.querySelectorAll('.slatebar.who-open').forEach(b => b.classList.remove('who-open'));
+      const wm = document.getElementById('studioWhoMenu'); if (wm && !wm.hidden) { wm.hidden = true; const wb = document.getElementById('studioWhoBtn'); if (wb) wb.setAttribute('aria-expanded', 'false'); }
+    }
     root.hidden = m !== 'simple';
     if (m === 'simple') {
       route();
@@ -22390,6 +22593,46 @@ document.addEventListener('keydown', e => {
     try { if (typeof window.__CANVAS_DRAW__ === 'function') window.__CANVAS_DRAW__(); } catch (_) {}
     if (MODE === 'simple') render(true);
   }
+  async function filmSync(pid) {
+    if (!pid || pid !== curPid()) return null;
+    const key = boardKey(pid);
+    let vals;
+    try {
+      const r = await fetch('/api/store?keys=jobs,simple_works,' + key, { cache: 'no-store' });
+      if (!r.ok) return null;
+      vals = ((await r.json()) || {}).values || {};
+    } catch (_) { return null; }
+    if (pid !== curPid() || typeof jobs === 'undefined') return null;
+    const add = [];
+    for (const s of (Array.isArray(vals.jobs) ? vals.jobs : [])) {
+      if (!s || !s.uid) continue;
+      const m = jobs.find(j => j.uid === s.uid || (s.id && j.id === s.id));
+      if (!m) { add.push(s); continue; }
+      if (m.uid === s.uid && String(s.uid).startsWith('agent_')) { if (s.applied) m.applied = s.applied; else delete m.applied; }
+    }
+    if (add.length) jobs.unshift(...add);
+    const sw = vals.simple_works && typeof vals.simple_works === 'object' ? vals.simple_works[pid] : null;
+    if (sw && typeof sw === 'object') {
+      const w = work(pid);
+      if (!Array.isArray(w.jobs)) w.jobs = [];
+      const fresh = (Array.isArray(sw.jobs) ? sw.jobs : []).filter(x => x && x.uid && !w.jobs.some(y => y.uid === x.uid && y.sid === x.sid));
+      w.jobs.unshift(...fresh);
+      if (!String(w.story || '').trim() && sw.story) w.story = String(sw.story);
+      if (Number(sw.step) > w.step) w.step = Math.min(Number(sw.step), STEPS.length);
+    }
+    const sb = vals[key];
+    if (BOARD === key && Array.isArray(sb) && sb.length && !(typeof shots !== 'undefined' && shots.length)) {
+      sb.forEach(x => { if (x && !x.sid) x.sid = newSid(); });
+      shots = sb;
+      try { renderShots(); } catch (_) {}
+    }
+    save();
+    await saveWorks(true);
+    if (BOARD !== key) await syncBoard();
+    if (MODE === 'simple') render(true);
+    return { added: add.length };
+  }
+  window.__MAINLINE_FILM_SYNC__ = filmSync;
   function curPid() {
     if (!location.pathname.startsWith('/w/')) return null;
     let seg = location.pathname.slice(3);
@@ -22647,6 +22890,12 @@ document.addEventListener('keydown', e => {
   }
   let NEW = { text: '', aspect: '9:16' };
   function newCard(wide) {
+    if (GATED) {
+      const g = h('article', 'sm-card sm-new' + (wide ? ' wide' : ''));
+      g.append(h('h2', null, '導演台即將開放'), h('p', 'help', PUB('開新片、範本與製作流程正在做最後的調整。你的作品與上架照常可以使用。',
+        '開新片、範本與製作流程正在做最後的調整。你的作品照常可以使用。')));
+      return g;
+    }
     const c = h('article', 'sm-card sm-new' + (wide ? ' wide' : ''));
     const main = h('div', 'mn');
     main.append(h('h2', null, wide ? '一句話，拍成一部片' : '開一部新片'),
@@ -23105,6 +23354,17 @@ document.addEventListener('keydown', e => {
       if (!(window.__ERR_AT__ && window.__ERR_AT__(b, m, '沒有建立成功'))) say(m);
     } finally { b.disabled = false; b.textContent = label; }
   }
+  function tplPrice(t) {
+    const p = h('p', 'sm-tprice'); p.setAttribute('aria-live', 'polite'); p.hidden = true;
+    Promise.resolve().then(() => quoteShots(t.beats.map(x => ({ seconds: alignSec(x[1]) })))).then(q => {
+      if (!q || !p.isConnected) return;
+      p.textContent = '';
+      p.append(document.createTextNode('這支大約 '), h('b', null, q.pts.toFixed(2) + ' ' + q.unit),
+        document.createTextNode('（' + specOf(q) + '；送出前會再跳一次確認單）'));
+      p.hidden = false;
+    }).catch(() => { });
+    return p;
+  }
   function tplPage(host) {
     host.append(h('h1', null, '你要做哪一種片？'),
       h('p', 'lead', '先挑一個片型，分鏡結構和長度都會照範本填好，你只要換成自己的內容。'));
@@ -23136,6 +23396,7 @@ document.addEventListener('keydown', e => {
     const t = TEMPLATES.find(x => x.id === TPL.id);
     const det = h('aside', 'sm-card2 sm-tdet'); det.setAttribute('aria-label', '範本內容');
     det.append(h('h2', null, t.name), h('p', 'help', t.beats.length + ' 鏡・約 ' + tplSec(t) + ' 秒・' + t.voice));
+    if (window.__STUDIO__ && window.__STUDIO__.template_price_hint === true) det.append(tplPrice(t));
     det.append(h('p', 'sm-lbl', '範本結構'));
     t.beats.forEach((x, i) => { const r = h('div', 'sm-srow'); r.append(h('span', 'no', String(i + 1)), h('b', null, x[0]), h('span', 'sec', x[1] + 's'), h('span', 'hint', x[2])); det.append(r); });
     det.append(h('p', 'sm-lbl', t.server ? '填 3 格就能開始（字卡選填）' : '填 3 格就能開始'));
@@ -23269,9 +23530,9 @@ document.addEventListener('keydown', e => {
   };
 
   SM_PAGES[2] = function castPage(host, w, pid) {
-    host.append(h('h2', null, '角色'), h('p', 'lead', '讓同一個人在每一鏡長得一樣。這一版先由 AI 照分鏡裡的文字描述角色；要指定長相，展開角色庫，上傳參考圖。'));
+    host.append(h('h2', null, '角色'), h('p', 'lead', '讓同一個人在每一鏡長得一樣。這一版先照分鏡裡的文字描述角色；要指定長相，展開角色庫，上傳參考圖。'));
     const ph = h('div', 'sm-ph');
-    const a = h('div', 'sm-card2'); const ah = h('h3'); ah.append(h('span', 'sm-chip c', 'AI 預設'), document.createTextNode('照分鏡文字描述'));
+    const a = h('div', 'sm-card2'); const ah = h('h3'); ah.append(h('span', 'sm-chip c', '預設'), document.createTextNode('照分鏡文字描述'));
     const al = h('ul'); ['分鏡裡寫的人物外觀，就是每一鏡的角色描述。', '不另外生定裝照，所以' + PT('不花點數。', '不花錢。'), '同一個人在不同鏡頭的長相可能有落差；在意的話用角色庫鎖定。']
       .forEach(t => al.append(h('li', null, t)));
     a.append(ah, al);
@@ -23301,7 +23562,7 @@ document.addEventListener('keydown', e => {
       box.append(grid); host.append(box);
     }
     const why = h('span', 'why', w.done.cast ? '這一步交給 AI 了；之後隨時可以回來改。' : '');
-    const ai = btn('sm-ai', 'AI 幫我做：照分鏡描述角色', () => { w.done.cast = 'ai'; goStep(w, 3); });
+    const ai = btn('sm-ai', '照分鏡文字帶入角色描述', () => { w.done.cast = 'ai'; goStep(w, 3); });
     const next = btn('sm-main', '下一步：分鏡 →', () => goStep(w, 3));
     return [why, ai, next];
   };
@@ -23660,7 +23921,10 @@ document.addEventListener('keydown', e => {
       L.forEach(x => {
         const li = h('li', null, x.prompt + '（' + secOf(x) + ' 秒）');
         const capOk = typeof modelCaps !== 'function' || modelCaps(curModel()).input_references;
-        refCards(x).forEach(c => { li.append(document.createTextNode(' ')); li.append(h('span', 'sm-chip ' + (capOk ? 'g' : 'w'), capOk ? '參考圖：' + c.name : '參考圖：' + c.name + '（這個模型不會用到角色參考圖，外觀描述會寫進提示詞）')); });
+        refCards(x).forEach(c => { li.append(document.createTextNode(' ')); li.append(h('span', 'sm-chip ' + (capOk ? 'g' : 'w'), capOk ? '參考圖：' + c.name : '參考圖：' + c.name + '（這個模型不會用到角色參考圖，外觀描述會寫進提示詞）'));
+          const r0 = (c.refs || []).find(r => r && /^asset:\/\/ast_[0-9a-f]{20}$/.test(String(r.ref || '')));
+          const ob = r0 && typeof window.__OP_BUTTON__ === 'function' ? window.__OP_BUTTON__(String(r0.ref).slice(8), c.name, r0.src) : null;
+          if (ob) li.append(ob); });
         const pick = attachSel(w, x);
         if (pick) { pick.style.cssText = 'display:block;margin-top:6px;max-width:100%'; li.append(pick); }
         ol.append(li);
@@ -23877,8 +24141,9 @@ document.addEventListener('keydown', e => {
     const cancel = btn('sm-btn', '取消', close);
     const ai = btn('sm-ai', '讓 AI 改寫得自然一點', async function () {
       this.disabled = true;
+      back.style.visibility = 'hidden';
       try { const p2 = await aiRewrite(w, pid, text, plan.map(x => x.i), this); if (p2) { close(); showAsk(w, pid, text, p2, 'ai'); } }
-      finally { if (this.isConnected) this.disabled = false; }
+      finally { if (back.isConnected) back.style.visibility = ''; if (this.isConnected) this.disabled = false; }
     });
     ai.title = '把整份分鏡和這句要求交給 AI 改寫：會先報價、跳確認單，按確認才' + PT('扣點', '收費');
     if (how === 'ai') ai.hidden = true;
@@ -24405,7 +24670,8 @@ document.addEventListener('keydown', e => {
     if (!pid) {
       if (XP || root.classList.contains('sm-x')) { XP = 0; root.classList.remove('sm-x'); document.body.classList.remove('sm-xon'); root.style.height = ''; }
       const box = h('div', 'sm-in');
-      if (VIEW === 'tpl') { root.append(box); actBar(tplPage(box), null); }
+      if (VIEW === 'tpl' && GATED) { box.append(soonPanel()); root.append(box); }
+      else if (VIEW === 'tpl') { root.append(box); actBar(tplPage(box), null); }
       else { homePage(box); root.append(box); }
       root.scrollTop = keepScroll ? y : 0;
       return;
@@ -24415,6 +24681,11 @@ document.addEventListener('keydown', e => {
     if (XP && (XP !== w.step || !EXPAND[XP])) { XP = 0; }
     if (!XP) { root.classList.remove('sm-x'); document.body.classList.remove('sm-xon'); root.style.height = ''; }
     if (!board(pid) && !boardErr) syncBoard();
+    if (GATED && w.step !== 7) {
+      XP = 0; root.append(stepBar(w, pid));
+      const sb = h('div', 'sm-in'); sb.append(soonPanel(pid)); root.append(sb);
+      root.scrollTop = 0; return;
+    }
     if (XP) { renderXP(w, pid); return; }
     root.append(stepBar(w, pid));
     const box = h('div', 'sm-in');
@@ -24450,11 +24721,212 @@ document.addEventListener('keydown', e => {
     current: () => { const pid = curPid(); return pid ? (PROJ.find(x => x.id === pid) || null) : null; },
     sync: p => cloudSyncWork(p), list: () => cloudListSheet(), link: () => cloudLinkSheet({}),
   };
+  const ASSIST = !LOCALM && window.__STUDIO__.assistant === true && window.__STUDIO__.studio_open !== false;
+  const AS_CMDS = [['/新片', '一句話開新片，例：/新片 深夜末班車上一隻橘貓'], ['/範本', '挑範本，例：/範本 迷因'],
+    ['/生成', '到第 4 步，跳出生成的確認單'], ['/重抽', '重抽第 N 鏡，例：/重抽 2'], ['/配音', '到第 5 步，跳出配音配樂的確認單'],
+    ['/字幕', '到第 6 步剪輯字幕'], ['/匯出', '到第 6 步匯出'], [PUB('/上架', ''), PUB('到第 7 步上架', '')], ['/說明', '看助手會做哪些事']].filter(([k]) => k);
+  const AS_CN = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  const asNum = v => (v == null ? null : /^\d+$/.test(v) ? Number(v) : AS_CN[v] || null);
+  function assistIntent(raw) {
+    const text = String(raw || '').trim();
+    const pid = curPid();
+    const w = pid ? work(pid) : null;
+    const slash = text.match(/^\/(\S+)\s*([\s\S]*)$/);
+    const cmd = slash ? slash[1] : '';
+    const arg = slash ? slash[2].trim() : text;
+    const toStep = (n, ai, title, lines, spend) => ({ title, lines, spend, run: () => assistStep(n, ai) });
+    const needWork = () => ({ help: '先打開一部作品，或用「/新片 一句話」開一部新的。' });
+    if (cmd === '說明' || cmd === 'help' || /^(\?|？|說明|你會做什麼|可以做什麼)$/.test(text)) return { help: '' };
+    const tplWord = cmd === '範本' ? arg : (text.match(/(?:用|套用?|開)\s*(.{1,12}?)\s*範本/) || [])[1];
+    if (cmd === '範本' || tplWord) {
+      const t = tplWord ? TEMPLATES.find(x => x.name.includes(tplWord) || (x.short && tplWord.includes(x.short)) || x.id === tplWord) : null;
+      return { title: t ? '打開範本「' + t.name + '」' : '打開範本頁', spend: false,
+        lines: [t ? t.beats.length + ' 鏡・' + t.voice + '，填 3 格就能套用（套用不花錢）' : '六種片型任你挑，套用不花錢'],
+        run: async () => { if (t) TPL.id = t.id; TPL.kind = '全部'; VIEW = 'tpl'; if (curPid()) await go('/projects'); render(); return '範本頁打開了' + (t ? '，已選好「' + t.name + '」' : '') + '。'; } };
+    }
+    if (!cmd && /鏡/.test(text) && /(改成|換成|變成|改為|換為)/.test(text)) {
+      if (!w) return needWork();
+      const L = board(pid);
+      if (!L || !L.length) return { help: '這部作品還沒有分鏡，先到第 3 步拆分鏡。' };
+      const p = parseAsk(text, L.length);
+      if (p.error) return { help: p.error };
+      return { title: '改分鏡：' + p.targets.map(i => '第 ' + (i + 1) + ' 鏡').join('、'), spend: false,
+        lines: ['先給你看改前改後，按確認才改文字（不花錢）', '已拍過的只標「需要更新」，不會自動重抽'],
+        run: async () => { if (w.step !== 3 && w.step !== 4) { w.step = 3; saveWorks(); render(); } askPreview(w, pid, text, null); return '改前改後在畫面上，確認後才會改。'; } };
+    }
+    const n = asNum((arg.match(/(\d+|[一二兩三四五六七八九十])/) || [])[1]);
+    if (cmd === '重抽' || (!cmd && /(重抽|重拍|再拍一次|再生一次)/.test(text))) {
+      if (!w) return needWork();
+      const L = board(pid) || [];
+      if (!n || n < 1 || n > L.length) return { help: '要重抽第幾鏡？這部片有 ' + L.length + ' 鏡，例：/重抽 2' };
+      return { title: '重抽第 ' + n + ' 鏡', spend: true, lines: ['會跳出這一鏡的確認單，你按確認才送出'],
+        run: async () => { w.step = 4; saveWorks(); render(); await resendShot(w, pid, n - 1, null); return '第 ' + n + ' 鏡的確認單在畫面上。'; } };
+    }
+    if (cmd === '生成' || (!cmd && w && /(生成|開拍|拍出來|全部拍)/.test(text))) {
+      if (!w) return needWork();
+      return toStep(4, true, '生成還沒拍的鏡頭', ['到第 4 步，按「AI 幫我做」', '會跳出總費用確認單，你按確認才送出'], true);
+    }
+    if (cmd === '配音' || cmd === '配樂' || (!cmd && w && /(配音|配樂|聲音|音樂)/.test(text))) {
+      if (!w) return needWork();
+      return toStep(5, true, '配音＋配樂', ['到第 5 步，按「AI 幫我做」', '會跳出聲音的確認單，你按確認才送出'], true);
+    }
+    if (cmd === '字幕' || cmd === '剪輯' || (!cmd && w && /(字幕|剪輯|接片)/.test(text))) {
+      if (!w) return needWork();
+      return toStep(6, false, '剪輯字幕', ['到第 6 步：照分鏡排好時間軸、用台詞上字幕'], false);
+    }
+    if (cmd === '匯出' || (!cmd && w && /(匯出|輸出|下載成片|出片)/.test(text))) {
+      if (!w) return needWork();
+      return toStep(6, false, '匯出成片', ['到第 6 步，確認時間軸後按匯出'], false);
+    }
+    if (cmd === PUB('上架', '\u0000') || (!cmd && w && /(上架|發佈|發布|youtube)/i.test(text))) {
+      if (!w) return needWork();
+      return toStep(7, false, PUB('上架', ''), ['到第 7 步：預填標題說明、選頻道與排程', '上傳要你按了才會送'], false);
+    }
+    if (cmd === '下一步' || (!cmd && w && /^(下一步|繼續)$/.test(text))) {
+      if (!w) return needWork();
+      const nx = Math.min(STEPS.length, (w.step || 1) + 1);
+      return toStep(nx, false, '到第 ' + nx + ' 步：' + STEPS[nx - 1], ['只換頁，不做任何事'], false);
+    }
+    const story = cmd === '新片' ? arg : (!cmd && !w && text.length >= 6 ? text.replace(/^(幫我|請|我想|我要)?(拍|做|生成|產生)?(一支|一部|一段)?/, '') : '');
+    if (story && story.length >= 4) {
+      return { title: '開一部新片', spend: false,
+        lines: ['故事：' + story.slice(0, 60) + (story.length > 60 ? '…' : ''), '比例 ' + NEW.aspect + '，接著拆成分鏡（AI 拆會先跳確認單；按取消就照句子拆，不花錢）'],
+        run: async () => { NEW.text = story; const b = h('button'); await startOneLine(b); return '新片建好了，分鏡在第 3 步。'; } };
+    }
+    return { help: cmd ? '還不認得「/' + cmd + '」。' : '這句我還聽不懂（現在只認得下面這些）。' };
+  }
+  async function assistStep(n, ai) {
+    const pid = curPid(); const w = work(pid);
+    w.step = n; saveWorks(); render();
+    if (!ai) return '到第 ' + n + ' 步「' + STEPS[n - 1] + '」了。';
+    await new Promise(r => setTimeout(r, 50));
+    const b = [...root.querySelectorAll('.sm-act button.sm-ai')].find(x => /AI 幫我做/.test(x.textContent));
+    if (!b) return '到第 ' + n + ' 步了，這一步現在沒有「AI 幫我做」可以按。';
+    if (b.disabled) return '到第 ' + n + ' 步了，但「' + b.textContent.trim() + '」現在不能按' + (b.title ? '：' + b.title : '') + '。';
+    b.click();
+    return '到第 ' + n + ' 步，確認單在畫面上，你按確認才會送出。';
+  }
+  if (ASSIST) {
+    const st2 = document.createElement('style');
+    st2.textContent = [
+      '.as-pill{position:fixed;right:24px;left:auto;bottom:96px;width:auto;max-width:calc(100vw - 48px);z-index:66;display:flex;align-items:center;gap:8px;min-height:48px;padding:0 18px;',
+        'border:1px solid var(--edge2);border-radius:24px;background:var(--ink);color:var(--paper);font-size:var(--fs-m);font-weight:700;cursor:pointer;',
+        'box-shadow:0 8px 28px rgba(0,0,0,.45)}',
+      '.as-pill .ic{color:var(--grease)}',
+      '.as-pill[hidden],.as-drawer[hidden]{display:none}',
+      'body.as-cover .as-pill{display:none}',
+      '.as-drawer{position:fixed;top:0;right:0;bottom:0;z-index:66;width:360px;max-width:100vw;display:flex;flex-direction:column;',
+        'background:var(--slate);border-left:1px solid var(--edge);box-shadow:-12px 0 36px rgba(0,0,0,.35)}',
+      '.as-hd{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--edge)}',
+      '.as-hd b{flex:1;font-size:var(--fs-l)}.as-hd .ic{color:var(--grease)}',
+      '.as-x{width:auto;min-height:40px;padding:0 12px;border:1px solid var(--edge2);border-radius:8px;background:none;color:var(--pencil);cursor:pointer}',
+      '.as-log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}',
+      '.as-me{align-self:flex-end;max-width:85%;padding:10px 14px;border-radius:14px 14px 4px 14px;background:var(--rise2);white-space:pre-wrap}',
+      '.as-bot{align-self:flex-start;max-width:92%;color:var(--label);white-space:pre-wrap}',
+      '.as-card{border:1px solid var(--edge2);border-radius:12px;padding:14px;background:var(--ink)}',
+      '.as-card h3{margin:0 0 8px;font-size:var(--fs-m)}.as-card ul{margin:0 0 12px;padding-left:18px;color:var(--pencil)}',
+      '.as-card .tag{display:inline-block;margin-bottom:8px;padding:2px 8px;border-radius:6px;font-size:var(--fs-s);background:var(--rise2);color:var(--pencil)}',
+      '.as-card .tag.pay{color:var(--grease)}',
+      '.as-card .row{display:flex;gap:8px}.as-card button{width:auto;min-height:40px;padding:0 16px;border-radius:8px;cursor:pointer}',
+      '.as-do{border:0;background:var(--grease);color:#14171C;font-weight:700}.as-no{border:1px solid var(--edge2);background:none;color:var(--pencil)}',
+      '.as-chips{display:flex;flex-wrap:wrap;gap:6px}.as-chips button{width:auto;min-height:32px;padding:0 10px;border:1px solid var(--edge2);border-radius:16px;background:none;color:var(--label);cursor:pointer;font-size:var(--fs-s)}',
+      '.as-in{display:flex;gap:8px;padding:12px 16px 16px;border-top:1px solid var(--edge);position:relative}',
+      '.as-in textarea{flex:1;min-height:48px;max-height:140px;resize:none}',
+      '.as-in .send{width:auto;min-height:48px;padding:0 16px;border:0;border-radius:8px;background:var(--grease);color:#14171C;font-weight:700;cursor:pointer}',
+      '.as-menu{position:absolute;left:16px;right:16px;bottom:100%;margin-bottom:6px;border:1px solid var(--edge2);border-radius:10px;background:var(--ink);overflow:hidden}',
+      '.as-menu button{display:block;width:100%;min-height:40px;padding:6px 12px;border:0;background:none;color:var(--paper);text-align:left;cursor:pointer}',
+      '.as-menu button small{display:block;color:var(--pencil)}.as-menu button[aria-selected="true"],.as-menu button:hover{background:var(--rise2)}',
+      'body.as-open .sm{right:360px}body.as-open .sm-act{right:360px}body.as-open #studioErrs{right:372px!important}',
+      '@media (max-width:820px){.as-drawer{top:auto;left:0;width:100vw;height:70vh;border-left:0;border-top:1px solid var(--edge);border-radius:16px 16px 0 0}',
+        'body.as-open .sm,body.as-open .sm-act{right:0}body.as-open #studioErrs{right:12px!important}}',
+    ].join('');
+    document.head.append(st2);
+    const pill = btn('as-pill', null, () => openA(true));
+    pill.append(h('span', 'ic', '✦'), h('span', null, '跟導演助手說'));
+    pill.setAttribute('aria-label', '打開導演助手');
+    const dr = h('aside', 'as-drawer'); dr.hidden = true; dr.setAttribute('aria-label', '導演助手');
+    const hd = h('div', 'as-hd'); hd.append(h('span', 'ic', '✦'), h('b', null, '導演助手'), btn('as-x', '收起', () => openA(false)));
+    const log = h('div', 'as-log'); log.setAttribute('aria-live', 'polite');
+    const form = h('form', 'as-in');
+    const ta = h('textarea', 'in'); ta.id = 'asIn'; ta.rows = 2; ta.maxLength = 400;
+    ta.placeholder = '說你想做什麼，或打 / 看快捷…'; ta.setAttribute('aria-label', '跟導演助手說');
+    const send = h('button', 'send', '送出'); send.type = 'submit';
+    const menu = h('div', 'as-menu'); menu.hidden = true; menu.setAttribute('role', 'listbox');
+    form.append(menu, ta, send);
+    dr.append(hd, log, form);
+    document.body.append(pill, dr);
+    const bubble = (cls, text) => { const b = h('div', cls, text); log.append(b); log.scrollTop = log.scrollHeight; return b; };
+    function helpCard(lead) {
+      const c = h('div', 'as-card');
+      if (lead) c.append(h('p', null, lead));
+      c.append(h('h3', null, '我現在會做這些（不花錢；要花錢的只會幫你跳出確認單）'));
+      const chips = h('div', 'as-chips');
+      AS_CMDS.forEach(([k, d]) => { const b = btn('', k, () => { ta.value = k + ' '; ta.focus(); paintMenu(); }); b.title = d; chips.append(b); });
+      c.append(chips); log.append(c); log.scrollTop = log.scrollHeight;
+    }
+    function ask(text) {
+      bubble('as-me', text);
+      const it = assistIntent(text);
+      if (it.help != null) { helpCard(it.help); return; }
+      const c = h('div', 'as-card');
+      c.append(h('span', 'tag' + (it.spend ? ' pay' : ''), it.spend ? '要花錢：只會跳出確認單' : '不花錢'), h('h3', null, '我會這樣做：' + it.title));
+      const ul = h('ul'); it.lines.forEach(l => ul.append(h('li', null, l))); c.append(ul);
+      const row = h('div', 'row');
+      const no = btn('as-no', '取消', () => { row.remove(); bubble('as-bot', '好，不做。'); });
+      const ok = btn('as-do', '照做', async () => {
+        ok.disabled = no.disabled = true;
+        try { const msg = await it.run(); row.remove(); bubble('as-bot', '✓ ' + (msg || '好了。')); }
+        catch (e) { ok.disabled = no.disabled = false; bubble('as-bot', '沒做成：' + (e && e.message || e)); }
+      });
+      row.append(ok, no); c.append(row); log.append(c); log.scrollTop = log.scrollHeight;
+      ok.focus();
+    }
+    let sel = 0;
+    function paintMenu() {
+      const v = ta.value;
+      const hits = /^\/\S*$/.test(v) ? AS_CMDS.filter(([k]) => k.startsWith(v)) : [];
+      menu.textContent = ''; menu.hidden = !hits.length; sel = Math.min(sel, Math.max(0, hits.length - 1));
+      hits.forEach(([k, d], i) => {
+        const b = btn('', null, () => { ta.value = k + ' '; menu.hidden = true; ta.focus(); });
+        b.setAttribute('role', 'option'); b.setAttribute('aria-selected', String(i === sel));
+        b.append(document.createTextNode(k), h('small', null, d)); menu.append(b);
+      });
+    }
+    ta.oninput = () => { sel = 0; paintMenu(); };
+    ta.onkeydown = e => {
+      const opts = [...menu.querySelectorAll('button')];
+      if (!menu.hidden && opts.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault(); sel = (sel + (e.key === 'ArrowDown' ? 1 : opts.length - 1)) % opts.length; paintMenu(); return; }
+      const whole = AS_CMDS.some(([k]) => ta.value.trim() === k);
+      if (!menu.hidden && opts.length && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !whole))) { e.preventDefault(); opts[sel].click(); return; }
+      if (e.key === 'Escape') { if (!menu.hidden) menu.hidden = true; else openA(false); return; }
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
+    };
+    form.onsubmit = e => { e.preventDefault(); const v = ta.value.trim(); if (!v) return; ta.value = ''; menu.hidden = true; ask(v); };
+    let greeted = false;
+    function openA(on) {
+      dr.hidden = !on; pill.hidden = on; document.body.classList.toggle('as-open', on);
+      if (on && !greeted) { greeted = true; bubble('as-bot', '想拍什麼直接說，或打 / 叫出快捷。我先給你看要做什麼，你按「照做」我才動；要花錢的只會幫你跳出確認單。'); }
+      if (on) ta.focus(); else pill.focus();
+    }
+    const sync = () => { const on = MODE === 'simple' && !root.hidden; pill.hidden = !on || !dr.hidden; if (!on) { dr.hidden = true; document.body.classList.remove('as-open'); } };
+    new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ['hidden'] });
+    sync();
+    const COVER = '[aria-modal="true"], .sm-dlgback, .r5-back, .r7-back, .yt-back, .tkc, .proj-ask';
+    const onTop = e => { const r = e.getBoundingClientRect(); if (!r.width || !r.height) return false;
+      const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!t && e.contains(t); };
+    const cover = () => document.body.classList.toggle('as-cover',
+      [...document.querySelectorAll(COVER)].some(e => !e.hidden && !dr.contains(e) && onTop(e)));
+    new MutationObserver(cover).observe(document.body, { childList: true, subtree: false, attributes: true, attributeFilter: ['hidden', 'class'] });
+    setInterval(cover, 700);
+    window.__ASSIST__ = { open: () => openA(true), ask, intent: assistIntent };
+  }
   window.__SIMPLE__ = { get mode() { return MODE; }, setMode: m => setMode(m, true), pages: SM_PAGES, work, saveWorks, render, go,
                         get works() { return WORKS; }, get projects() { return PROJ; } };
 
   (async function init() {
-    const m = await decideMode();
+    const m = GATED ? 'simple' : await decideMode();
+    if (GATED) document.body.classList.add('sm-gated');
     const who = document.getElementById('whoami');
     if (who && !document.querySelector('.slatebar .sm-seg, .slatebar .sm-back')) who.before(seg());
     MODE = m;
@@ -24490,16 +24962,17 @@ document.addEventListener('keydown', e => {
   const k29 = pid => String(pid).replace(/-/g, '').slice(0, 29);
   const getJ = async (url, body) => { const r = await fetch(url, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); let d = {}; try { d = await r.json(); } catch (_) {} return { ok: r.ok, status: r.status, d }; };
   const ST = {};
-  const save = pid => { const v = ST[pid]; if (!v) return; const { loaded, busy, ...keep } = v; getJ('/api/store?key=mm_' + k29(pid), { value: keep }).catch(() => {}); };
+  const save = pid => { const v = ST[pid]; if (!v) return; const { loaded, busy, kind, ...keep } = v; getJ('/api/store?key=mm_' + k29(pid), { value: keep }).catch(() => {}); };
 
   async function load(pid, repaint) {
     if (ST[pid] && (ST[pid].loaded || ST[pid].busy)) return ST[pid];
     const st = ST[pid] = Object.assign({ on: false, captions: [], flash: { on: false, start: 'twist-1', end: 'twist-0.85' }, twist: {} }, ST[pid] || {}, { busy: true });
     const saved = await getJ('/api/store?key=mm_' + k29(pid));
+    const meta = await getJ('/api/store?key=tp_' + k29(pid));
+    const m = meta.ok && meta.d && meta.d.value;
+    st.kind = meta.ok ? ((m && m.template) || 'none') : null;
     if (saved.ok && saved.d && saved.d.value && typeof saved.d.value === 'object') Object.assign(st, saved.d.value);
     else {
-      const meta = await getJ('/api/store?key=tp_' + k29(pid));
-      const m = meta.ok && meta.d && meta.d.value;
       if (m && m.template) {
         const pv = await getJ('/api/works/create', { name: 'preview', template: m.template, fields: m.fields || {}, dry_run: true });
         if (pv.ok) {
@@ -24562,17 +25035,29 @@ document.addEventListener('keydown', e => {
     map.append(m);
   }
 
-  function section(b, T, repaint, oneClick) {
+  const MEME_LEGACY = {
+    no: '06', title: '迷因字卡', max: 20, textMax: 40, placeholder: '字卡文字（40 字以內）', timeTitle: '秒數，或 twist、twist+0.3、end-1',
+    pos: [['top', '上'], ['middle', '中'], ['bottom', '下']], style: [['meme', '白字黑邊'], ['memebox', '黑字白底']],
+    cap: { on: '燒進畫面', off: '不加', add: '＋ 加一段字卡', del: '刪掉這段字卡', row: '第 {n} 段字卡' },
+    flash: { label: '白色閃光（{start} → {end}）' },
+    twist: { redo: '重新偵測', detecting: '量反轉點中…', none: '還沒有反轉點：字卡用了 twist 的話要先拖時間軸上的 ▼，或在上面填秒數' },
+    one: '一鍵匯出迷因（9:16 1080p）',
+  };
+  const fill = (tpl, v) => String(tpl).replace(/\{(\w+)\}/g, (m, k) => (Object.prototype.hasOwnProperty.call(v, k) ? String(v[k]) : m));
+
+  function section(b, T, repaint, oneClick, labels) {
+    const L = labels || MEME_LEGACY;
     const pid = pidNow();
     if (!pid) return null;
     const st = ST[pid];
     if (!st || !st.loaded) { load(pid, repaint); return null; }
+    if (st.kind && st.kind !== 'meme' && !st.on && !st.captions.length) return null;
     if (st.on && isLocal() && st.twist.job !== firstJob(b) && firstJob(b) && !st.twist.detecting) detect(pid, firstJob(b), repaint);
     if (webOn() && !st.twist.manual && st.twist.at == null && st.twist.hint != null) st.twist.at = Number(st.twist.hint);
     const s = el('section', 'r7-sec r7-meme'); s.id = 'r7Meme';
-    const hd = el('div', 'r7-sh'); hd.append(el('span', 'no', '06'), el('h4', null, '迷因字卡'));
+    const hd = el('div', 'r7-sh'); hd.append(el('span', 'no', L.no), el('h4', null, L.title));
     const sw = el('label', 'r7-sw'); const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!st.on; cb.id = 'r7MemeOn';
-    sw.append(cb, el('span', 'tr'), el('span', null, st.on ? '燒進畫面' : '不加'));
+    sw.append(cb, el('span', 'tr'), el('span', null, st.on ? L.cap.on : L.cap.off));
     cb.onchange = () => { st.on = cb.checked; save(pid); repaint(); };
     hd.append(sw); s.append(hd);
     const web = !isLocal();
@@ -24582,12 +25067,12 @@ document.addEventListener('keydown', e => {
     const list = el('div', 'r7-meme-rows');
     st.captions.forEach((c, i) => {
       const row = el('div', 'r7-meme-row');
-      const tx = el('input', 'r7-in'); tx.value = c.text; tx.maxLength = 40; tx.placeholder = '字卡文字（40 字以內）'; tx.setAttribute('aria-label', '第 ' + (i + 1) + ' 段字卡');
-      const t0 = el('input', 'r7-in t'); t0.value = String(c.start); t0.setAttribute('aria-label', '開始'); t0.title = '秒數，或 twist、twist+0.3、end-1';
+      const tx = el('input', 'r7-in'); tx.value = c.text; tx.maxLength = L.textMax; tx.placeholder = L.placeholder; tx.setAttribute('aria-label', fill(L.cap.row, { n: i + 1 }));
+      const t0 = el('input', 'r7-in t'); t0.value = String(c.start); t0.setAttribute('aria-label', '開始'); t0.title = L.timeTitle;
       const t1 = el('input', 'r7-in t'); t1.value = String(c.end); t1.setAttribute('aria-label', '結束'); t1.title = t0.title;
-      const pos = el('select', 'r7-in'); [['top', '上'], ['middle', '中'], ['bottom', '下']].forEach(([v, l]) => { const o = el('option', null, l); o.value = v; pos.append(o); }); pos.value = typeof c.pos === 'string' ? c.pos : 'top';
-      const sty = el('select', 'r7-in'); [['meme', '白字黑邊'], ['memebox', '黑字白底']].forEach(([v, l]) => { const o = el('option', null, l); o.value = v; sty.append(o); }); sty.value = c.style || 'meme';
-      const del = el('button', 'r7-dl ghost', '✕'); del.type = 'button'; del.setAttribute('aria-label', '刪掉這段字卡');
+      const pos = el('select', 'r7-in'); L.pos.forEach(([v, l]) => { const o = el('option', null, l); o.value = v; pos.append(o); }); pos.value = typeof c.pos === 'string' ? c.pos : 'top';
+      const sty = el('select', 'r7-in'); L.style.forEach(([v, l]) => { const o = el('option', null, l); o.value = v; sty.append(o); }); sty.value = c.style || 'meme';
+      const del = el('button', 'r7-dl ghost', '✕'); del.type = 'button'; del.setAttribute('aria-label', L.cap.del);
       const tv = v => { v = v.trim(); return /^\d+(\.\d+)?$/.test(v) ? Number(v) : v; };
       const put = () => {
         const bad = [t0, t1].find(x => !(/^\d+(\.\d+)?$/.test(x.value.trim()) || TIME.test(x.value.trim())));
@@ -24600,21 +25085,21 @@ document.addEventListener('keydown', e => {
       row.append(tx, t0, t1, pos, sty, del);
       list.append(row);
     });
-    const add = el('button', 'r7-dl ghost', '＋ 加一段字卡'); add.type = 'button'; add.disabled = dis || st.captions.length >= 20;
+    const add = el('button', 'r7-dl ghost', L.cap.add); add.type = 'button'; add.disabled = dis || st.captions.length >= L.max;
     add.onclick = () => { st.captions.push({ text: '', start: 'twist', end: 'end', pos: 'top', style: 'meme' }); save(pid); repaint(); };
     const fl = el('label', 'r7-sw'); const fcb = el('input'); fcb.type = 'checkbox'; fcb.checked = !!st.flash.on; fcb.disabled = dis;
-    fl.append(fcb, el('span', 'tr'), el('span', null, '白色閃光（' + st.flash.start + ' → ' + st.flash.end + '）'));
+    fl.append(fcb, el('span', 'tr'), el('span', null, fill(L.flash.label, { start: st.flash.start, end: st.flash.end })));
     fcb.onchange = () => { st.flash.on = fcb.checked; save(pid); repaint(); };
     const tw = el('div', 'r7-hint r7-meme-twist'); tw.id = 'r7MemeTwist';
     const at = st.twist.at;
-    tw.textContent = st.twist.detecting ? '量反轉點中…' :
-      at == null ? '還沒有反轉點：字卡用了 twist 的話要先拖時間軸上的 ▼，或在上面填秒數' :
+    tw.textContent = st.twist.detecting ? L.twist.detecting :
+      at == null ? L.twist.none :
       '反轉點 ' + Number(at).toFixed(2) + ' 秒（' + (st.twist.manual ? '你拖過的' : st.twist.detected != null ? '自動偵測'
         : st.twist.cand != null ? '候選，請確認' + ((st.twist.cands || []).length > 1 ? '；其他候選 ' + st.twist.cands.slice(1).map(c => Number(c.t).toFixed(2) + 's').join('、') : '')
         : '照提示詞的秒數：' + (st.twist.why || '沒偵測到')) + '）——拖時間軸上的 ▼ 微調';
-    const redo = el('button', 'r7-dl ghost', '重新偵測'); redo.type = 'button'; redo.disabled = web || !firstJob(b);
+    const redo = el('button', 'r7-dl ghost', L.twist.redo); redo.type = 'button'; redo.disabled = web || !firstJob(b);
     redo.onclick = () => { st.twist.manual = false; st.twist.job = null; detect(pid, firstJob(b), repaint); };
-    const one = el('button', 'r7-go r7-meme-go', '一鍵匯出迷因（9:16 1080p）'); one.type = 'button'; one.id = 'r7MemeGo';
+    const one = el('button', 'r7-go r7-meme-go', L.one); one.type = 'button'; one.id = 'r7MemeGo';
     const oneWhy = web ? ONE_WHY : !st.on ? '先打開「燒進畫面」' : !firstJob(b) ? 'V1 上要有一支拍好的片' : '';
     one.disabled = !!oneWhy; if (oneWhy) one.title = oneWhy;
     one.onclick = () => oneClick();
@@ -24965,7 +25450,7 @@ document.addEventListener('keydown', e => {
       row('付款方', c.payer_text, true),
       row('金額', (c.amount == null ? '—' : c.amount + ' ' + c.unit) + (s.open_ended ? '（帶參考影片，實際可能較高）' : ''), true),
       row('模型', s.model || '—', true),
-      row('秒數', s.seconds != null ? s.seconds + ' 秒' : '—', true),
+      s.frames ? row('項目', '驗片（' + s.frames + ' 格）', true) : row('秒數', s.seconds != null ? s.seconds + ' 秒' : '—', true),
       row('比例', s.aspect_ratio || '—'),
       row('內容', s.prompt || '—'),
       row('期限', c.expires_at ? new Date(c.expires_at).toLocaleString() + '（報價過期會自動重新報價，不超過核准金額才送）' : '—'));
@@ -25002,7 +25487,7 @@ document.addEventListener('keydown', e => {
     const list = el('div'); list.id = 'apvBatchItems';
     items.forEach((c, i) => {
       const s = c.summary || {};
-      const r1 = row('第 ' + (i + 1) + ' 件', [s.model || '—', s.seconds != null ? s.seconds + ' 秒' : '', c.payer_text,
+      const r1 = row('第 ' + (i + 1) + ' 件', [s.model || '—', s.frames ? '驗片（' + s.frames + ' 格）' : s.seconds != null ? s.seconds + ' 秒' : '', c.payer_text,
         (c.amount == null ? '—' : c.amount + ' ' + c.unit), STATUS[c.status] || c.status].filter(Boolean).join('・'));
       if (s.prompt) r1.title = s.prompt;
       list.append(r1);
@@ -25034,7 +25519,9 @@ document.addEventListener('keydown', e => {
   }
 
   async function openList() {
-    const b = shell('核准卡');
+    return fillList(shell('核准卡'), true);
+  }
+  async function fillList(b, withLimits) {
     const r = await getJ('/api/approvals?status=pending');
     if (!r.ok) { b.append(el('p', null, errText(r.d) || ('讀不到核准卡（HTTP ' + r.status + '）'))); return; }
     const items = r.d.items || [];
@@ -25053,8 +25540,18 @@ document.addEventListener('keydown', e => {
       it.style.cssText += ';display:block;width:100%;text-align:left;margin:4px 0';
       b.append(it);
     });
-    b.append(limitsBox());
+    if (withLimits) b.append(limitsBox());
+    else { const lim = btn('上限與預先授權', openLimits); lim.style.cssText += ';margin-top:8px'; b.append(lim); }
   }
+  let mounted = null, mountTimer = 0;
+  function mountList(target) {
+    mounted = target;
+    const paint = () => { if (!mounted || !mounted.isConnected) { clearInterval(mountTimer); mountTimer = 0; return; }
+                          const b = el('div'); fillList(b, false).then(() => { if (mounted) { mounted.textContent = ''; mounted.append(b); } }); };
+    paint();
+    if (!mountTimer) mountTimer = setInterval(paint, 10000);
+  }
+  function unmountList() { mounted = null; clearInterval(mountTimer); mountTimer = 0; }
 
   function limitsBox() {
     const box = el('details', 'margin-top:16px;border-top:1px solid var(--edge2,#333);padding-top:10px');
@@ -25136,7 +25633,7 @@ document.addEventListener('keydown', e => {
     if (!r || !r.ok) return;
     const items = r.d.items || [], n = items.length;
     notifyNew(items);
-    if (!n) { if (pill) pill.hidden = true; return; }
+    if (!n && !LOCAL) { if (pill) pill.hidden = true; return; }
     if (!pill) {
       pill = btn('', openList, true);
       pill.id = 'apvPill';
@@ -25150,8 +25647,8 @@ document.addEventListener('keydown', e => {
     pill.hidden = false;
     label.textContent = '核准卡';
     badge.textContent = n > 99 ? '99+' : String(n);
-    pill.setAttribute('aria-label', '核准卡：' + n + ' 張等你核准');
-    pill.title = n + ' 張等你核准';
+    pill.setAttribute('aria-label', n ? '核准卡：' + n + ' 張等你核准' : '核准卡：沒有等你核准的卡；這裡也能看上限與預先授權');
+    pill.title = n ? n + ' 張等你核准' : '沒有等你核准的卡（上限與預先授權也在這裡）';
   }
   function notifyNew(items) {
     const ids = items.map(c => c.id);
@@ -25175,7 +25672,7 @@ document.addEventListener('keydown', e => {
     const i = d.querySelector('input');
     if (i) i.focus();
   }
-  window.__APPROVALS__ = { open: openCard, list: openList, refresh: paintPill, limits: openLimits };
+  window.__APPROVALS__ = { open: openCard, list: openList, refresh: paintPill, limits: openLimits, mountList, unmountList };
   const m = location.pathname.match(/^\/approve\/(ap[vb]_[A-Za-z0-9]{16,32})$/);
   if (m) openCard(m[1]);
   const desk = window.iamdirectorDesktop;
@@ -25206,6 +25703,27 @@ document.addEventListener('keydown', e => {
 
 (() => {
   if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
+  const wrap = document.getElementById('concatEngineWrap'), sel = document.getElementById('concatEngine');
+  const note = document.getElementById('concatEngineNote');
+  if (!wrap || !sel) return;
+  const OK = '切換之後下一次合併就生效，不用重開 App。';
+  const show = d => {
+    if (!d || !d.engine) return;
+    wrap.hidden = false;
+    sel.value = d.engine;
+    note.textContent = d.setting ? OK
+      : (d.env ? '目前照環境變數 STUDIO_LOCAL_CONCAT_ENGINE＝' + d.env + '；在這裡選一個就改用你選的。' : OK);
+  };
+  fetch('/api/local/concat-engine').then(r => r.ok ? r.json() : null).then(show).catch(() => {});
+  sel.addEventListener('change', () => {
+    fetch('/api/local/concat-engine', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ engine: sel.value }) })
+      .then(r => r.ok ? r.json() : null).then(show).catch(() => {});
+  });
+})();
+
+(() => {
+  if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
   const wrap = document.getElementById('frameRelayWrap'), cb = document.getElementById('frameRelay');
   const note = document.getElementById('frameRelayNote');
   if (!wrap || !cb) return;
@@ -25225,6 +25743,54 @@ document.addEventListener('keydown', e => {
       .then(d => { if (d) show(d); else cb.checked = !want; })
       .catch(() => { cb.checked = !want; });
   });
+})();
+
+(() => {
+  if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
+  const $ = id => document.getElementById(id);
+  const block = $('agentSwitchesWrap');
+  if (!block) return;
+  const fr = $('frameRelayWrap');
+  const showBlock = () => { block.hidden = false; };
+  if (fr && typeof MutationObserver === 'function') new MutationObserver(() => { if (!fr.hidden) showBlock(); }).observe(fr, { attributes: true, attributeFilter: ['hidden'] });
+  const envNote = (d, name) => (d.setting == null && d.env ? '目前照環境變數 ' + name + '＝' + d.env + '；在這裡選一次就改用你選的。' : '');
+  const SCOPE_WORDS = [[/storyboard/, '分鏡拆鏡'], [/audio\/speech/, '配音'], [/audio\/music/, '配樂'], [/image/, '生圖'], [/\/qc/, '驗片']];
+  const fullAdds = list => SCOPE_WORDS.filter(([re]) => (list || []).some(x => re.test(x))).map(([, w]) => w);
+  const ROWS = [
+    { id: 'agLoop', path: '/api/local/agent-loop', env: 'STUDIO_LOCAL_AGENT_LOOP',
+      base: '打開之後，Agent（例如 Claude Code）可以經本機 MCP 自己規劃、生成、檢查、交片。花錢照舊：每一鏡都先出核准卡，沒有預先授權就停下來等你。預設關。' },
+    { id: 'agDirect', path: '/api/local/mcp-direct', env: 'STUDIO_LOCAL_MCP_DIRECT',
+      base: '打開之後，Agent 的報價在你設的上限內就直接送出、不用每次等你點頭（會花錢，但不會超過上限）；超過上限照樣停下來等你。關掉時，還沒送出的直送核准一律收回。預設關。' },
+    { id: 'agScope', path: '/api/local/agent-scope', env: 'STUDIO_LOCAL_AGENT_SCOPE', key: 'scope' },
+    { id: 'agQc', path: '/api/local/agent-qc', env: 'STUDIO_LOCAL_AGENT_QC',
+      base: '打開之後，每拍好一鏡會自動送一張驗片。會花錢：每鏡一張驗片卡，走預先授權與上限。預設關。' },
+  ];
+  ROWS.forEach(row => {
+    const wrap = $(row.id + 'Wrap'), ctl = $(row.id), note = $(row.id + 'Note');
+    if (!wrap || !ctl) return;
+    const key = row.key || 'on';
+    const show = d => {
+      if (!d || (key === 'on' ? typeof d.on !== 'boolean' : !d.scope)) return false;
+      wrap.hidden = false; showBlock();
+      if (key === 'on') ctl.checked = d.on; else ctl.value = d.scope;
+      const base = key === 'scope'
+        ? '基本：拍片、後製、挑版本這些。完整多開放：' + (fullAdds(d.full_adds).join('、') || '更多功能') + '（多半會花錢，照樣走核准卡與上限）。預設基本。'
+        : row.base;
+      note.textContent = base + (envNote(d, row.env) ? ' ' + envNote(d, row.env) : '');
+      return true;
+    };
+    fetch(row.path).then(r => r.ok ? r.json() : null).then(show).catch(() => {});
+    ctl.addEventListener('change', () => {
+      const want = key === 'on' ? ctl.checked : ctl.value;
+      const undo = () => { if (key === 'on') ctl.checked = !want; };
+      fetch(row.path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [key]: want }) })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (!show(d)) { undo(); if (key !== 'on') fetch(row.path).then(r => r.ok ? r.json() : null).then(show).catch(() => {}); } })
+        .catch(undo);
+    });
+  });
+  const lim = $('agDirectLimits');
+  if (lim) lim.addEventListener('click', () => { if (window.__APPROVALS__ && window.__APPROVALS__.limits) window.__APPROVALS__.limits(); });
 })();
 
 (() => {
@@ -25440,15 +26006,177 @@ document.addEventListener('keydown', e => {
   window.__BLOCKS__ = { section, apply, move, isOn: () => on };
 })();
 
+const UI_V2 = {
+  SECTIONS: ['layout', 'theme', 'flow'],
+  DOCKS: ['float', 'left', 'right', 'bottom'], SIZES: ['s', 'm', 'l'], SPLITS: { single: 1, two: 2, three: 3 },
+  COLOR_KEYS: ['surface', 'text', 'accent', 'good', 'bad'], FONT_SCALES: { s: 0.9, m: 1.0, l: 1.15, xl: 1.3 },
+  SPACINGS: ['compact', 'standard', 'comfortable'],
+  BASES: { dark: { surface: '#14171c', text: '#e4e7eb', accent: '#e8a33d', good: '#79be6b', bad: '#e0705c' },
+           light: { surface: '#f6f4ef', text: '#1b1f26', accent: '#a15c00', good: '#2e7d32', bad: '#b3261e' } },
+  DERIVE: { ink: ['surface', '#000000', { dark: 0.3, light: 0.05 }], riser: ['surface', 'text', 0.06],
+            pencil: ['text', 'surface', 0.3], faint: ['text', 'surface', 0.42] },
+  CONTRAST: [['text/surface', 'text', 'surface', 4.5], ['text/ink', 'text', 'ink', 4.5], ['text/riser', 'text', 'riser', 4.5],
+             ['pencil/surface', 'pencil', 'surface', 4.5], ['faint/surface', 'faint', 'surface', 3.0],
+             ['accent/surface', 'accent', 'surface', 3.0], ['on_accent/accent', 'on_accent', 'accent', 4.5],
+             ['good/surface', 'good', 'surface', 3.0], ['bad/surface', 'bad', 'surface', 3.0]],
+  STEPS: ['story', 'cast', 'board', 'generate', 'sound', 'edit', 'publish'], REQUIRED: ['board', 'generate', 'edit'],
+  ORDER: [['story', 'board'], ['cast', 'generate'], ['board', 'generate'], ['generate', 'sound'], ['generate', 'edit'],
+          ['sound', 'edit'], ['edit', 'publish']],
+  ASPECTS: ['9:16', '16:9', '1:1'], TEMPLATES: ['meme', 'drama', 'talk', 'product', 'unbox', 'story', 'news'],
+  RESOLUTIONS: ['480p', '720p', '1080p'],
+  DEFAULT_KEYS: { story: ['aspect'], board: ['template', 'aspect'], generate: ['model', 'resolution'], edit: ['blocks'] },
+  MODEL_REF: /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/, BLOCK_ID: /^[a-z0-9_]{1,32}$/, MAX_BLOCKS: 20, MAX_STEP_LABEL: 20,
+  COLOR: /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/,
+};
+function uiV2Round(x, nd) { const f = Math.pow(10, nd || 0); return Math.floor(x * f + 0.5) / f; }
+function uiV2Hex6(h) { h = h.toLowerCase(); return h.length === 4 ? '#' + [...h.slice(1)].map(c => c + c).join('') : h; }
+function uiV2Rgb(h) { h = uiV2Hex6(h); return [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)); }
+function uiV2Mix(a, b, t) {
+  const ra = uiV2Rgb(a), rb = uiV2Rgb(b);
+  return '#' + ra.map((x, i) => uiV2Round(x * (1 - t) + rb[i] * t).toString(16).padStart(2, '0')).join('');
+}
+function uiV2Lum(h) {
+  const lin = c => { c = c / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const [r, g, b] = uiV2Rgb(h).map(lin);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function uiV2Ratio(a, b) { const la = uiV2Lum(a), lb = uiV2Lum(b); return uiV2Round((Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05), 2); }
+function uiV2Palette(theme) {
+  const base = (theme && theme.base) || 'dark';
+  const p = Object.assign({}, UI_V2.BASES[base]);
+  const cs = (theme && theme.colors) || {};
+  for (const k of Object.keys(cs)) p[k] = uiV2Hex6(cs[k]);
+  for (const k of Object.keys(UI_V2.DERIVE)) {
+    const [a, b, t] = UI_V2.DERIVE[k];
+    p[k] = uiV2Mix(p[a], p[b] || b, typeof t === 'object' ? t[base] : t);
+  }
+  p.on_accent = uiV2Ratio('#000000', p.accent) >= uiV2Ratio('#ffffff', p.accent) ? '#000000' : '#ffffff';
+  return p;
+}
+function uiV2Contrast(theme) {
+  const p = uiV2Palette(theme);
+  return UI_V2.CONTRAST.map(([n, f, b, m]) => ({ pair: n, ratio: uiV2Ratio(p[f], p[b]), min: m, ok: uiV2Ratio(p[f], p[b]) >= m }));
+}
+function uiV2Section(name, v, panelIds) {
+  const bad = code => { const e = new Error(code); e.code = code; throw e; };
+  const isObj = x => x && typeof x === 'object' && !Array.isArray(x);
+  const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const obj = (x, keys, sec) => { if (!isObj(x)) bad(sec + ':not_object'); if (Object.keys(x).some(k => !keys.includes(k))) bad(sec + ':unknown_key'); };
+  const en = (x, allowed, code) => { if (typeof x !== 'string' || !allowed.includes(x)) bad(code); return x; };
+  const bool = (x, code) => { if (typeof x !== 'boolean') bad(code); return x; };
+  if (name === 'layout') {
+    obj(v, ['panels', 'main'], 'layout');
+    const out = {};
+    if (has(v, 'panels')) {
+      if (!isObj(v.panels)) bad('layout:not_object');
+      out.panels = {};
+      for (const pid of Object.keys(v.panels)) {
+        if (!(panelIds || []).includes(pid)) bad('layout:bad_panel');
+        const cfg = v.panels[pid];
+        obj(cfg, ['dock', 'size', 'collapsible', 'collapsed'], 'layout');
+        const c = {};
+        if (has(cfg, 'dock')) c.dock = en(cfg.dock, UI_V2.DOCKS, 'layout:bad_dock');
+        if (has(cfg, 'size')) c.size = en(cfg.size, UI_V2.SIZES, 'layout:bad_size');
+        for (const k of ['collapsible', 'collapsed']) if (has(cfg, k)) c[k] = bool(cfg[k], 'layout:bad_bool');
+        out.panels[pid] = c;
+      }
+    }
+    if (has(v, 'main')) {
+      const m = v.main;
+      obj(m, ['split', 'slots'], 'layout');
+      const split = en(m.split, Object.keys(UI_V2.SPLITS), 'layout:bad_split');
+      if (!Array.isArray(m.slots) || m.slots.length !== UI_V2.SPLITS[split]) bad('layout:bad_slots');
+      const comps = (window.__STUDIO__ && window.__STUDIO__.ui_components) || {};
+      const seen = new Set(), slots = [];
+      m.slots.forEach((s, i) => {
+        obj(s, ['component', 'size'], 'layout');
+        const c = typeof s.component === 'string' && has(comps, s.component) ? comps[s.component] : null;
+        if (!c || c.mount !== 'inline') bad('layout:bad_component');
+        if (seen.has(s.component)) bad('layout:dup_component');
+        if (i === 0 && s.component !== 'stage') bad('layout:first_slot');
+        seen.add(s.component);
+        const one = { component: s.component };
+        if (has(s, 'size')) one.size = en(s.size, UI_V2.SIZES, 'layout:bad_size');
+        slots.push(one);
+      });
+      out.main = { split, slots };
+    }
+    return out;
+  }
+  if (name === 'theme') {
+    obj(v, ['base', 'colors', 'font_scale', 'spacing'], 'theme');
+    const out = {};
+    if (has(v, 'base')) out.base = en(v.base, Object.keys(UI_V2.BASES), 'theme:bad_base');
+    if (has(v, 'colors')) {
+      obj(v.colors, UI_V2.COLOR_KEYS, 'theme');
+      out.colors = {};
+      for (const k of UI_V2.COLOR_KEYS) if (has(v.colors, k)) {
+        if (typeof v.colors[k] !== 'string' || !UI_V2.COLOR.test(v.colors[k])) bad('theme:bad_color');
+        out.colors[k] = uiV2Hex6(v.colors[k]);
+      }
+    }
+    if (has(v, 'font_scale')) out.font_scale = en(v.font_scale, Object.keys(UI_V2.FONT_SCALES), 'theme:bad_font_scale');
+    if (has(v, 'spacing')) out.spacing = en(v.spacing, UI_V2.SPACINGS, 'theme:bad_spacing');
+    if (uiV2Contrast(out).some(r => !r.ok)) bad('theme:contrast');
+    return out;
+  }
+  if (name === 'flow') {
+    obj(v, ['steps'], 'flow');
+    if (!Array.isArray(v.steps) || v.steps.length < 1 || v.steps.length > UI_V2.STEPS.length) bad('flow:bad_steps');
+    const out = [], at = {};
+    v.steps.forEach((s, i) => {
+      obj(s, ['step', 'label', 'merge_with', 'defaults'], 'flow');
+      const sid = en(s.step, UI_V2.STEPS, 'flow:bad_step');
+      if (has(at, sid)) bad('flow:dup_step');
+      at[sid] = i;
+      const one = { step: sid };
+      if (has(s, 'label')) {
+        const l = s.label;
+        if (typeof l !== 'string' || !l.trim() || l.length > UI_V2.MAX_STEP_LABEL || /[\x00-\x1f]/.test(l)) bad('flow:bad_label');
+        one.label = l;
+      }
+      if (has(s, 'merge_with')) {
+        const prev = out[out.length - 1];
+        if (!prev || s.merge_with !== prev.step || has(prev, 'merge_with')) bad('flow:bad_merge');
+        one.merge_with = prev.step;
+      }
+      if (has(s, 'defaults')) {
+        const allowed = UI_V2.DEFAULT_KEYS[sid] || [];
+        obj(s.defaults, allowed, 'flow');
+        const d = {};
+        for (const k of allowed) if (has(s.defaults, k)) {
+          const x = s.defaults[k];
+          if (k === 'aspect') d[k] = en(x, UI_V2.ASPECTS, 'flow:bad_default');
+          else if (k === 'template') d[k] = en(x, UI_V2.TEMPLATES, 'flow:bad_default');
+          else if (k === 'resolution') d[k] = en(x, UI_V2.RESOLUTIONS, 'flow:bad_default');
+          else if (k === 'model') { if (typeof x !== 'string' || !UI_V2.MODEL_REF.test(x)) bad('flow:bad_default'); d[k] = x; }
+          else if (k === 'blocks') {
+            if (!Array.isArray(x) || x.length > UI_V2.MAX_BLOCKS || new Set(x.map(String)).size !== x.length ||
+                !x.every(y => typeof y === 'string' && UI_V2.BLOCK_ID.test(y))) bad('flow:bad_default');
+            d[k] = x.slice();
+          }
+        }
+        one.defaults = d;
+      }
+      out.push(one);
+    });
+    if (UI_V2.REQUIRED.some(x => !has(at, x))) bad('flow:required');
+    for (const [a, b] of UI_V2.ORDER) if (has(at, a) && has(at, b) && at[a] > at[b]) bad('flow:order');
+    return { steps: out };
+  }
+  bad('unknown_section');
+}
 function uiDescValidate(desc, acts) {
   const bad = code => { const e = new Error(code); e.code = code; throw e; };
-  if (desc == null || (typeof desc === 'object' && !Array.isArray(desc) && (!desc.panels || !desc.panels.length))) return null;
+  const v2 = !!desc && typeof desc === 'object' && desc.version === 2;
+  if (desc == null || (typeof desc === 'object' && !Array.isArray(desc) && (!desc.panels || !desc.panels.length) &&
+      !(v2 && UI_V2.SECTIONS.some(k => Object.prototype.hasOwnProperty.call(desc, k))))) return null;
   const obj = (d, keys) => { if (!d || typeof d !== 'object' || Array.isArray(d)) bad('not_object');
     if (Object.keys(d).some(k => !keys.includes(k))) bad('unknown_key'); };
   const str = (v, n, empty) => { if (typeof v !== 'string' || (!empty && !v.trim()) || [...v].length > n) bad('bad_text');
     if (/[\x00-\x08\x0b-\x1f]/.test(v)) bad('control_char'); return v; };
-  obj(desc, ['version', 'name', 'panels']);
-  if (desc.version !== 1) bad('bad_version');
+  obj(desc, v2 ? ['version', 'name', 'panels'].concat(UI_V2.SECTIONS) : ['version', 'name', 'panels']);
+  if (desc.version !== 1 && !v2) bad('bad_version');
   const name = str(desc.name === undefined ? '' : desc.name, 40, true);
   if (!Array.isArray(desc.panels) || desc.panels.length > 12) bad('bad_panels');
   const ids = new Set(), out = [];
@@ -25471,7 +26199,12 @@ function uiDescValidate(desc, acts) {
     }
     out.push({ id, title: str(p.title, 40), items });
   }
-  return { version: 1, name, panels: out };
+  if (!v2) return { version: 1, name, panels: out };
+  const top = { version: 2, name, panels: out };
+  for (const k of UI_V2.SECTIONS) if (Object.prototype.hasOwnProperty.call(desc, k)) {
+    try { top[k] = uiV2Section(k, desc[k], out.map(p => p.id)); } catch (e) { console.warn('[uidesc] v2_ignored=' + (e.code || k)); }
+  }
+  return top;
 }
 const UI_PREFS_DEFAULT = { version: 1, density: 'standard', lang: 'zh-TW', show_budget: true, previs: false, agent_panel: true,
                            hide: [], confirm_actions: [] };
@@ -25523,6 +26256,58 @@ function uiComposeAnswers(questions, picks) {
   }
   return out;
 }
+function uiCtxResolve(kind, env) {
+  const ok = value => ({ ok: true, value }), no = why => ({ ok: false, why });
+  const multi = i => { const g = env.takes(i); return !!(g && g.list && g.list.length >= 2); };
+  const v1 = env.v1 || [];
+  const firstClip = pending => { for (let k = 0; k < v1.length; k++) if ((!pending || (v1[k] && v1[k].cand === 'pending')) && multi(k)) return k; return -1; };
+  if (kind === 'current_clip' || kind === 'pending_clip') {
+    if (kind === 'pending_clip') { const k = firstClip(true); if (k >= 0) return ok(k); }
+    if (env.selClip >= 0 && multi(env.selClip)) return ok(env.selClip);
+    const k = firstClip(false);
+    return k >= 0 ? ok(k) : no('時間軸上還沒有超過一個版本的片段：先「重抽 ×N」或多模型試拍');
+  }
+  if (kind === 'current_cast') {
+    const cast = env.cast || [];
+    const photo = c => !!c && (c.refs || []).some(r => r && r.ref && r.src);
+    const cur = cast.find(c => c && c.id === env.castCur);
+    if (photo(cur)) return ok(cur);
+    const c = cast.find(x => x && (x.kind || 'char') === 'char' && photo(x));
+    return c ? ok(c) : no('還沒有有照片的角色卡：先到角色上傳一張正面或臉部特寫');
+  }
+  if (kind === 'current_shot') {
+    const shots = env.shots || [];
+    const usable = s => !!s && !!(s.motion && s.motion.ref && !s.motion.puppet);
+    const cur = env.shotIndex >= 0 ? shots[env.shotIndex] : null;
+    if (usable(cur)) return ok(cur);
+    const s = shots.find(usable);
+    return s ? ok(s) : no('還沒有帶參考影片的鏡頭：先在分鏡的「動作來源」放一段參考影片');
+  }
+  if (kind === 'current_work') return env.pid ? ok(env.pid) : no('先打開一部作品');
+  if (kind === 'toggle_mode') return env.mode ? ok(env.mode === 'simple' ? 'advanced' : 'simple') : no('這一頁沒有可以切的模式');
+  return no('不認得的參數種類：' + kind);
+}
+function uiCtxEnv() {
+  const T = window.__TL_TAKES__;
+  const sel = document.querySelector('.tl-clip.sel');
+  const a = document.activeElement;
+  const shots0 = typeof shots !== 'undefined' ? shots : [];
+  let shotIndex = -1;
+  const row = (a && a.closest && a.closest('#sbTable .sbrow[data-i]')) || document.querySelector('#sbTable .sbrow.cv-focus-on[data-i]');
+  if (row) shotIndex = Number(row.dataset.i);
+  else if (a && /^smShot(\d+)$/.test(a.id || '')) shotIndex = Number(a.id.slice(6));
+  const S = window.__SIMPLE__;
+  return {
+    takes: i => (T && typeof T.get === 'function' ? T.get(i) : null),
+    v1: typeof window.__TL_V1__ === 'function' ? window.__TL_V1__() : [],
+    selClip: sel ? Number(sel.dataset.i) : -1,
+    cast: typeof cast !== 'undefined' ? cast : [], castCur: typeof castCur !== 'undefined' ? castCur : null,
+    shots: shots0, shotIndex,
+    pid: (location.pathname.match(/^\/w\/([0-9a-fA-F-]{36})/) || [])[1] || null,
+    mode: S ? S.mode : null,
+  };
+}
+window.__UI_CTX__ = { resolve: kind => uiCtxResolve(kind, uiCtxEnv()) };
 (() => {
   const ACT = window.__STUDIO__ && window.__STUDIO__.ui_actions;
   const KEY = 'iamd-ui-desc';
@@ -25530,16 +26315,154 @@ function uiComposeAnswers(questions, picks) {
   let on = false, host = null, last = null, reason = '';
   try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
   if (box) box.checked = on;
-  const clear = why => { if (host) { host.remove(); host = null; } if (why) { reason = why; console.warn('[uidesc] fallback=' + why); } };
-  const call = name => {
+  const clear = why => { if (host) { host.remove(); host = null; } clearLayout(); if (why) { reason = why; console.warn('[uidesc] fallback=' + why); } };
+  const V2KEY = 'iamd-ui-v2', COLLAPSE_STORE = 'iamd-ui-v2-collapsed';
+  const v2Row = document.getElementById('uiV2Row'), v2Box = document.getElementById('uiV2On');
+  const v2On = () => { try { return localStorage.getItem(V2KEY) === 'on'; } catch (e) { return false; } };
+  if (window.__STUDIO__ && window.__STUDIO__.local && v2Row) v2Row.hidden = false;
+  if (v2Box) {
+    v2Box.checked = v2On();
+    v2Box.addEventListener('change', () => { try { localStorage.setItem(V2KEY, v2Box.checked ? 'on' : 'off'); } catch (e) {} if (on) load(true); });
+  }
+  const V2_PX = { side: { s: 240, m: 320, l: 420 }, bottom: { s: 160, m: 240, l: 360 }, float: { s: 240, m: 280, l: 360 } };
+  let layoutCss = null, mounts = [];
+  const clearLayout = () => {
+    const r = document.documentElement;
+    if (r.classList.contains('uiv2-docked')) {
+      r.classList.remove('uiv2-docked');
+      ['--uiv2-l', '--uiv2-r', '--uiv2-b'].forEach(k => r.style.removeProperty(k));
+    }
+    mounts.forEach(fn => { try { fn(); } catch (e) {} });
+    mounts = [];
+  };
+  const collapsedOf = () => { try { return JSON.parse(localStorage.getItem(COLLAPSE_STORE) || '{}') || {}; } catch (e) { return {}; } };
+  const setCollapsed = (id, v) => { const m = collapsedOf(); m[id] = v; try { localStorage.setItem(COLLAPSE_STORE, JSON.stringify(m)); } catch (e) {} };
+  const layoutSection = (p, cfg) => {
+    const sec = el('section'); sec.dataset.panel = p.id;
+    const head = el('div', 'uidesc-title'); head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:6px';
+    head.append(el('span', null, p.title));
+    const body = el('div', 'uidesc-body');
+    for (const it of p.items) {
+      if (it.type === 'text') { body.append(el('p', 'uidesc-text', it.text)); continue; }
+      const b = el(it.action ? 'button' : 'div', 'uidesc-' + it.type, it.label);
+      if (it.action) {
+        b.type = 'button'; b.dataset.action = it.action;
+        if (ACT[it.action].spend === 'confirm') b.title = '會打開確認單（花錢前一定先問你）';
+        b.addEventListener('click', () => call(it.action, b));
+        b.style.cssText = 'display:block;width:100%;margin:4px 0;text-align:left';
+      }
+      body.append(b);
+    }
+    if (cfg.collapsible !== false) {
+      const saved = collapsedOf()[p.id];
+      let shut = saved === undefined ? !!cfg.collapsed : !!saved;
+      const t = el('button', 'uidesc-fold'); t.type = 'button';
+      const paint = () => { body.hidden = shut; t.textContent = shut ? '展開' : '收合'; t.setAttribute('aria-expanded', String(!shut));
+                            t.setAttribute('aria-label', (shut ? '展開' : '收合') + '「' + p.title + '」'); };
+      t.addEventListener('click', () => { shut = !shut; setCollapsed(p.id, shut); paint(); });
+      paint(); head.append(t);
+    }
+    sec.append(head, body);
+    return sec;
+  };
+  const MOUNT = {
+    agent_run: c => (window.__AGENTRUN__ && window.__AGENTRUN__.mount ? (window.__AGENTRUN__.mount(c), () => window.__AGENTRUN__.unmount()) : null),
+    film_preview: c => MOUNT.agent_run(c),
+    approvals: c => (window.__APPROVALS__ && window.__APPROVALS__.mountList ? (window.__APPROVALS__.mountList(c), () => window.__APPROVALS__.unmountList()) : null),
+  };
+  const afterRender = d => {
+    if (d.panels.some(p => p.items.some(it => it.action === 'agent.panel')) && window.__AGENTRUN__ && window.__AGENTRUN__.autoEnable) {
+      try { window.__AGENTRUN__.autoEnable(); } catch (e) {}
+    }
+    if (d.panels.some(p => p.items.some(it => it.action && ACT[it.action].args))) {
+      paintArgs();
+      if (!argTimer) argTimer = setInterval(paintArgs, 2000);
+    }
+  };
+  const renderLayout = d => {
+    const L = d.layout, cfg = id => (L.panels && L.panels[id]) || {};
+    const wrap = el('div', 'uidesc uidesc-layout'); wrap.style.display = 'contents';
+    wrap.setAttribute('aria-label', '介面描述檔：' + (d.name || '自訂面板'));
+    const docks = {}, size = {};
+    const base = 'z-index:60;overflow:auto;background:var(--riser,#1B1F26);color:inherit;padding:12px;font-size:13px;' +
+                 'border:1px solid rgba(255,255,255,.12)';
+    const dockOf = side => {
+      if (docks[side]) return docks[side];
+      const a = el('aside', 'uidesc-dock'); a.dataset.dock = side;
+      a.setAttribute('aria-label', '介面描述檔：' + (d.name || '自訂面板') + '（' + { left: '左側', right: '右側', bottom: '底部', float: '浮動' }[side] + '）');
+      wrap.append(a);
+      return (docks[side] = a);
+    };
+    for (const p of d.panels) {
+      const c = cfg(p.id), side = c.dock || 'float';
+      const px = V2_PX[side === 'bottom' ? 'bottom' : side === 'float' ? 'float' : 'side'][c.size || 'm'];
+      size[side] = Math.max(size[side] || 0, px);
+      dockOf(side).append(layoutSection(p, c));
+    }
+    const cols = (L.main && L.main.slots || []).slice(1).map(s => ({ s, px: V2_PX.side[s.size || 'm'] }));
+    const R = (size.right || 0), mainW = cols.reduce((n, c) => n + c.px, 0), B = size.bottom || 0, Lw = size.left || 0;
+    if (docks.left) docks.left.style.cssText = base + ';position:fixed;left:0;top:0;bottom:' + B + 'px;width:' + Lw + 'px';
+    if (docks.right) docks.right.style.cssText = base + ';position:fixed;right:0;top:0;bottom:' + B + 'px;width:' + R + 'px';
+    if (docks.bottom) docks.bottom.style.cssText = base + ';position:fixed;left:' + Lw + 'px;right:' + (R + mainW) + 'px;bottom:0;height:' + B + 'px';
+    if (docks.float) docks.float.style.cssText = base + ';position:fixed;right:' + (16 + R + mainW) + 'px;bottom:' + (16 + B) + 'px;width:' + size.float +
+      'px;max-height:70vh;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.35)';
+    let x = R;
+    cols.forEach(({ s, px }) => {
+      const col = el('aside', 'uidesc-main'); col.dataset.component = s.component;
+      col.setAttribute('aria-label', '主區：' + s.component);
+      col.style.cssText = base + ';position:fixed;top:0;bottom:' + B + 'px;right:' + x + 'px;width:' + px + 'px';
+      x += px;
+      const undo = (MOUNT[s.component] || (() => null))(col);
+      if (undo) mounts.push(undo); else col.append(el('p', 'uidesc-text', '這一欄的元件（' + s.component + '）在這一頁還不能放。'));
+      wrap.append(col);
+    });
+    const first = docks.left || docks.right || docks.bottom || docks.float || wrap.querySelector('.uidesc-main');
+    if (first) {
+      const head = el('div'); head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px';
+      head.append(el('b', null, d.name || '自訂面板'));
+      const reset = el('button', 'uidesc-reset', '回預設'); reset.type = 'button';
+      reset.addEventListener('click', () => setOn(false));
+      head.append(reset); first.prepend(head);
+    }
+    if (!layoutCss) {
+      layoutCss = document.createElement('style');
+      layoutCss.textContent = 'html.uiv2-docked .sm{left:var(--uiv2-l,0px);right:var(--uiv2-r,0px);bottom:var(--uiv2-b,0px)}' +
+        '.uidesc-fold{font-size:12px;padding:2px 8px}.uidesc-main .agrun-inline{font-size:var(--fs-s,13px)}';
+      document.head.append(layoutCss);
+    }
+    const r = document.documentElement;
+    r.classList.add('uiv2-docked');
+    r.style.setProperty('--uiv2-l', Lw + 'px'); r.style.setProperty('--uiv2-r', (R + mainW) + 'px'); r.style.setProperty('--uiv2-b', B + 'px');
+    document.body.append(wrap);
+    host = wrap;
+  };
+  const call = (name, btn) => {
     const a = ACT && ACT[name];
     const m = a && /^__([A-Z0-9_]+)__\.([A-Za-z0-9_]+)$/.exec(a.call);
     const o = m && window['__' + m[1] + '__'];
-    if (o && typeof o[m[2]] === 'function') { try { o[m[2]](); } catch (e) { console.warn('[uidesc] action_error ' + name); } }
-    else console.warn('[uidesc] missing_hook ' + name);
+    if (!(o && typeof o[m[2]] === 'function')) { console.warn('[uidesc] missing_hook ' + name); return; }
+    const r = a.args ? window.__UI_CTX__.resolve(a.args) : null;
+    if (r && !r.ok) { if (btn) paintArg(btn, r); return; }
+    try { if (r) o[m[2]](r.value); else o[m[2]](); } catch (e) { console.warn('[uidesc] action_error ' + name); }
+  };
+  const paintArg = (b, r) => {
+    b.disabled = !r.ok;
+    let why = b.nextElementSibling && b.nextElementSibling.classList.contains('uidesc-why') ? b.nextElementSibling : null;
+    if (r.ok) { if (why) why.remove(); b.removeAttribute('aria-describedby'); return; }
+    if (!why) { why = el('p', 'uidesc-why'); why.id = 'uidescWhy' + (++whyN); why.style.cssText = 'margin:0 0 6px;font-size:12px;opacity:.75'; b.after(why); }
+    why.textContent = r.why; b.setAttribute('aria-describedby', why.id);
+  };
+  let whyN = 0, argTimer = 0;
+  const paintArgs = () => {
+    if (!host) { clearInterval(argTimer); argTimer = 0; return; }
+    host.querySelectorAll('button[data-action]').forEach(b => { const a = ACT[b.dataset.action]; if (a && a.args) paintArg(b, window.__UI_CTX__.resolve(a.args)); });
   };
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const render = d => {
+    if (d.version === 2 && d.layout && v2On()) {
+      try { renderLayout(d); afterRender(d); return; }
+      catch (e) { if (host) { host.remove(); host = null; } clearLayout(); console.warn('[uidesc] v2_ignored=layout:render ' + (e && e.message || e)); }
+    }
     const h = el('aside', 'uidesc');
     h.setAttribute('aria-label', '介面描述檔：' + (d.name || '自訂面板'));
     h.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:60;width:280px;max-height:70vh;overflow:auto;' +
@@ -25559,7 +26482,7 @@ function uiComposeAnswers(questions, picks) {
         if (it.action) {
           b.type = 'button'; b.dataset.action = it.action;
           if (ACT[it.action].spend === 'confirm') b.title = '會打開確認單（花錢前一定先問你）';
-          b.addEventListener('click', () => call(it.action));
+          b.addEventListener('click', () => call(it.action, b));
           b.style.cssText = 'display:block;width:100%;margin:4px 0;text-align:left';
         }
         sec.append(b);
@@ -25568,6 +26491,13 @@ function uiComposeAnswers(questions, picks) {
     }
     document.body.append(h);
     host = h;
+    if (d.panels.some(p => p.items.some(it => it.action === 'agent.panel')) && window.__AGENTRUN__ && window.__AGENTRUN__.autoEnable) {
+      try { window.__AGENTRUN__.autoEnable(); } catch (e) {}
+    }
+    if (d.panels.some(p => p.items.some(it => it.action && ACT[it.action].args))) {
+      paintArgs();
+      if (!argTimer) argTimer = setInterval(paintArgs, 2000);
+    }
   };
   let lastPrefs = null;
   const applyPlan = (prefs, plan, changed) => {
@@ -25650,6 +26580,10 @@ function uiComposeAnswers(questions, picks) {
     }
     if (r.notes && r.notes.length) { const n = el('ul', 'uicompose-notes'); r.notes.forEach(x => n.append(el('li', null, x))); box.append(n); }
   };
+  const optCss = (inp, lab) => {
+    inp.style.cssText = 'flex:none;width:1em;height:1em;margin:.25em 0 0;padding:0;accent-color:var(--grease)';
+    lab.style.cssText = 'display:block;flex:1;min-width:0;margin:0;line-height:1.5;cursor:pointer';
+  };
   const openDialog = async () => {
     let qs;
     try { qs = (await api('GET', '/api/local/ui-desc?questions=1')).questions; } catch (e) { say('讀不到訪談題目：' + e.message, false); return; }
@@ -25676,7 +26610,9 @@ function uiComposeAnswers(questions, picks) {
           } else picks[q.id] = o.value;
         });
         const lab = el('label', null, o.label); lab.htmlFor = id;
-        const row = el('div'); row.append(inp, lab); f.append(row);
+        optCss(inp, lab);
+        const row = el('div', 'uiq-opt'); row.style.cssText = 'display:flex;align-items:flex-start;gap:8px;margin:6px 0';
+        row.append(inp, lab); f.append(row);
       }
       dlg.append(f);
     }
@@ -25695,6 +26631,7 @@ function uiComposeAnswers(questions, picks) {
         await api('POST', '/api/local/ui-desc', { op: 'save', name: 'mine', answers: last ? last.answers : uiComposeAnswers(qs, picks), title: '我的介面' });
         await api('POST', '/api/local/ui-desc', { op: 'activate', name: 'mine' });
         if (window.__UIDESC__) window.__UIDESC__.set(true);
+        refreshMine();
         close(dlg);
       } catch (e) { out.textContent = '套用失敗：' + e.message; }
     });
@@ -25706,13 +26643,44 @@ function uiComposeAnswers(questions, picks) {
   btn.addEventListener('click', openDialog);
   const mine = document.getElementById('uiMine'), pick = document.getElementById('uiProfilePick');
   const applyBtn = document.getElementById('uiApplyBtn'), undoBtn = document.getElementById('uiUndoBtn');
+  const delBtn = document.getElementById('uiDeleteBtn'), delAsk = document.getElementById('uiDeleteAsk');
+  const delQ = document.getElementById('uiDeleteQ'), delYes = document.getElementById('uiDeleteYes');
+  const delNo = document.getElementById('uiDeleteNo');
+  let activeName = null, mineSig = null;
+  const paintDel = () => {
+    if (!delBtn) return;
+    const isActive = !!pick && pick.value === activeName;
+    delBtn.disabled = !pick || !pick.value || isActive;
+    delBtn.title = isActive ? '正在用的那一份不能刪：先換一份或按「回預設」' : '';
+    if (delAsk) delAsk.hidden = true;
+  };
   const refreshMine = () => api('GET', '/api/local/ui-desc').then(r => {
     if (!pick) return;
+    const sig = JSON.stringify([(r.items || []).map(it => [it.name, it.title, it.saved_by, !!it.active]), !!r.can_undo]);
+    if (sig === mineSig) return;
+    mineSig = sig;
     pick.textContent = '';
-    for (const it of r.items || []) { const o = el('option', null, uiProfileLabel(it)); o.value = it.name; o.selected = !!it.active; pick.append(o); }
+    activeName = null;
+    for (const it of r.items || []) { const o = el('option', null, uiProfileLabel(it)); o.value = it.name; o.selected = !!it.active; pick.append(o); if (it.active) activeName = it.name; }
     if (applyBtn) applyBtn.disabled = !(r.items || []).length;
     if (undoBtn) undoBtn.disabled = !r.can_undo;
+    paintDel();
   }).catch(() => {});
+  if (pick) pick.addEventListener('change', paintDel);
+  if (delBtn) delBtn.addEventListener('click', () => {
+    if (!pick || !pick.value || pick.value === activeName) return;
+    delQ.textContent = '確定刪除「' + pick.value + '」？刪了找不回來。 ';
+    delAsk.hidden = false; delBtn.disabled = true;
+    delYes.focus();
+  });
+  if (delNo) delNo.addEventListener('click', () => { delAsk.hidden = true; paintDel(); delBtn.focus(); });
+  if (delYes) delYes.addEventListener('click', async () => {
+    const name = pick && pick.value;
+    delAsk.hidden = true;
+    try { await api('POST', '/api/local/ui-desc', { op: 'delete', name }); say('已刪除介面「' + name + '」', true); }
+    catch (e) { say('刪除失敗：' + e.message, false); }
+    refreshMine();
+  });
   if (applyBtn) applyBtn.addEventListener('click', async () => {
     if (!pick || !pick.value) return;
     try { await api('POST', '/api/local/ui-desc', { op: 'activate', name: pick.value }); if (window.__UIDESC__) window.__UIDESC__.set(true); refreshMine(); }
@@ -25742,7 +26710,7 @@ function uiComposeAnswers(questions, picks) {
   const watchApply = () => { watchOnce(); setInterval(watchOnce, 4000); };
   const closeGate = () => { if (gate) { gate.remove(); gate = null; } clearInterval(gateTimer); gateTimer = null; };
   const checkGate = () => api('GET', '/api/local/ui-desc?onboarding=1').then(s => {
-    if (!uiOnboardingShow(s)) { closeGate(); if (s.active && window.__UIDESC__) window.__UIDESC__.set(true); return; }
+    if (!uiOnboardingShow(s)) { closeGate(); if (s.active && window.__UIDESC__) window.__UIDESC__.set(true); if (s.active) refreshMine(); return; }
     if (gate) return;
     gate = el('div', 'uionboard');
     gate.setAttribute('role', 'dialog'); gate.setAttribute('aria-label', '打造你的介面');
@@ -25768,6 +26736,7 @@ function uiComposeAnswers(questions, picks) {
     if (mine) mine.hidden = !info.on;
     if (info.on) { refreshMine(); if (info.onboarding) checkGate(); }
     if (info.on) watchApply();
+    if (info.on) setInterval(() => { if (mine && !mine.hidden && !document.hidden) refreshMine(); }, 5000);
   }).catch(() => {});
 })();
 (function studioPbM6() {
@@ -26478,6 +27447,7 @@ function agFilmModel(st, items) {
   if (!LOCAL) return;
   if (row) row.hidden = false;
   let on = false, host = null, timer = 0, pick = '', busy = false, msg = '', sure = '', lastSig = '', stitch = null;
+  let mainline = null, mlKey = '', mlRun = '';
   const openShots = new Set();
   try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -26487,6 +27457,7 @@ function agFilmModel(st, items) {
     host.textContent = '';
     const head = el('div', 'agrun-head');
     head.append(el('b', '', 'Agent 拍片進度'));
+    if (!mountEl) dragHead(head);
     const x = el('button', 'agrun-x', '×'); x.type = 'button'; x.setAttribute('aria-label', '關掉 Agent 拍片進度'); x.onclick = close;
     head.append(x);
     host.append(head);
@@ -26544,6 +27515,8 @@ function agFilmModel(st, items) {
       host.append(d);
     }
     if (view.film) host.append(filmBox(view.film));
+    if (mainline && mainline.error) host.append(el('p', 'agrun-err', String(mainline.error)));
+    if (mainline && mainline.unmatched > 0 && mainline.message) host.append(el('p', 'agrun-note agrun-ml', String(mainline.message)));
     if (msg) host.append(el('p', 'agrun-err', msg));
   }
   function stitched(files) {
@@ -26602,6 +27575,7 @@ function agFilmModel(st, items) {
       const runs = (r.d && Array.isArray(r.d.items)) ? r.d.items : [];
       const run = runs.some(x => x.run === pick) ? pick : (runs[0] && runs[0].run);
       let m = null, film = null;
+      if (run !== mlRun) { mlRun = run; mainline = null; mlKey = ''; }
       if (run) {
         const g = await get('/api/local/agent/get?run=' + encodeURIComponent(run));
         if (g.code === 200) {
@@ -26611,10 +27585,16 @@ function agFilmModel(st, items) {
             const t = await get('/api/takes?project_id=' + encodeURIComponent(pid));
             film = agFilmModel(g.d, t.code === 200 && t.d ? t.d.items : []);
             if (film && film.files.length) Object.assign(film, await stitched(film.files));
+            const key = run + '|' + (film ? film.shots.map(s => (s.takes.find(t => t.picked) || {}).id || '').join(',') : '');
+            if (key !== mlKey) {
+              mlKey = key;
+              const f = await get('/api/local/agent/film?run=' + encodeURIComponent(run));
+              mainline = f.code === 200 && f.d ? (f.d.mainline || null) : mainline;
+            }
           }
         }
       }
-      const sig = JSON.stringify([runs.map(x => [x.run, x.phase, x.pause_reason]), m, film, msg, busy, sure]);
+      const sig = JSON.stringify([runs.map(x => [x.run, x.phase, x.pause_reason]), m, film, msg, busy, sure, mainline]);
       if (sig === lastSig && host.firstChild) return;
       lastSig = sig;
       draw({ runs, m, film });
@@ -26627,26 +27607,88 @@ function agFilmModel(st, items) {
                                                        body: JSON.stringify({ run, decision }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) msg = (d && d.error) || ('HTTP ' + r.status);
+      if (d && d.mainline && run === mlRun) mainline = d.mainline;
     } catch (e) { msg = '送不出去：' + (e && e.message || e); }
     busy = false; refresh();
   }
+  const POSKEY = 'iamd-agent-run-pos';
+  let dragged = null;
+  try { dragged = JSON.parse(localStorage.getItem(POSKEY) || 'null'); } catch (e) {}
+  const clampPos = p => ({ x: Math.max(0, Math.min(innerWidth - 80, Math.round(p.x))), y: Math.max(0, Math.min(innerHeight - 40, Math.round(p.y))) });
+  function place() {
+    if (!host || mountEl) return;
+    if (dragged) {
+      const p = clampPos(dragged);
+      Object.assign(host.style, { left: p.x + 'px', top: p.y + 'px', right: 'auto', bottom: 'auto' });
+      return;
+    }
+    host.style.left = host.style.top = host.style.bottom = '';
+    const u = [...document.querySelectorAll('aside.uidesc, aside.uidesc-dock[data-dock="float"]')].find(x => x.isConnected && x.getBoundingClientRect().width);
+    host.style.right = u ? (16 + Math.round(u.getBoundingClientRect().width) + 12) + 'px' : '';
+  }
+  function dragHead(head) {
+    head.style.cursor = 'move';
+    head.title = '拖動可以移動這個面板；按兩下標題回到原位';
+    head.addEventListener('pointerdown', e => {
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      const r = host.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+      const move = ev => { dragged = clampPos({ x: ev.clientX - dx, y: ev.clientY - dy }); place(); };
+      const up = () => {
+        removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+        try { if (dragged) localStorage.setItem(POSKEY, JSON.stringify(dragged)); } catch (err) {}
+      };
+      addEventListener('pointermove', move); addEventListener('pointerup', up);
+    });
+    head.addEventListener('dblclick', () => { dragged = null; try { localStorage.removeItem(POSKEY); } catch (e) {} place(); });
+  }
+  let watch = null;
+  function watchPanels() {
+    if (watch || typeof MutationObserver !== 'function') return;
+    watch = new MutationObserver(place);
+    watch.observe(document.body, { childList: true });
+  }
+  addEventListener('resize', () => place());
   function tick() {
     const a = document.activeElement;
     if (host && !document.hidden && !(a && a.tagName === 'SELECT' && host.contains(a))) refresh();
   }
+  function enable() {
+    on = true;
+    try { localStorage.setItem(KEY, 'on'); } catch (e) {}
+    if (box) box.checked = true;
+    open();
+  }
   function open() {
-    if (!on) { console.warn('[agentrun] off'); return; }
+    if (!on) { enable(); return; }
     if (!host) { host = el('aside', 'agrun'); host.setAttribute('aria-label', 'Agent 拍片進度'); host.setAttribute('data-agent', 'agent-run'); document.body.append(host); }
+    watchPanels(); place();
     refresh();
     if (!timer) timer = setInterval(tick, 3000);
   }
   function close() { if (host) { host.remove(); host = null; } if (timer) { clearInterval(timer); timer = 0; } }
+  let mountEl = null;
+  function mount(target) {
+    mountEl = target;
+    if (!host) { host = el('aside', 'agrun'); host.setAttribute('aria-label', 'Agent 拍片進度'); host.setAttribute('data-agent', 'agent-run'); }
+    host.classList.add('agrun-inline');
+    target.append(host);
+    lastSig = '';
+    refresh();
+    if (!timer) timer = setInterval(tick, 3000);
+  }
+  function unmount() {
+    if (!mountEl) return;
+    mountEl = null;
+    if (host) host.classList.remove('agrun-inline');
+    if (on && host) { document.body.append(host); place(); } else close();
+  }
   if (box) {
     box.checked = on;
     box.onchange = () => { on = box.checked; try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {} if (on) open(); else close(); };
   }
   const css = document.createElement('style');
-  css.textContent = '.agrun{position:fixed;right:16px;bottom:16px;z-index:60;width:320px;max-height:70vh;overflow:auto;padding:12px 14px;' +
+  css.textContent = '.agrun{position:fixed;right:16px;bottom:16px;z-index:61;width:320px;max-height:70vh;overflow:auto;padding:12px 14px;' +
     'background:var(--panel,#1c1a17);color:inherit;border:1px solid rgba(240,236,226,.16);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.35);font-size:var(--fs-s,13px)}' +
     '.agrun-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.agrun-x{background:none;border:0;color:inherit;font-size:18px;cursor:pointer}' +
     '.agrun-req{font-weight:600;margin:4px 0}.agrun-phase,.agrun-money{opacity:.8;margin:4px 0}.agrun-pick{width:100%;margin:4px 0}' +
@@ -26654,9 +27696,11 @@ function agFilmModel(st, items) {
     '.agrun-ask{margin-top:8px;padding:8px;border:1px solid var(--grease,#e8a33d);border-radius:8px}.agrun-ask p{margin:4px 0}' +
     '.agrun-film{margin-top:8px}.agrun-film video{width:100%;margin:6px 0;border-radius:6px;background:#000}' +
     '.agrun-shot{margin:4px 0}.agrun-shot>summary{cursor:pointer}.agrun-take{padding:6px 0;border-top:1px solid rgba(240,236,226,.08)}.agrun-take.picked>div{font-weight:600}' +
+    '.agrun.agrun-inline{position:static;width:auto;max-height:none;box-shadow:none;border:0;padding:0;background:transparent}' +
     '.agrun-bar{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}.agrun-note{opacity:.7}.agrun-err{color:#e66}.agrun-done{margin-top:8px;display:flex;gap:10px;align-items:center}';
   document.head.append(css);
-  window.__AGENTRUN__ = { open, close, refresh, isOn: () => on };
+  const autoEnable = () => { let v = null; try { v = localStorage.getItem(KEY); } catch (e) {} if (v === null && !on) enable(); };
+  window.__AGENTRUN__ = { open, close, refresh, enable, autoEnable, mount, unmount, isOn: () => on };
   if (on) open();
 })();
 </script>

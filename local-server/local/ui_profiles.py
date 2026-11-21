@@ -50,10 +50,22 @@ def _now():
 def onboarding_status(data_dir, enabled):
     act = active(data_dir)
     done = _read(os.path.join(_dir(data_dir), "_onboarding.json")) or {}
-    return {"enabled": bool(enabled), "needed": bool(enabled and not act and not done.get("done")),
+    needed = bool(enabled and not act and not done.get("done"))
+    return {"enabled": bool(enabled), "needed": needed,
             "active": act["name"] if act else None, "done": done.get("how"), "profiles": len(_names(data_dir)),
-            "hint": "使用者還沒建自己的介面：先 ui_actions_list 看積木，問他想怎麼拍、常用哪些步驟，"
-                    "ui_compose 組起點、ui_edit 細修、ui_apply 套用；他想跳過就到畫面上按「先用預設框架」"}
+            "hint": _onboarding_hint(enabled, needed, act, done)}
+
+def _onboarding_hint(enabled, needed, act, done):
+    if not enabled:
+        return "這台的介面描述檔沒有開（使用者在 App 設定頁打開）；現在照預設框架。"
+    if act:
+        return ("已經在用「%s」：要改就 ui_get 看現在這份、ui_edit 細修再 ui_apply；改壞了用 ui_undo 還原，"
+                "或 ui_reset 回預設框架。" % act["name"])
+    if not needed:
+        return ("使用者按了「先用預設框架」，現在照預設框架；他之後想要自己的介面，再用 ui_compose 組、ui_apply 套用。"
+                if done.get("done") else "現在照預設框架。")
+    return ("使用者還沒建自己的介面：先 ui_actions_list 看積木，問他想怎麼拍、常用哪些步驟，"
+            "ui_compose 組起點、ui_edit 細修、ui_apply 套用；他想跳過就到畫面上按「先用預設框架」")
 
 def _set_state(data_dir, put, desc, prefs, act_name, who):
     put(STORE_KEY, desc)
@@ -158,10 +170,14 @@ def handle(method, body, *, who, data_dir, put, get=None, query=None, onboarding
             desc, prefs = ui_edit.apply_ops(rec.get("desc"), rec.get("prefs"), body.get("ops"))
         except ui_edit.EditError as e:
             return 400, {"error": str(e), "op_index": e.index, "detail": e.detail, "unchanged": True}
+        was = (rec.get("desc") or {}).get("version")
         rec = _stamp(dict(rec, desc=desc, prefs=prefs), name, who)
         _write(path, rec)
-        return 200, {"ok": True, "name": name, "saved_by": rec["saved_by"], "desc": desc, "prefs": prefs,
-                     "preview": ui_edit.preview_text(desc, prefs)}
+        out = {"ok": True, "name": name, "saved_by": rec["saved_by"], "desc": desc, "prefs": prefs,
+               "preview": ui_edit.preview_text(desc, prefs)}
+        if was != ui_schema.VERSION_V2 and (desc or {}).get("version") == ui_schema.VERSION_V2:
+            out["upgraded"] = "v1→v2"
+        return 200, out
     if op == "copy":
         src = body.get("from")
         if not isinstance(src, str) or not NAME_RE.match(src):

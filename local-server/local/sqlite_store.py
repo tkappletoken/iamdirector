@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sqlite3
 
@@ -60,6 +61,13 @@ CREATE TABLE IF NOT EXISTS user_spend_limits (
   updated_at TEXT
 );
 -- 本機報價（以前只放在程序記憶體 st.quotes）：App 重開之後核准卡還送得出去
+-- 每一件影片送出時記一筆（本機的「對帳」用：/api/charges）。只用自己的金鑰，所以沒有點數，只記上游報價
+CREATE TABLE IF NOT EXISTS local_charges (
+  job_id TEXT PRIMARY KEY,
+  quote_id TEXT,
+  upstream_cost TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 CREATE TABLE IF NOT EXISTS local_quotes (
   quote_id TEXT PRIMARY KEY,
   payload JSONB NOT NULL,
@@ -91,6 +99,12 @@ CREATE TABLE IF NOT EXISTS shot_takes (
 CREATE INDEX IF NOT EXISTS shot_takes_shot_idx ON shot_takes (tenant_id, project_id, shot_key, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS shot_takes_job_uniq ON shot_takes (tenant_id, job_id) WHERE job_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS shot_takes_picked_uniq ON shot_takes (tenant_id, COALESCE(CAST(project_id AS TEXT), ''), shot_key) WHERE picked;
+-- 素材的名稱與標籤（本機改的；上游那份素材本身不動）：/api/assets/update 寫一份覆寫值，/api/assets 列的時候疊上去
+CREATE TABLE IF NOT EXISTS local_asset_meta (
+  asset_id TEXT PRIMARY KEY,
+  patch JSONB NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 CREATE TABLE IF NOT EXISTS chain_runs (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -182,6 +196,7 @@ class LocalDB:
         if sqlite3.sqlite_version_info < (3, 35):
             raise RuntimeError("SQLite 版本太舊（需要 3.35 以上才有 RETURNING）：%s" % sqlite3.sqlite_version)
         self.path = path
+        self._private()
         raw = self._open()
         raw.executescript(SCHEMA)
         for table, col, typ in ADD_COLUMNS:
@@ -189,6 +204,18 @@ class LocalDB:
             if col not in have:
                 raw.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, typ))
         raw.close()
+
+    def _private(self):
+        try:
+            os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600))
+        except OSError:
+            pass
+        for p in (self.path, self.path + "-wal", self.path + "-shm"):
+            try:
+                if os.path.exists(p) and os.stat(p).st_mode & 0o077:
+                    os.chmod(p, 0o600)
+            except OSError:
+                pass
 
     def _open(self):
         raw = sqlite3.connect(self.path, detect_types=sqlite3.PARSE_DECLTYPES, timeout=10,

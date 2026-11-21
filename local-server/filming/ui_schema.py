@@ -1,4 +1,4 @@
-from . import ui_actions
+from . import ui_actions, ui_v2
 
 STORE_KEY = "ui-desc"
 VERSION = 1
@@ -10,6 +10,8 @@ MAX_ID = 32
 PANEL_KEYS = {"id", "title", "items"}
 ITEM_KEYS = {"text": {"type", "text"}, "step": {"type", "label", "action"}, "button": {"type", "label", "action"}}
 TOP_KEYS = {"version", "name", "panels"}
+VERSION_V2 = 2
+TOP_KEYS_V2 = TOP_KEYS | set(ui_v2.SECTIONS)
 
 class DescError(ValueError):
     pass
@@ -29,6 +31,8 @@ def _keys(d, allowed, where):
         raise DescError("%s 不認得的欄位 %s" % (where, "、".join(sorted(extra))))
 
 def is_default(desc):
+    if isinstance(desc, dict) and desc.get("version") == VERSION_V2 and any(k in desc for k in ui_v2.SECTIONS):
+        return False
     return desc is None or desc == {} or (isinstance(desc, dict) and not desc.get("panels"))
 
 def store_value(value):
@@ -38,6 +42,8 @@ def store_value(value):
 def strip_local(desc):
     if not desc:
         return desc
+    if desc.get("version") == VERSION_V2:
+        desc = {"version": VERSION, "name": desc["name"], "panels": desc["panels"]}
     panels = []
     for p in desc["panels"]:
         items = [it for it in p["items"] if it.get("action") not in ui_actions.LOCAL_ONLY]
@@ -46,15 +52,20 @@ def strip_local(desc):
     return dict(desc, panels=panels) if panels else None
 
 def client_actions(local=False):
-    return {k: {"call": v["call"], "spend": v["spend"], "label": v["label"]} for k, v in ui_actions.ACTIONS.items()
+    return {k: dict({"call": v["call"], "spend": v["spend"], "label": v["label"]}, **({"args": v["args"]} if v.get("args") else {}))
+            for k, v in ui_actions.ACTIONS.items() if local or not v.get("local")}
+
+def client_components(local=False):
+    return {k: {"label": v["label"], "mount": v["mount"]} for k, v in ui_actions.COMPONENTS.items()
             if local or not v.get("local")}
 
 def validate(desc):
     if is_default(desc):
         return None, {"actions": [], "confirm_actions": []}
-    _keys(desc, TOP_KEYS, "描述檔")
-    if desc.get("version") != VERSION:
-        raise DescError("version 要是 %d" % VERSION)
+    v2 = isinstance(desc, dict) and type(desc.get("version")) is int and desc.get("version") == VERSION_V2
+    _keys(desc, TOP_KEYS_V2 if v2 else TOP_KEYS, "描述檔")
+    if not v2 and desc.get("version") != VERSION:
+        raise DescError("version 要是 %d 或 %d" % (VERSION, VERSION_V2))
     name = _str(desc.get("name", ""), "name", MAX_LABEL, empty_ok=True)
     panels = desc.get("panels")
     if not isinstance(panels, list) or len(panels) > MAX_PANELS:
@@ -90,7 +101,16 @@ def validate(desc):
             clean.append({"type": t, "label": _str(it.get("label"), wi + ".label", MAX_LABEL), "action": act})
         out.append({"id": pid, "title": _str(p.get("title"), w + ".title", MAX_LABEL), "items": clean})
     acts = list(dict.fromkeys(used))
-    return ({"version": VERSION, "name": name, "panels": out},
+    top = {"version": VERSION, "name": name, "panels": out}
+    if v2:
+        top["version"] = VERSION_V2
+        for sec in ui_v2.SECTIONS:
+            if sec in desc:
+                try:
+                    top[sec] = ui_v2.validate_section(sec, desc[sec], ids)
+                except ui_v2.V2Error as e:
+                    raise DescError("%s（%s）" % (e, e.code)) from None
+    return (top,
             {"actions": acts, "confirm_actions": [a for a in acts if ui_actions.ACTIONS[a]["spend"] == "confirm"]})
 
 PREFS_KEY = "ui-prefs"

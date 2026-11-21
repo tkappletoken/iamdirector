@@ -12,6 +12,9 @@ _GUARD_HINTS = {
     503: "studio 那一側的服務或設定有問題（可能是會員資料庫沒設定，也可能是上游暫時不可用）。",
 }
 
+_COMING_SOON_HINT = ("導演台目前只開給內部帳號（coming_soon），開放時間另行公告。"
+                     "我的作品、下載與上架照常可以用；這一步不必重試。")
+
 class AppleTokenError(Exception):
 
     def __init__(self, message):
@@ -37,6 +40,8 @@ class ApiError(AppleTokenError):
             parts.append(self._flatten(detail))
         local = isinstance(self.payload, dict) and self.payload.get("local") is True
         hint = None if local and status == 403 else _GUARD_HINTS.get(status)
+        if status == 403 and isinstance(self.payload, dict) and self.payload.get("code") == "coming_soon":
+            hint = _COMING_SOON_HINT
         if hint:
             parts.append("→ %s" % hint)
         for n in self.notes:

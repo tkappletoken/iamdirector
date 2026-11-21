@@ -124,7 +124,7 @@ class Registry:
         for name in _LOCAL_FILE_TOOLS:
             self._tools.pop(name, None)
         if not self.local:
-            for name in _LOCAL_UI_TOOLS + _LOCAL_AGENT_TOOLS:
+            for name in _LOCAL_UI_TOOLS + _LOCAL_AGENT_TOOLS + _LOCAL_MEDIA_TOOLS:
                 self._tools.pop(name, None)
         self._tools.pop("session_logout", None)
         base = getattr(self.session, "public_url", None) or self.session.base_url
@@ -156,6 +156,9 @@ class Registry:
             self._h_asset_upload_remote, t.spends)
         if not self.local:
             for name in _LOCAL_DIRCTL_TOOLS:
+                self._tools.pop(name, None)
+        else:
+            for name in _LOCAL_UNREACHABLE:
                 self._tools.pop(name, None)
 
     def _h_asset_upload_remote(self, a):
@@ -322,6 +325,7 @@ class Registry:
         if self.local:
             self._add_ui_tools(add)
             self._add_agent_tools(add)
+            self._add_local_media_tools(add)
 
         add("take_list",
             "列一鏡（shot_key）或整個專案的候選（take）：狀態、品管報告、是不是定稿；best＝品管最好的那支。免費。",
@@ -1231,16 +1235,21 @@ class Registry:
         add("ui_edit",
             "細部編輯一份介面（預設 draft）：ops 照順序套用，每一步都過驗證器，任何一步不合法就整批不套用（回 op_index）。"
             "op：add_panel {id,title,items,at?}、remove_panel {panel}、add_item {panel,item,at?}、remove_item {panel,index|action}、"
-            "move {panel,to}／{panel,item,to,to_panel?}、rename {name}／{panel,title}／{panel,item,label}、set_pref {key,value}。免費。",
+            "move {panel,to}／{panel,item,to,to_panel?}、rename {name}／{panel,title}／{panel,item,label}、set_pref {key,value}；"
+            "版面（桌面版）：set_layout {panel,dock?,size?,collapsible?,collapsed?}（dock＝left／right／bottom／float、size＝s／m／l）、"
+            "set_main {split,slots}（split＝single／two／three，slots 數量要等於欄數、第一欄是 {component:'stage'}；能放的元件看 ui_actions_list 的 layout）。"
+            "版面的 op 會把 v1 描述檔升成 v2（回應帶 upgraded）。免費。",
             _obj({"ops": {"type": "array", "items": {"type": "object"}}, "name": s(None)}, ["ops"]), self._h_ui_edit)
         add("ui_preview",
             "一份介面的文字預覽（由上往下：面板 → 按鈕，花錢的標出來，最後是偏好）。截圖要等 e2e（還沒開放）。免費。",
             _obj({"name": s(None)}),
             lambda a: self._ui_preview(a.get("name") or "draft"))
         add("ui_save",
-            "把工作稿（from，預設 draft）存成一份正式的介面（name）。記成 Agent 存的。免費。",
-            _obj({"name": s(None), "from": s(None)}, ["name"]),
-            lambda a: wb.ui_desc_post({"op": "copy", "name": a["name"], "from": a.get("from") or "draft"}))
+            "把工作稿（from，預設 draft）存成一份正式的介面（name）；或直接給一份完整的描述檔（desc，可以是 version 2，"
+            "帶 layout／theme／flow，格式見 docs/ui-v2.md），伺服器照同一個驗證器整份驗過才存。記成 Agent 存的。免費。",
+            _obj({"name": s(None), "from": s(None), "desc": {"type": "object"}}, ["name"]),
+            lambda a: wb.ui_desc_post({"op": "save", "name": a["name"], "desc": a["desc"]}) if isinstance(a.get("desc"), dict)
+            else wb.ui_desc_post({"op": "copy", "name": a["name"], "from": a.get("from") or "draft"}))
         add("ui_apply",
             "套用一份介面：直接生效（描述檔面板開著時 5 秒內重畫），不需要使用者另外允許。套用前會自動存一份上一版的快照，"
             "所以隨時可以 ui_undo 還原、ui_reset 回預設。免費。",
@@ -1291,6 +1300,15 @@ class Registry:
             "替人挑一鏡的定稿（不花錢）：take 要是 agent_film_preview 列出的這一次拍片、這一鏡的版本。直接生效，記成 Agent 挑的"
             "（面板上寫「Agent 挑的」）；原本的定稿自動取消。挑錯了人可以在面板上再挑回來。回挑完之後的交片預覽（成片照新定稿重接）。",
             _obj({"run": S, "shot_key": S, "take": S}, ["run", "shot_key", "take"]), self._h_agent_pick)
+        add("work_run",
+            "一條龍：從一部作品一路拍到成片（報價 → 送件 → 等片 → 品管 → 交片），就是 Filming Agent 主迴圈的便利入口。"
+            "開拍給 project_id（範本作品的模型、解析度、送件設定照範本；一般作品要給 model）；續跑給 run（自己看片的話帶 "
+            "event={type:'checked', reports}；回覆提問帶 decision＝resume／stop／accept_best）。每次呼叫往下跑幾步就回："
+            "phase（done／running／needs_check／waiting_human／failed）、reason、next（下一步怎麼做，例如要人核准哪張卡：approve_url）；"
+            "done 時附交片預覽。錢照既有規則（核准卡、預先授權、Agent 直送和上限），Agent 改不了上限。",
+            _obj({"project_id": S, "model": S, "run": S, "event": {"type": "object"},
+                  "decision": {"type": "string", "enum": ["resume", "stop", "accept_best"]}}),
+            lambda a: wb.work_run(dict(a)), spends=True)
 
     def _h_agent_run(self, a):
         act = a.get("action")
@@ -1331,6 +1349,28 @@ class Registry:
         self.wb.take_pick(a["take"])
         return dict(self.wb.agent_film(a["run"]), picked={"shot_key": a["shot_key"], "take": a["take"], "by": "agent"},
                     undo="挑錯了：人在 App 的「Agent 拍片進度」面板上按「用這一版當定稿」就改回來")
+
+    def _add_local_media_tools(self, add):
+        wb = self.wb
+        add("video_concat",
+            "把幾支拍好的片（job id，照順序，2–30 支）接成一支，用這台電腦的 ffmpeg，**不花錢**。回 path（這台電腦上的檔案）"
+            "與 lossless（規格一致時無損直接接）。要接「這一次拍片的定稿」用 agent_film_preview 比較方便。",
+            _obj({"jobs": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 30},
+                  "name": {"type": "string"}}, ["jobs"]),
+            lambda a: wb.concat(a["jobs"], a.get("name")))
+        add("agent_settings",
+            "讀這台 App 的各個開關現在是什麼（主迴圈、Agent 直送、自動驗片、首幀接力、Agent 範圍、匯出引擎、接片引擎、介面描述檔）。"
+            "只能讀；切換只有使用者本人在 App 的設定頁「Agent」區塊裡做（打不開的功能就請他去那裡打開）。免費。",
+            _obj({}), self._h_agent_settings)
+
+    def _h_agent_settings(self, _a):
+        out = {}
+        for name in self.wb.LOCAL_SWITCHES:
+            try:
+                out[name] = self.wb.local_switch(name)
+            except Exception as e:
+                out[name] = {"error": str(e)[:200]}
+        return {"switches": out, "how_to_change": "只有使用者本人能切：請他打開 App 的設定頁，在「Agent」區塊或「匯出引擎」那一格改。"}
 
     def _ui_catalog(self):
         return self.wb.ui_desc_get(catalog=True)
@@ -1737,12 +1777,16 @@ _SPENDING_NAMES = ("video_confirm", "submit_approved", "image_generate", "audio_
                    "pitch_create")
 _DESTRUCTIVE_NAMES = ("project_delete", "asset_delete", "store_delete")
 _LOCAL_DIRCTL_TOOLS = ("dirctl_catalog", "dirctl_compose", "previs_rig", "shot_dirctl_set")
+_LOCAL_UNREACHABLE = ("export_request", "agent_pending_status",
+                      "image_outpaint", "post_process", "post_process_status", "post_process_fetch",
+                      "video_download_url", "post_process_download_url", "asset_download_url", "audio_music_download_url")
 _LOGOUT_NAMES = ("session_logout",)
 _TOPUP_NAMES = ("wallet_topup_intent",)
 _LOCAL_FILE_TOOLS = ("video_fetch", "post_process_fetch", "audio_music_fetch", "asset_fetch")
 _LOCAL_UI_TOOLS = ("ui_actions_list", "ui_get", "ui_compose", "ui_edit", "ui_preview", "ui_save", "ui_apply", "ui_reset",
                    "ui_undo", "ui_onboarding_status")
-_LOCAL_AGENT_TOOLS = ("agent_plan", "agent_run", "agent_answer", "agent_film_preview", "agent_pick")
+_LOCAL_AGENT_TOOLS = ("agent_plan", "agent_run", "agent_answer", "agent_film_preview", "agent_pick", "work_run")
+_LOCAL_MEDIA_TOOLS = ("video_concat", "agent_settings")
 
 class _NoLedger:
 

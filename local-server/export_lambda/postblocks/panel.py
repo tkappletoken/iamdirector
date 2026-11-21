@@ -17,8 +17,14 @@ LABELS = {
                        {"value": "smoothleft", "label": "往左滑"}, {"value": "smoothright", "label": "往右滑"}]}},
     "concat": {},
     "pad_black": {},
-    "white_flash": {"items": {"name": "白閃"}},
-    "meme_captions": {"items": {"name": "迷因字卡"}},
+    "white_flash": {"items": {"name": "白色閃光", "fields": {"start": {"name": "開始"}, "end": {"name": "結束"}}}},
+    "meme_captions": {"items": {"name": "迷因字卡", "max": 20, "fields": {
+        "text": {"name": "字卡文字", "max": 40, "placeholder": "字卡文字（40 字以內）"},
+        "start": {"name": "開始", "note": "秒數，或 twist、twist+0.3、end-1"},
+        "end": {"name": "結束", "note": "秒數，或 twist、twist+0.3、end-1"},
+        "pos": {"name": "位置", "values": [{"value": "top", "label": "上"}, {"value": "middle", "label": "中"},
+                                         {"value": "bottom", "label": "下"}]},
+        "style": {"name": "樣式", "values": [{"value": "meme", "label": "白字黑邊"}, {"value": "memebox", "label": "黑字白底"}]}}}},
     "video_fade": {"fade_in": {"name": "淡入（秒）"}, "fade_out": {"name": "淡出（秒）"}},
     "disclosure": {"disclosure": {"name": "AI 揭露片尾"}},
     "subtitles": {"mode": {"name": "字幕", "values": [
@@ -55,6 +61,9 @@ LABELS = {
                   "size": {"name": "大小（畫面寬度的比例）"}, "opacity": {"name": "不透明度"},
                   "margin": {"name": "邊距（畫面寬度的比例）"}, "start": {"name": "開始（秒）"}, "end": {"name": "結束（秒，空白＝到片尾）"}},
     "speed": {"factor": {"name": "倍速"}},
+    "dub_align": {"mode": {"name": "放不下時", "values": [{"value": "fit", "label": "先加速，還是放不下才剪尾巴"},
+                                                     {"value": "trim", "label": "不加速，直接剪到那一鏡結尾"}]},
+                  "max_speed": {"name": "最多加速幾倍"}},
     "cover": {"at": {"name": "取第幾秒（空白＝自動挑）"},
               "width": {"name": "寬度", "values": [{"value": 320, "label": "320"}, {"value": 480, "label": "480"},
                                                  {"value": 720, "label": "720"}, {"value": 1080, "label": "1080"}]},
@@ -94,7 +103,9 @@ PANEL = [
          "values": [{"value": True, "label": "加在片尾"}, {"value": False, "label": "不加"}]},
         {"field": "disclosure.text", "block": "disclosure", "control": "text", "label": "揭露文字", "max": 200,
          "placeholder": "只寫中性事實，例如：本片部分畫面使用 AI 生成工具製作。"}]},
-    {"no": "04", "title": "授權檢查", "fields": [{"field": "rights", "control": "custom", "label": "授權檢查"}]},
+    {"no": "04", "title": "授權檢查", "fields": [{"field": "rights", "control": "custom", "label": "授權檢查", "texts": {
+        "ok": "沒有問題", "warn": "{n} 項要確認", "where": "V1 第 {where} 段", "ack": "我確認過這些素材可以用在這部片",
+        "clean": "用到的參考圖都標了來源，第三方素材都標了可商用。"}}]},
     {"no": "05", "title": "這一集", "fields": [
         {"field": "series.show", "block": "series_titles", "control": "text", "label": "節目", "max": 40, "placeholder": "例：我的頻道名稱"},
         {"field": "series.season", "block": "series_titles", "control": "number", "label": "季", "min": 1, "max": 999},
@@ -109,6 +120,12 @@ PANEL = [
         {"field": "series.endOn", "block": "series_titles", "control": "switch", "label": "片尾字卡"},
         {"field": "series.publish", "control": "custom", "label": "上架說明與標籤"}]},
     {"no": "06", "title": "迷因字卡", "fields": [
-        {"field": "captions", "block": "meme_captions", "param": "items", "control": "custom", "label": "迷因字卡"},
-        {"field": "effects.white_flash", "block": "white_flash", "param": "items", "control": "custom", "label": "白閃"}]},
+        {"field": "captions", "block": "meme_captions", "param": "items", "control": "custom", "label": "迷因字卡",
+         "texts": {"on": "燒進畫面", "off": "不加", "add": "＋ 加一段字卡", "del": "刪掉這段字卡", "row": "第 {n} 段字卡"}},
+        {"field": "effects.white_flash", "block": "white_flash", "param": "items", "control": "custom", "label": "白閃",
+         "texts": {"label": "白色閃光（{start} → {end}）"}},
+        {"field": "twist", "block": "twist_detect", "param": "twist", "control": "custom", "label": "反轉點",
+         "texts": {"redo": "重新偵測", "detecting": "量反轉點中…",
+                   "none": "還沒有反轉點：字卡用了 twist 的話要先拖時間軸上的 ▼，或在上面填秒數"}},
+        {"field": "meme.one_click", "control": "custom", "label": "一鍵匯出迷因（9:16 1080p）"}]},
 ]
