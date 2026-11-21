@@ -24,47 +24,6 @@ const TRIPLE = {
   linux: { arm64: 'aarch64-unknown-linux-gnu', x64: 'x86_64-unknown-linux-gnu' },
 };
 
-const SERVER_FILES = [
-  'local/studio_local.py', 'local/sqlite_store.py',
-  'upstream.py', 'studio_store.py', 'studio_tools.py', 'storyboard.py', 'qc.py', 'page_strip.py',
-  'export_spec.py', 'export_lambda/render.py', 'export_lambda/twist.py', 'scripts/export_local.py', 'templates.py',
-  'cast_refs.py', 'shot_controls.py',
-  'takes.py', 'gen_retry.py', 'local/agent_exec.py', 'local/ui_profiles.py',
-  // the whole filming/ package (tools/oss/export-oss.mjs fails if a .py in filming/ or postblocks/ at the commit is missing here; filming/self_improve.py is excluded there)
-  'filming/__init__.py', 'filming/agent_cli.py', 'filming/agent_demo.py', 'filming/agent_loop.py', 'filming/blender.py',
-  'filming/blockout.py', 'filming/blockout_frames.py', 'filming/camera_moves.py', 'filming/camera_path.py',
-  'filming/camera_rigs.py', 'filming/contract.py', 'filming/dir_controls.py', 'filming/executor.py', 'filming/frames.py',
-  'filming/inbox.py', 'filming/lock_qc.py', 'filming/long_plan.py', 'filming/plan_cli.py', 'filming/qc_report.py',
-  'filming/registry.py', 'filming/scene.py', 'filming/shots.py', 'filming/ui_actions.py',
-  'filming/ui_cli.py', 'filming/ui_compose.py', 'filming/ui_edit.py', 'filming/ui_schema.py',
-  'ui2.html',
-  'previs/editor.js', 'previs/core.js', 'previs/vendor/three.module.min.js', 'previs/vendor/OrbitControls.js',
-  'previs/vendor/TransformControls.js', 'previs/vendor/mp4-muxer.mjs',
-  'approvals.py',
-  'cli/appletoken/__init__.py',
-  'cli/appletoken/core/__init__.py', 'cli/appletoken/core/api.py', 'cli/appletoken/core/errors.py',
-  'cli/appletoken/core/http.py', 'cli/appletoken/core/model_caps.py', 'cli/appletoken/core/poll.py',
-  'cli/appletoken/core/preflight.py',
-  'cli/appletoken/core/redact.py', 'cli/appletoken/core/session.py',
-  'cli/appletoken/mcp/__init__.py', 'cli/appletoken/mcp/activity.py', 'cli/appletoken/mcp/tools.py',
-  'fonts/NotoSansTC-Bold.otf', 'fonts/OFL.txt', 'fonts/README.md',
-  'export_lambda/postblocks/__init__.py', 'export_lambda/postblocks/audio_clip.py',
-  'export_lambda/postblocks/audio_fade.py', 'export_lambda/postblocks/base.py',
-  'export_lambda/postblocks/clip_trim.py', 'export_lambda/postblocks/compile.py',
-  'export_lambda/postblocks/concat.py', 'export_lambda/postblocks/disclosure.py',
-  'export_lambda/postblocks/encode.py', 'export_lambda/postblocks/fit.py', 'export_lambda/postblocks/fps.py',
-  'export_lambda/postblocks/loudness.py', 'export_lambda/postblocks/meme_captions.py',
-  'export_lambda/postblocks/mix.py', 'export_lambda/postblocks/music_duck.py',
-  'export_lambda/postblocks/pad_black.py', 'export_lambda/postblocks/pure.py',
-  'export_lambda/postblocks/subtitles.py', 'export_lambda/postblocks/titles.py',
-  'export_lambda/postblocks/twist_detect.py', 'export_lambda/postblocks/video_fade.py',
-  'export_lambda/postblocks/white_flash.py',
-  'export_lambda/postblocks/format.py', 'export_lambda/postblocks/seam_check.py',
-  'export_lambda/postblocks/subs.py', 'export_lambda/postblocks/transition.py',
-  'export_lambda/postblocks/color_grade.py', 'export_lambda/postblocks/cover.py',
-  'export_lambda/postblocks/speed.py', 'export_lambda/postblocks/watermark.py',
-  'export_lambda/postblocks/panel.py',
-];
 const PRUNE = ['test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'lib2to3', 'pydoc_data', 'unittest/test'];
 
 function sha256(file) {
@@ -101,11 +60,18 @@ async function fetchPython(platform, arch) {
 
 const COMMITTED = path.join(ROOT, 'local-server');
 
-function syncCommitted() {
+// The file list comes from local/server_manifest.py in the source folder (the iamdirector repo keeps the only copy).
+// -X utf8: the JSON has non-ASCII text and Windows consoles default to cp1252 (-I ignores PYTHONIOENCODING)
+const pyBin = (pyDir) => (process.platform === 'win32' ? path.join(pyDir, 'python.exe') : path.join(pyDir, 'bin', 'python3'));
+function serverFiles(pyDir, src) {
+  return JSON.parse(execFileSync(pyBin(pyDir), ['-I', '-B', '-X', 'utf8', path.join(src, 'local', 'server_manifest.py'), '--json'],
+    { encoding: 'utf8' })).files;
+}
+
+function syncCommitted(files) {
   const src = process.env.IAMDIRECTOR_LOCAL_SERVER_DIR;
-  if (!src) throw new Error('--sync 要設 IAMDIRECTOR_LOCAL_SERVER_DIR（iamdirector repo）');
   fs.rmSync(COMMITTED, { recursive: true, force: true });
-  for (const f of SERVER_FILES) {
+  for (const f of files) {
     fs.mkdirSync(path.dirname(path.join(COMMITTED, f)), { recursive: true });
     fs.copyFileSync(path.join(src, f), path.join(COMMITTED, f));
   }
@@ -114,12 +80,10 @@ function syncCommitted() {
   console.log('local-server/ 已同步到 iamdirector ' + head);
 }
 
-function copyServer() {
-  const src = process.env.IAMDIRECTOR_LOCAL_SERVER_DIR || COMMITTED;
-  if (!fs.existsSync(path.join(src, 'local', 'studio_local.py'))) throw new Error('找不到本機伺服器的檔：' + src);
+function copyServer(src, files) {
   const out = path.join(VENDOR, 'local-server');
   fs.rmSync(out, { recursive: true, force: true });
-  for (const f of SERVER_FILES) {
+  for (const f of files) {
     const to = path.join(out, f);
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.copyFileSync(path.join(src, f), to);
@@ -131,36 +95,26 @@ function copyServer() {
   return out;
 }
 
-function smoke(pyDir, serverDir) {
-  const py = process.platform === 'win32' ? path.join(pyDir, 'python.exe') : path.join(pyDir, 'bin', 'python3');
-  execFileSync(py, ['-I', '-B', '-c',
-    'import sys; sys.path[:0]=[sys.argv[1]+"/local", sys.argv[1]]; import studio_local; print("ok")'
-    // studio_local loads these lazily (export, cast refs): import them here so a missing file fails the build
-    + '; import postblocks, cast_refs, shot_controls, takes, gen_retry, filming, agent_exec, ui_profiles'
-    + '; assert filming.__file__, "filming/__init__.py missing (namespace package)"'
-    + '; import pkgutil, importlib; [importlib.import_module("filming." + m.name) for m in pkgutil.iter_modules(filming.__path__)]'
-    + '; from filming import agent_loop, blockout_frames'
-    + '; assert postblocks.catalog()["blocks"]'   // catalog() imports postblocks/panel.py lazily
-    + '; print("lazy modules ok")', serverDir],
-  { stdio: 'inherit' });
-  execFileSync(py, ['-I', '-B', '-c', [
-    'import sys; sys.path.insert(0, sys.argv[1] + "/cli")',
-    'from appletoken.core import Client, model_caps; from appletoken.core.session import Session',
-    'from appletoken.mcp import tools as t',
-    's = Session("x" * 40, base_url="http://127.0.0.1:1", kind="token", register=False)',
-    'r = t.Registry(s, allow_spend=True, remote=True, local=True, client=Client(s))',
-    'need = {"create_work", "quote", "request_approval", "submit_approved", "status", "result"}',
-    'assert need <= set(r.names()), need - set(r.names())',
-    'assert "appletoken.mcp.server" not in sys.modules and "mcp" not in sys.modules',
-    'print("mcp tools ok:", len(r.names()))',
-  ].join('\n'), serverDir], { stdio: 'inherit' });
+// local/smoke_packaged.py: every listed file is there and imports, no MCP SDK, the /mcp tool table, switches default off,
+// and (when this arch's bundled ffmpeg is already in vendor/) an H.264 encoder
+function smoke(pyDir, serverDir, arch) {
+  const ff = path.join(VENDOR, `ffmpeg-${arch}`, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  if (fs.existsSync(ff) && process.platform !== 'win32') fs.chmodSync(ff, 0o755);   // CI artifacts lose the exec bit
+  execFileSync(pyBin(pyDir), ['-I', '-B', '-X', 'utf8', path.join(serverDir, 'local', 'smoke_packaged.py'), serverDir,
+    ...(fs.existsSync(ff) ? ['--ffmpeg', ff] : []), '--json'], { stdio: 'inherit' });
 }
 
-if (process.argv.includes('--sync')) { syncCommitted(); process.exit(0); }
+const sync = process.argv.includes('--sync');
+const src = process.env.IAMDIRECTOR_LOCAL_SERVER_DIR || (sync ? '' : COMMITTED);
+if (!src) throw new Error('--sync 要設 IAMDIRECTOR_LOCAL_SERVER_DIR（iamdirector repo）');
+if (!fs.existsSync(path.join(src, 'local', 'server_manifest.py'))) throw new Error('找不到 local/server_manifest.py：' + src);
+const hostPy = await fetchPython(process.platform, process.arch);
+const files = serverFiles(hostPy, src);
+if (sync) { syncCommitted(files); process.exit(0); }
 const arches = process.argv.slice(2).length ? process.argv.slice(2) : [process.arch];
-const serverDir = copyServer();
+const serverDir = copyServer(src, files);
 for (const arch of arches) {
-  const py = await fetchPython(process.platform, arch);
-  if (arch === process.arch) smoke(py, serverDir);
+  if (arch === process.arch) smoke(hostPy, serverDir, arch);
+  else await fetchPython(process.platform, arch);
   console.log(`python-${arch} 準備好了`);
 }

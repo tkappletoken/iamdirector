@@ -1,11 +1,12 @@
 // Sync local-server/ from the iamdirector web repo at a given commit.
-// Only the files listed in SERVER_FILES (scripts/prepare-local-server.mjs) are copied, and comments are removed;
+// Only the files listed by local/server_manifest.py at that commit are copied, and comments are removed;
 // code is left byte-for-byte as is. Third-party vendor files are copied unchanged.
 // The developer guide (docs/desktop-oss-guide.md) is copied unchanged to docs/DEVELOPERS.md.
 //
 //   cd tools/oss && npm ci
 //   node tools/oss/export-oss.mjs <web repo> <commit>
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -18,10 +19,6 @@ const OUT = path.join(ROOT, 'local-server');
 const [WEB, COMMIT] = process.argv.slice(2);
 if (!WEB || !COMMIT) { console.error('usage: node tools/oss/export-oss.mjs <web repo> <commit>'); process.exit(2); }
 
-const prep = fs.readFileSync(path.join(ROOT, 'scripts', 'prepare-local-server.mjs'), 'utf8');
-const list = prep.match(/const SERVER_FILES = \[([\s\S]*?)\];/);
-if (!list) throw new Error('SERVER_FILES not found in scripts/prepare-local-server.mjs');
-const FILES = [...list[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
 const KEEP_AS_IS = [/\/vendor\//, /\.min\.js$/];
 
 // Cut [start, end) ranges; drop the whole line when nothing else is on it, otherwise also the whitespace before it
@@ -82,15 +79,28 @@ function transform(f, buf) {
 }
 
 const sha = execFileSync('git', ['-C', WEB, 'rev-parse', '--verify', `${COMMIT}^{commit}`], { encoding: 'utf8' }).trim();
+// The file list is local/server_manifest.py run on a clean tree of that commit (it walks its own tree, not the web checkout)
+const TREE = fs.mkdtempSync(path.join(os.tmpdir(), 'export-oss-'));
+let FILES, NOT_PACKED;
+// Public but not packed into the app: developer tools the guide refers to (each must be in the manifest's not_packed)
+const PUBLIC_ONLY = ['local/dev_fake_upstream.py'];
+try {
+  execFileSync('tar', ['-x', '-C', TREE], { input: execFileSync('git', ['-C', WEB, 'archive', sha], { maxBuffer: 1 << 30 }) });
+  if (!fs.existsSync(path.join(TREE, 'local', 'server_manifest.py'))) throw new Error(`no local/server_manifest.py at ${sha.slice(0, 7)}`);
+  ({ files: FILES, not_packed: NOT_PACKED } = JSON.parse(execFileSync('python3',
+    ['-I', '-B', path.join(TREE, 'local', 'server_manifest.py'), '--json'], { encoding: 'utf8' })));
+} finally {
+  fs.rmSync(TREE, { recursive: true, force: true });
+}
 // Packages imported as a whole: every .py in them has to ship, or an import fails only when the feature is used
 // Not shipped: self_improve.py is a production ops tool (instance id, AWS profile, host paths); nothing here imports it
 const NOT_SHIPPED = ['filming/self_improve.py'];
 const shipped = NOT_SHIPPED.filter((f) => FILES.includes(f));
-if (shipped.length) throw new Error('must not be in SERVER_FILES: ' + shipped.join(', '));
+if (shipped.length) throw new Error('must not be in the manifest: ' + shipped.join(', '));
 const missing = ['filming', 'export_lambda/postblocks'].flatMap((dir) =>
   execFileSync('git', ['-C', WEB, 'ls-tree', '--name-only', `${sha}:${dir}`], { encoding: 'utf8' })
     .split('\n').filter((n) => n.endsWith('.py')).map((n) => dir + '/' + n)).filter((f) => !FILES.includes(f) && !NOT_SHIPPED.includes(f));
-if (missing.length) throw new Error('not in SERVER_FILES: ' + missing.join(', '));
+if (missing.length) throw new Error('not in the manifest: ' + missing.join(', '));
 // Docstrings and strings ship verbatim, so the final output is scanned before anything is written.
 // INTERNAL_NAMES matches tests/test_oss_clean.py in the web repo
 const INTERNAL_NAMES = ['導演指揮', '指揮線', 'Appletoken指揮', '模組化畫面', '模組化M2', 'M2生成', '導演控制後端', '影片助手',
@@ -102,7 +112,9 @@ const LEAKS = {
   'AWS account': /arn:aws:[a-z0-9-]*:[a-z0-9-]*:\d{12}/g,
   'internal name': new RegExp(INTERNAL_NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g'),
 };
-const out = FILES.map((f) => [f, transform(f, execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 }))]);
+const notListed = PUBLIC_ONLY.filter((f) => !(f in NOT_PACKED));
+if (notListed.length) throw new Error('public-only files must be in the manifest not_packed: ' + notListed.join(', '));
+const out = [...FILES, ...PUBLIC_ONLY].map((f) => [f, transform(f, execFileSync('git', ['-C', WEB, 'show', `${sha}:${f}`], { maxBuffer: 64 << 20 }))]);
 const GUIDE = 'docs/desktop-oss-guide.md';
 const guide = execFileSync('git', ['-C', WEB, 'show', `${sha}:${GUIDE}`], { maxBuffer: 64 << 20 });
 const leaks = [];
@@ -122,4 +134,4 @@ for (const [f, buf] of out) {
 fs.writeFileSync(path.join(OUT, 'SOURCE_COMMIT'), 'oss\n');
 fs.mkdirSync(path.join(ROOT, 'docs'), { recursive: true });
 fs.writeFileSync(path.join(ROOT, 'docs', 'DEVELOPERS.md'), guide);
-console.log(`local-server/: ${FILES.length} files from ${sha.slice(0, 7)}; docs/DEVELOPERS.md from ${GUIDE}`);
+console.log(`local-server/: ${FILES.length} files + ${PUBLIC_ONLY.length} public-only from ${sha.slice(0, 7)}; docs/DEVELOPERS.md from ${GUIDE}`);

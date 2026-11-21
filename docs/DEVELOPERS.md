@@ -174,6 +174,15 @@
 * `npm run prepare:local`：準備本機伺服器時，會用附的 Python 以 `python -I` 實際 import 一次 `studio_local`（印出 `ok`），
   缺檔或 import 了第三方套件會在這一步就失敗。
 * 單獨跑伺服器做手動測試時，`--gateway-base` 可以指向你自己在 127.0.0.1 起的假上游，不打真的 API、不花錢。
+  伺服器原始碼附了一支開發用的假上游 `local/dev_fake_upstream.py`（只用標準庫、不進 App）。它印一行
+  `{"ready": true, "port": N, "base": "http://127.0.0.1:N/v2", "key_file": "…"}`，只認自己產生、寫在 `key_file`（0600）的那把假金鑰：
+
+      python3 local/dev_fake_upstream.py --key-file /tmp/fake-key      # 另一個終端機
+      python3 -I local/studio_local.py --data-dir /tmp/iad --gateway-base http://127.0.0.1:N/v2
+      {"op": "init", "token": "<自己產生 32 字元以上>", "key": "<fake-key 的內容>"}   ← 貼進 stdin
+
+  目錄只有一個影片模型（`siraya/Seedance-2.0`），每次報價 3.00（`--price` 可改），有 ffmpeg 時成片是一支 2 秒的測試畫面。
+  從零接上 MCP、走完訪談到交片的完整紀錄見 [agent-first-run.md](agent-first-run.md)。
 * **`local-server/` 是從上游同步過來的**（版本記在 `local-server/SOURCE_COMMIT`）。要改它的話，請發 issue 或 PR 說明改了什麼、為什麼，
   維護者會在上游改好再同步過來；直接改 `local-server/` 的檔，下一次同步會被蓋掉。
 * 新功能照第 1 節的原則：開關預設關、壞了退回、舊碼不刪。

@@ -26,10 +26,11 @@ FAILED = ("failed", "error", "cancelled", "canceled", "generation_failed")
 
 class LocalExecutor:
     def __init__(self, port, secret, *, model, aspect_ratio="9:16", resolution="720p", project_id=None, ids=None,
-                 timeout=30, caps=None, frames=None, relay=None, relay_cache=None):
+                 timeout=30, caps=None, frames=None, relay=None, relay_cache=None, extra=None):
         self.base = "http://127.0.0.1:%d" % port
         self._secret = secret
         self.model, self.aspect_ratio, self.resolution = model, aspect_ratio, resolution
+        self.extra = {k: v for k, v in (extra or {}).items() if k in PAYLOAD_EXTRA}
         self.project_id = project_id
         self.ids = ids if ids is not None else {}
         self.timeout = timeout
@@ -181,6 +182,7 @@ class LocalExecutor:
     def _body_base(self, req):
         base = {"model": self.model, "prompt": req["prompt"], "seconds": int(round(req["seconds"])),
                 "aspect_ratio": self.aspect_ratio, "resolution": self.resolution, "require_confirmation": True}
+        base.update(self.extra)
         desc = req.get("controls")
         if not desc:
             return base
@@ -324,8 +326,28 @@ class WithQC:
         return reports
 
 RUN_ID = re.compile(r"^agr_[0-9a-f]{24}$")
+NEXT_DRAFT = ("這只是草稿：你只給了一句需求，規劃把整句平均切段、沒有拆鏡。請先把需求拆成鏡頭表，"
+              "寫成 input={\"version\":1,\"segments\":[{\"prompt\":…,\"seconds\":…},…]}（request 只是說明），"
+              "再呼叫一次 agent_plan 看預算，確定了才 agent_run(action=start)")
 START_KEYS = {"request", "input", "caps", "has_cast_refs", "max_retakes", "target_seconds", "model", "aspect_ratio",
-              "resolution", "project_id", "budget", "storyboard", "cast"}
+              "resolution", "project_id", "budget", "storyboard", "cast", "payload_extra"}
+PAYLOAD_EXTRA = ("negative_prompt", "generate_audio")
+
+def clean_extra(v):
+    if v is None:
+        return {}
+    if not isinstance(v, dict) or set(v) - set(PAYLOAD_EXTRA):
+        raise ValueError("payload_extra 只收 %s" % "、".join(PAYLOAD_EXTRA))
+    out = {}
+    if v.get("negative_prompt") is not None:
+        if not isinstance(v["negative_prompt"], str) or len(v["negative_prompt"]) > 2000:
+            raise ValueError("payload_extra.negative_prompt 要是 2000 字以內的字串")
+        out["negative_prompt"] = v["negative_prompt"]
+    if v.get("generate_audio") is not None:
+        if not isinstance(v["generate_audio"], bool):
+            raise ValueError("payload_extra.generate_audio 要是 true／false")
+        out["generate_audio"] = v["generate_audio"]
+    return out
 STEP_KEYS = {"run", "decision", "event"}
 CALLER_EVENTS = ("checked", "interrupt", "controls")
 _GUARD = threading.Lock()
@@ -362,7 +384,7 @@ def _executor(rec, port, secret, caps_of, frames, relay=None):
     e = rec["exec"]
     return LocalExecutor(port, secret, model=e["model"], aspect_ratio=e["aspect_ratio"], resolution=e["resolution"],
                          project_id=e.get("project_id"), ids=rec["ids"], caps=caps_of(e["model"]) if caps_of else None,
-                         frames=frames, relay=relay, relay_cache=rec.setdefault("relay_by_take", {}))
+                         frames=frames, relay=relay, relay_cache=rec.setdefault("relay_by_take", {}), extra=e.get("extra"))
 
 _RENDERING = set()
 
@@ -518,8 +540,11 @@ def film_shots(data_dir, run):
     if not rec:
         return None
     st = rec["state"]
+    segs = {g.get("key"): g for g in ((st.get("plan") or {}).get("segments") or []) if isinstance(g, dict)}
     return {"run": run, "phase": st.get("phase"), "project_id": (rec.get("exec") or {}).get("project_id"),
-            "shots": [{"key": s["key"], "takes": [t["take"] for t in s.get("takes") or [] if t.get("take")]}
+            "request": st.get("request"), "model": (rec.get("exec") or {}).get("model"),
+            "shots": [{"key": s["key"], "takes": [t["take"] for t in s.get("takes") or [] if t.get("take")],
+                       "prompt": (segs.get(s["key"]) or {}).get("prompt"), "seconds": (segs.get(s["key"]) or {}).get("seconds")}
                       for s in st.get("shots") or []]}
 
 def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpeg=None, render=None, env=None,
@@ -556,7 +581,8 @@ def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpe
         return 200, {"dry_run": True, "summary": agent_loop.summary(st), "totals": p["totals"], "warnings": st["warnings"],
                      "segments": [{k: s.get(k) for k in ("key", "seconds", "prompt", "first_frame")} for s in p["segments"]],
                      "seams": p["seams"], "must_ask": st.get("must_ask") or [], "controls_gaps": st.get("controls_gaps") or {},
-                     "next": "要開拍就 agent_run(action=start, 同樣的 request／input／storyboard＋model)；花錢照核准卡與上限"}
+                     "next": NEXT_DRAFT if "script_draft" in st["warnings"] else
+                     "要開拍就 agent_run(action=start, 同樣的 request／input／storyboard＋model)；花錢照核准卡與上限"}
     if op == "start":
         extra = set(body) - START_KEYS
         if extra:
@@ -567,6 +593,10 @@ def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpe
         bud = body.get("budget")
         if isinstance(bud, dict) and "auto" in bud:
             return 400, {"error": "這裡沒有 auto：要不要自動核准由核准卡的預先授權決定（你本人在 App 裡設）"}
+        try:
+            extra = clean_extra(body.get("payload_extra"))
+        except ValueError as e:
+            return 400, {"error": str(e)}
         run = "agr_" + secrets.token_hex(12)
         try:
             st = agent_loop.start(body.get("request"), body.get("input"), body.get("caps"), budget=bud,
@@ -586,6 +616,8 @@ def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpe
         rec = {"state": st, "ids": {}, "notes": [], "exec": {
             "model": model.strip(), "aspect_ratio": body.get("aspect_ratio") or "9:16",
             "resolution": body.get("resolution") or "720p", "project_id": body.get("project_id")}}
+        if extra:
+            rec["exec"]["extra"] = extra
         event = None
     elif op == "step":
         extra = set(body) - STEP_KEYS

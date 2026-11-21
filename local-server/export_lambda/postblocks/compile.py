@@ -105,6 +105,7 @@ def compile_pipeline(pipe, files, probes, caps, workdir, strict=True, fontsdir=N
     alabels = ["[sil]"]
     c.graph.append(mixer[0].silence(mixer[1], c))
     fader = next((blk for blk, _p in blocks if blk.id == "audio_fade"), None)
+    aligner = _block(blocks, "dub_align")
     duck = _block(blocks, "music_duck")
     lanes = {}
     for k, a in enumerate(spec["audio"]):
@@ -114,6 +115,8 @@ def compile_pipeline(pipe, files, probes, caps, workdir, strict=True, fontsdir=N
             continue
         c.argv += clip[0].input_args(clip[1], c, a, files[a["key"]], pr.get("demuxer"))
         fl = fader.audio_clip({}, c, k, a) if fader else ""
+        if aligner:
+            fl += aligner[0].audio_clip(aligner[1], c, k, a)
         c.graph.append(clip[0].segment(clip[1], c, k, a, c.idx, fl))
         alabels.append("[a%d]" % k)
         lanes.setdefault(a.get("lane") or "A1", []).append("[a%d]" % k)

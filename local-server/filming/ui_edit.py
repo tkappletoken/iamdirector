@@ -1,6 +1,6 @@
 import copy
 
-from . import ui_actions, ui_schema
+from . import ui_actions, ui_schema, ui_v2
 
 MAX_OPS = 50
 OPS = {
@@ -11,7 +11,10 @@ OPS = {
     "move": {"op", "panel", "item", "to", "to_panel"},
     "rename": {"op", "name", "panel", "title", "item", "label"},
     "set_pref": {"op", "key", "value"},
+    "set_layout": {"op", "panel"} | ui_v2.PANEL_LAYOUT_KEYS,
+    "set_main": {"op"} | ui_v2.MAIN_KEYS,
 }
+LAYOUT_OPS = ("set_layout", "set_main")
 PREF_KEYS = ("density", "lang", "show_budget", "previs", "agent_panel", "hide")
 
 class EditError(ValueError):
@@ -57,8 +60,15 @@ def _one(desc, prefs, op, i):
             raise EditError(i, "已經有面板 %r" % op.get("id"))
         panels.insert(_at(op.get("at"), len(panels), i), {"id": op.get("id"), "title": op.get("title"), "items": op.get("items")})
     elif kind == "remove_panel":
-        n, _p = _panel(desc, op.get("panel"), i)
+        n, p = _panel(desc, op.get("panel"), i)
         panels.pop(n)
+        lay = desc.get("layout")
+        if lay and p["id"] in (lay.get("panels") or {}):
+            del lay["panels"][p["id"]]
+            if not lay["panels"]:
+                del lay["panels"]
+            if not lay:
+                del desc["layout"]
     elif kind == "add_item":
         _n, p = _panel(desc, op.get("panel"), i)
         p["items"].insert(_at(op.get("at"), len(p["items"]), i), op.get("item"))
@@ -91,6 +101,16 @@ def _one(desc, prefs, op, i):
             raise EditError(i, "set_pref 的 key 只能是 %s" % "／".join(PREF_KEYS))
         prefs = dict(prefs or ui_schema.PREFS_DEFAULT)
         prefs[op["key"]] = op.get("value")
+    elif kind == "set_layout":
+        _panel(desc, op.get("panel"), i)
+        cfg = {k: op[k] for k in ui_v2.PANEL_LAYOUT_KEYS if k in op}
+        if not cfg:
+            raise EditError(i, "set_layout 至少要給 %s 其中一個" % "／".join(sorted(ui_v2.PANEL_LAYOUT_KEYS)))
+        desc["version"] = ui_schema.VERSION_V2
+        desc.setdefault("layout", {}).setdefault("panels", {}).setdefault(op["panel"], {}).update(cfg)
+    elif kind == "set_main":
+        desc["version"] = ui_schema.VERSION_V2
+        desc.setdefault("layout", {})["main"] = {k: op.get(k) for k in ("split", "slots")}
     return desc, prefs
 
 def apply_ops(desc, prefs, ops):
@@ -111,8 +131,68 @@ def apply_ops(desc, prefs, ops):
         pf["confirm_actions"] = ui_schema.validate(cur)[1]["confirm_actions"]
     return cur, pf
 
+DOCK_LABEL = {"float": "浮動", "left": "左側", "right": "右側", "bottom": "底部"}
+SIZE_LABEL = {"s": "小", "m": "中", "l": "大"}
+SPLIT_LABEL = {"single": "單欄", "two": "兩欄", "three": "三欄"}
+BASE_LABEL = {"dark": "暗色", "light": "亮色"}
+STEP_LABEL = {"story": "故事", "cast": "角色", "board": "分鏡", "generate": "生成", "sound": "聲音", "edit": "剪輯字幕",
+              "publish": "上架"}
+
+def _v2_lines(desc):
+    if not isinstance(desc, dict) or desc.get("version") != ui_schema.VERSION_V2:
+        return []
+    out = []
+    lay = desc.get("layout") or {}
+    if lay.get("panels"):
+        parts, rest = [], False
+        for p in desc.get("panels") or []:
+            cfg = lay["panels"].get(p["id"])
+            if not cfg:
+                rest = True
+                continue
+            bits = [DOCK_LABEL[cfg.get("dock", "float")]] + ([SIZE_LABEL[cfg["size"]]] if "size" in cfg else [])
+            bits += (["不可收合"] if cfg.get("collapsible") is False else []) + (["一開始收著"] if cfg.get("collapsed") else [])
+            parts.append("%s → %s" % (p["title"], "・".join(bits)))
+        out.append("版面：" + "；".join(parts + (["其他面板：浮動"] if rest else [])))
+    if lay.get("main"):
+        m = lay["main"]
+        slots = ["%s%s" % (ui_actions.COMPONENTS[s["component"]]["label"], "（%s）" % SIZE_LABEL[s["size"]] if "size" in s else "")
+                 for s in m["slots"]]
+        out.append("主區：%s｜%s" % (SPLIT_LABEL[m["split"]], "｜".join(slots)))
+    th = desc.get("theme")
+    if th is not None:
+        bits = [BASE_LABEL[th.get("base") or "dark"]]
+        if "font_scale" in th:
+            bits.append("字級 %s" % th["font_scale"])
+        if "spacing" in th:
+            bits.append("間距 %s" % th["spacing"])
+        if th.get("colors"):
+            bits.append("改了 %s" % "／".join(k for k in ui_v2.COLOR_KEYS if k in th["colors"]))
+        low = min(ui_v2.contrast_report(th), key=lambda r: r["ratio"] / r["min"])
+        out.append("主題：%s；離門檻最近的對比 %.1f（%s，門檻 %g）" % ("、".join(bits), low["ratio"], low["pair"], low["min"]))
+    fl = desc.get("flow")
+    if fl and fl.get("steps"):
+        groups, used, dflt = [], set(), []
+        for s in fl["steps"]:
+            name = s.get("label") or STEP_LABEL[s["step"]]
+            used.add(s["step"])
+            if s.get("merge_with") and groups:
+                groups[-1] += "＋" + name
+            else:
+                groups.append(name)
+            if s.get("defaults"):
+                kv = ["%s=%s" % (k, "、".join(map(str, v)) if isinstance(v, list) else v) for k, v in s["defaults"].items()]
+                dflt.append("%s %s" % (name, "、".join(kv)))
+        line = "流程：" + " → ".join(groups)
+        skip = [STEP_LABEL[x] for x in ui_v2.STEPS if x not in used]
+        line += ("；跳過：%s" % "、".join(skip)) if skip else ""
+        line += ("；預設：%s" % "；".join(dflt)) if dflt else ""
+        out.append(line)
+    return out
+
 def preview_text(desc, prefs=None):
-    if not desc or not desc.get("panels"):
+    v2 = _v2_lines(desc)
+    if not desc or (not desc.get("panels") and not v2):
         return "（預設框架：沒有自訂面板）"
     lines = ["《%s》" % (desc.get("name") or "自訂介面")]
     hide = set((prefs or {}).get("hide") or [])
@@ -127,6 +207,7 @@ def preview_text(desc, prefs=None):
             tag += "（被 prefs 藏起來）" if a in hide else ""
             parts.append(it["label"] + tag)
         lines.append("■ %s：%s" % (p["title"], " → ".join(parts)))
+    lines += v2
     if prefs:
         lines.append("偏好：密度 %s、語言 %s、顯示花費 %s、藏起來 %s" % (
             prefs["density"], prefs["lang"], "是" if prefs["show_budget"] else "否",
@@ -134,7 +215,8 @@ def preview_text(desc, prefs=None):
     return "\n".join(lines)
 
 def actions_catalog():
-    return {"actions": [{"action": k, "label": v["label"], "spend": v["spend"], "feature": v["feature"]}
+    return {"actions": [dict({"action": k, "label": v["label"], "spend": v["spend"], "feature": v["feature"]},
+                             **({"context": ui_actions.ARG_KINDS[v["args"]]} if v.get("args") else {}))
                         for k, v in ui_actions.ACTIONS.items()],
             "item_types": {"text": "說明文字（text）", "step": "步驟標籤（label，可以不帶 action）", "button": "按鈕（label＋action）"},
             "limits": {"panels": ui_schema.MAX_PANELS, "items": ui_schema.MAX_ITEMS, "label": ui_schema.MAX_LABEL,
@@ -142,4 +224,8 @@ def actions_catalog():
             "prefs": {"density": list(ui_schema.PREFS_ENUM["density"]), "lang": list(ui_schema.PREFS_ENUM["lang"]),
                       "show_budget": "true／false", "previs": "true／false", "agent_panel": "true／false",
                       "hide": "動作名稱的陣列"},
-            "ops": sorted(OPS)}
+            "ops": sorted(OPS),
+            "layout": {"dock": list(ui_v2.DOCKS), "size": list(ui_v2.SIZES), "split": list(ui_v2.SPLITS),
+                       "components": sorted(k for k, v in ui_actions.COMPONENTS.items() if v["mount"] == "inline"),
+                       "first_slot": ui_v2.MAIN_FIRST,
+                       "note": "set_layout／set_main 會把 v1 的描述檔升成 v2；網頁版存檔時只留面板（版面只在桌面版）"}}

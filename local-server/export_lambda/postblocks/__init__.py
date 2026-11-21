@@ -28,10 +28,11 @@ from .watermark import Watermark
 from .color_grade import ColorGrade
 from .speed import Speed
 from .cover import Cover
+from .dub_align import DubAlign
 
 REGISTRY = {b.id: b for b in (TwistDetect, SeamCheck, Format, ClipTrim, Fps, Fit, Transition, Concat, PadBlack, WhiteFlash, MemeCaptions, VideoFade,
                               Disclosure, Subtitles, Titles, AudioClip, AudioFade, MusicDuck, Mix, Loudness, Encode)}
-for _b in (ColorGrade, Watermark, Speed, Cover):
+for _b in (ColorGrade, Watermark, Speed, Cover, DubAlign):
     REGISTRY[_b.id] = _b
 del _b
 

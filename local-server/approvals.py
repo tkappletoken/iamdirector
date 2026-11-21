@@ -74,6 +74,7 @@ def describe(card):
     bits = ["付款方：" + payer_text(card.get("payer")),
             "金額：%s %s%s" % (fmt(amount(card)), unit, "（帶參考影片，實際可能較高）" if s.get("open_ended") else ""),
             "模型：%s" % (s.get("model") or "—"),
+            ("內容：驗片（%s 格）" % s["frames"]) if s.get("frames") else
             "秒數：%s" % (("%s 秒" % s["seconds"]) if s.get("seconds") not in (None, "") else "—")]
     return "；".join(bits)
 
