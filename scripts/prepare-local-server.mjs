@@ -60,10 +60,11 @@ async function fetchPython(platform, arch) {
 
 const COMMITTED = path.join(ROOT, 'local-server');
 
-// The file list comes from local/server_manifest.py in the source folder (the iamdirector repo keeps the only copy)
+// The file list comes from local/server_manifest.py in the source folder (the iamdirector repo keeps the only copy).
+// -X utf8: the JSON has non-ASCII text and Windows consoles default to cp1252 (-I ignores PYTHONIOENCODING)
 const pyBin = (pyDir) => (process.platform === 'win32' ? path.join(pyDir, 'python.exe') : path.join(pyDir, 'bin', 'python3'));
 function serverFiles(pyDir, src) {
-  return JSON.parse(execFileSync(pyBin(pyDir), ['-I', '-B', path.join(src, 'local', 'server_manifest.py'), '--json'],
+  return JSON.parse(execFileSync(pyBin(pyDir), ['-I', '-B', '-X', 'utf8', path.join(src, 'local', 'server_manifest.py'), '--json'],
     { encoding: 'utf8' })).files;
 }
 
@@ -99,7 +100,7 @@ function copyServer(src, files) {
 function smoke(pyDir, serverDir, arch) {
   const ff = path.join(VENDOR, `ffmpeg-${arch}`, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
   if (fs.existsSync(ff) && process.platform !== 'win32') fs.chmodSync(ff, 0o755);   // CI artifacts lose the exec bit
-  execFileSync(pyBin(pyDir), ['-I', '-B', path.join(serverDir, 'local', 'smoke_packaged.py'), serverDir,
+  execFileSync(pyBin(pyDir), ['-I', '-B', '-X', 'utf8', path.join(serverDir, 'local', 'smoke_packaged.py'), serverDir,
     ...(fs.existsSync(ff) ? ['--ffmpeg', ff] : []), '--json'], { stdio: 'inherit' });
 }
 
