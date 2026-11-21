@@ -73,7 +73,7 @@ jobs:
           echo "prerelease=${pre}" >> "${GITHUB_OUTPUT}"
           echo "prerelease=${pre}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: notes.md
@@ -202,7 +202,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "${app}"
           spctl -a -vv -t exec "${app}"
           xcrun stapler validate "${app}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mac-${{ matrix.arch }}
           if-no-files-found: error
@@ -278,7 +278,7 @@ jobs:
           chmod +x "${app}"
           "${app}" --appimage-extract >/dev/null
           test -x squashfs-root/iamdirector || { echo "::error::AppImage 裡沒有 iamdirector 主程式"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
           if-no-files-found: error
@@ -348,7 +348,7 @@ jobs:
           m="$(node -e "const b=require('fs').readFileSync(process.argv[1]);const o=b.readUInt32LE(0x3c);console.log(b.readUInt16LE(o+4).toString(16))" "${main}")"
           want="$([ "${ARCH}" = x64 ] && echo 8664 || echo aa64)"
           [ "${m}" = "${want}" ] || { echo "::error::主程式 PE machine 是 0x${m}，應該是 0x${want}"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: win-${{ matrix.arch }}
           if-no-files-found: error
