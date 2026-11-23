@@ -480,6 +480,22 @@ class Workbench:
         _check_body(body, BODY_LIMIT_DEFAULT, "/api/works/clone")
         return self.c.post("/api/works/clone", body)
 
+    def shot_edit(self, project_id, shot, expect, prompt=None, seconds=None, set_seconds=False):
+        _check(project_id, PROJECT_ID_RE, "project id", "^[0-9a-fA-F-]{36}$")
+        body = {"project_id": project_id, "shot": shot, "expect": expect}
+        if prompt is not None:
+            body["prompt"] = prompt
+        if seconds is not None or set_seconds:
+            body["seconds"] = seconds
+        _check_body(body, BODY_LIMIT_DEFAULT, "/api/works/shot-edit")
+        return self.c.post("/api/works/shot-edit", body)
+
+    def shot_move(self, project_id, shot, to, expect_order):
+        _check(project_id, PROJECT_ID_RE, "project id", "^[0-9a-fA-F-]{36}$")
+        body = {"project_id": project_id, "shot": shot, "to": to, "expect_order": list(expect_order or [])}
+        _check_body(body, BODY_LIMIT_DEFAULT, "/api/works/shot-move")
+        return self.c.post("/api/works/shot-move", body)
+
     def work_create(self, name, shots=None, script=None, model=None, template=None, fields=None, dry_run=False,
                     story=None):
         body = {"name": name}

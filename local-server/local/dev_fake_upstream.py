@@ -128,6 +128,7 @@ class FakeUpstream(BaseHTTPRequestHandler):
             FAKE["issued"][qid] = exp
             return self._out(200, {"quote_id": qid, "estimate": {"points": FAKE["price"] or "3.00"},
                                    "expires_at": datetime.datetime.fromtimestamp(exp, datetime.timezone.utc).isoformat(),
+                                   "resolved": {k: v for k, v in body.items() if k != "require_confirmation"},
                                    "status": "needs_confirmation"})
         if p == "/v2/quote":
             return self._out(200, {"est_cost": "1.20"})

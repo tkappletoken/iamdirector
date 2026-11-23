@@ -1010,6 +1010,29 @@ class Registry:
             lambda a: wb.agent_activity("timeline_trim", ref=a["job_id"], action="trim",
                                         args={k: a[k] for k in ("job_id", "in_seconds", "out_seconds") if k in a},
                                         note="裁切 %s" % a["job_id"]))
+        add("export_status",
+            "查一次匯出的狀態（export_id＝exp_…）：state 是 staging／processing／done／failed，done 時有長度與大小。免費。",
+            _obj({"export_id": {"type": "string"}}, ["export_id"]),
+            lambda a: wb.export_status(a["export_id"]))
+        add("export_download",
+            "拿匯出好的成片下載網址（export_id＝exp_…）：回 {url, srt_url?, expires_in}，預簽網址 15 分鐘內有效；"
+            "還沒匯出完成回 409。免費。",
+            _obj({"export_id": {"type": "string"}}, ["export_id"]),
+            lambda a: wb.export_download(a["export_id"]))
+        add("shot_edit",
+            "精準改作品分鏡的一鏡（prompt 或 seconds），**不整份覆蓋**。先用 work_get 讀分鏡，把讀到的這一鏡 prompt 原樣放進 expect；"
+            "這一鏡在你讀過之後被人或別的 Agent 改過就回 409 conflict（current 是它現在的樣子），什麼都不寫——照 current 重新決定再改。"
+            "shot＝1 起算的第幾鏡或 sid。免費。",
+            _obj({"project_id": {"type": "string"}, "shot": {"type": ["integer", "string"]}, "expect": {"type": "string"},
+                  "prompt": {"type": "string"}, "seconds": {"type": ["number", "null"]}}, ["project_id", "shot", "expect"]),
+            lambda a: wb.shot_edit(a["project_id"], a["shot"], a["expect"], a.get("prompt"), a.get("seconds"),
+                                   set_seconds="seconds" in a))
+        add("shot_move",
+            "把作品分鏡的一鏡搬到第 to 鏡（1 起算），**不整份覆蓋**。expect_order＝你用 work_get 讀到的每一鏡 sid（照順序）；"
+            "順序在你讀過之後變了就回 409 conflict（current.order 是現在的順序），什麼都不搬。免費。",
+            _obj({"project_id": {"type": "string"}, "shot": {"type": ["integer", "string"]}, "to": {"type": "integer", "minimum": 1},
+                  "expect_order": {"type": "array", "items": {"type": "string"}}}, ["project_id", "shot", "to", "expect_order"]),
+            lambda a: wb.shot_move(a["project_id"], a["shot"], a["to"], a["expect_order"]))
         add("export_request",
             "請導演匯出剪輯軌成 mp4。**Agent 不直接送匯出**：工作台會打開匯出面板、列出授權警告"
             "（第三方素材、沒標可商用的），由人看過再按送出（r2-13）。回這一筆動態的 id。",
@@ -1777,7 +1800,7 @@ _SPENDING_NAMES = ("video_confirm", "submit_approved", "image_generate", "audio_
                    "pitch_create")
 _DESTRUCTIVE_NAMES = ("project_delete", "asset_delete", "store_delete")
 _LOCAL_DIRCTL_TOOLS = ("dirctl_catalog", "dirctl_compose", "previs_rig", "shot_dirctl_set")
-_LOCAL_UNREACHABLE = ("export_request", "agent_pending_status",
+_LOCAL_UNREACHABLE = ("export_request", "agent_pending_status", "export_download",
                       "image_outpaint", "post_process", "post_process_status", "post_process_fetch",
                       "video_download_url", "post_process_download_url", "asset_download_url", "audio_music_download_url")
 _LOGOUT_NAMES = ("session_logout",)

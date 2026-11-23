@@ -1,6 +1,8 @@
 import json
 import secrets
 import re
+import threading
+import time
 
 MAX_PROJECTS = 200
 NAME_MAX = 60
@@ -189,6 +191,205 @@ def normalize_shots(shots):
                     "seconds": sec if sec not in (None, "") else None, "pick": True})
     return out
 
+_UNSET = object()
+
+def _shot_at(board, shot):
+    if isinstance(shot, int) and not isinstance(shot, bool):
+        return shot - 1 if 1 <= shot <= len(board) else None
+    if isinstance(shot, str) and shot:
+        for i, x in enumerate(board):
+            if isinstance(x, dict) and x.get("sid") == shot:
+                return i
+    return None
+
+def _board_read(conn, uid, pid):
+    _check_pid(pid)
+    key = board_key(pid)
+    board = kv_get(conn, uid, key).get("value")
+    if not isinstance(board, list) or not board:
+        raise StoreError(404, "not_found", "找不到這部作品的分鏡")
+    return key, board
+
+def _conflict(message, current):
+    e = StoreError(409, "conflict", message)
+    e.body["current"] = current
+    return e
+
+def _board_cas(conn, uid, key, old, new, current):
+    dump = lambda v: json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+    blob = dump(new)
+    n = len(blob.encode("utf-8"))
+    if n > KV_MAX_BYTES:
+        raise StoreError(413, "too_large", "資料 %d bytes，超過 %d bytes 上限" % (n, KV_MAX_BYTES))
+    with conn.cursor() as cur:
+        cur.execute("UPDATE studio_kv SET value = %s::jsonb, bytes = %s, updated_by = %s, updated_at = now()"
+                    " WHERE tenant_id = %s AND key = %s AND value = %s::jsonb",
+                    (blob, n, uid, uid, key, dump(old)))
+        if cur.rowcount != 1:
+            raise _conflict("分鏡在你讀過之後被改過了，沒有寫入；照 current 重新讀過再改", current)
+    return n
+
+def shot_edit(conn, uid, pid, shot, expect, prompt=_UNSET, seconds=_UNSET):
+    if prompt is _UNSET and seconds is _UNSET:
+        raise StoreError(400, "nothing", "要給 prompt 或 seconds 至少一項")
+    if not isinstance(expect, str):
+        raise StoreError(400, "bad_expect", "expect 要是你讀到的這一鏡 prompt（字串），用來確認沒有人在你之後改過")
+    if prompt is not _UNSET and (not isinstance(prompt, str) or not prompt.strip() or len(prompt) > WORK_PROMPT_MAX):
+        raise StoreError(400, "bad_prompt", "prompt 要有 1–%d 個字" % WORK_PROMPT_MAX)
+    if seconds is not _UNSET and seconds is not None and (
+            isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 1 <= seconds <= 30):
+        raise StoreError(400, "bad_seconds", "seconds 要是 1–30 的數字，或 null")
+    key, board = _board_read(conn, uid, pid)
+    idx = _shot_at(board, shot)
+    if idx is None:
+        raise StoreError(404, "no_shot", "這部作品沒有這一鏡（shot 用 1 起算的第幾鏡，或 sid）")
+    cur_shot = board[idx] if isinstance(board[idx], dict) else {"prompt": str(board[idx])}
+    if str(cur_shot.get("prompt") or "") != expect:
+        raise _conflict("第 %d 鏡在你讀過之後被改過了，沒有寫入" % (idx + 1), {"shot": idx + 1, "sid": cur_shot.get("sid"),
+                                                                     "prompt": cur_shot.get("prompt"), "seconds": cur_shot.get("seconds")})
+    sh = dict(cur_shot)
+    if prompt is not _UNSET:
+        sh["prompt"] = prompt.strip()
+    if seconds is not _UNSET:
+        sh["seconds"] = seconds
+    new = list(board)
+    new[idx] = sh
+    _board_cas(conn, uid, key, board, new, {"shot": idx + 1, "sid": sh.get("sid")})
+    return {"key": key, "shot": idx + 1, "sid": sh.get("sid"), "prompt": sh.get("prompt"), "seconds": sh.get("seconds"),
+            "prev": {"prompt": cur_shot.get("prompt"), "seconds": cur_shot.get("seconds")}}
+
+def shot_move(conn, uid, pid, shot, to, expect_order):
+    if not isinstance(expect_order, list) or not all(isinstance(x, str) for x in expect_order):
+        raise StoreError(400, "bad_expect", "expect_order 要是你讀到的每一鏡 sid（照順序），用來確認沒有人在你之後改過")
+    key, board = _board_read(conn, uid, pid)
+    order = [x.get("sid") if isinstance(x, dict) else None for x in board]
+    if order != expect_order:
+        raise _conflict("分鏡的順序在你讀過之後變了，沒有搬", {"order": order})
+    idx = _shot_at(board, shot)
+    if idx is None:
+        raise StoreError(404, "no_shot", "這部作品沒有這一鏡（shot 用 1 起算的第幾鏡，或 sid）")
+    if isinstance(to, bool) or not isinstance(to, int) or not 1 <= to <= len(board):
+        raise StoreError(400, "bad_to", "to 要是 1–%d（搬到第幾鏡）" % len(board))
+    new = list(board)
+    moved = new.pop(idx)
+    new.insert(to - 1, moved)
+    _board_cas(conn, uid, key, board, new, {"order": order})
+    return {"key": key, "sid": moved.get("sid") if isinstance(moved, dict) else None, "from": idx + 1, "to": to,
+            "order": [x.get("sid") if isinstance(x, dict) else None for x in new], "prev_order": order}
+
+DC_FIELDS = ("dc", "dc_prev")
+DC_PREV = {"dc": "dc_prev"}
+TEXT_FIELDS = ("prompt", "seconds")
+
+def merge_shots(value, server, late, touched, fields, prev=None):
+    prev = prev or {}
+    by = {s.get("sid"): s for s in (server if isinstance(server, list) else []) if isinstance(s, dict) and s.get("sid")}
+    out, merged = [], []
+    for i, s in enumerate(value):
+        sid = s.get("sid") if isinstance(s, dict) else None
+        if sid not in late or sid not in by:
+            out.append(s)
+            continue
+        s, a = dict(s), by[sid]
+        if sid in touched:
+            for k, pk in prev.items():
+                if a.get(k) and a.get(k) != s.get(k):
+                    s[pk] = a[k]
+            kept = "human"
+        else:
+            for k in fields:
+                s.pop(k, None)
+                if a.get(k):
+                    s[k] = a[k]
+            kept = "agent"
+        merged.append(dict({"shot": i + 1, "sid": sid, "kept": kept}, **{k: s.get(k) for k in fields}))
+        out.append(s)
+    return out, merged
+
+def merge_order(value, base_order, agent_order):
+    sids = [s.get("sid") if isinstance(s, dict) else None for s in value]
+    if not agent_order or sids != list(base_order or []):
+        return value, False
+    pos = {sid: i for i, sid in enumerate(agent_order)}
+    out = sorted(value, key=lambda s: pos.get(s.get("sid") if isinstance(s, dict) else None, len(agent_order)))
+    return out, out != value
+
+class AgentWrites:
+    TTL = 6 * 3600
+    MAX_KEYS = 2000
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._d = {}
+
+    def _slot(self, uid, key):
+        k = (str(uid), key)
+        slot = self._d.get(k)
+        if slot is None:
+            if len(self._d) >= self.MAX_KEYS:
+                self._d.pop(next(iter(self._d)))
+            slot = self._d[k] = {"shots": {}, "order": None}
+        return slot
+
+    def _expire(self, slot, now):
+        slot["shots"] = {sid: e for sid, e in slot["shots"].items() if now - e["at"] < self.TTL}
+        if slot["order"] and now - slot["order"]["at"] >= self.TTL:
+            slot["order"] = None
+
+    def edit(self, uid, key, sid, base, agent):
+        with self._lock:
+            slot = self._slot(uid, key)
+            old = slot["shots"].get(sid)
+            slot["shots"][sid] = {"base": old["base"] if old else dict(base), "agent": dict(agent), "at": time.time()}
+
+    def move(self, uid, key, base_order, agent_order):
+        with self._lock:
+            slot = self._slot(uid, key)
+            old = slot["order"]
+            slot["order"] = {"base": list(old["base"] if old else base_order), "agent": list(agent_order), "at": time.time()}
+
+    def plan(self, uid, key, value):
+        if not isinstance(value, list):
+            return value, None
+        now = time.time()
+        with self._lock:
+            slot = self._d.get((str(uid), key))
+            if not slot:
+                return value, None
+            self._expire(slot, now)
+            pend = {sid: dict(e) for sid, e in slot["shots"].items()}
+            order = dict(slot["order"]) if slot["order"] else None
+        pick = lambda s: {k: s.get(k) for k in TEXT_FIELDS}
+        incoming = {s.get("sid"): s for s in value if isinstance(s, dict) and s.get("sid")}
+        late, touched, done = set(), set(), set()
+        for sid, e in pend.items():
+            s = incoming.get(sid)
+            if s is None:
+                done.add(sid)
+                continue
+            cur = pick(s)
+            if cur == e["base"]:
+                late.add(sid)
+            else:
+                done.add(sid)
+                if cur != e["agent"]:
+                    touched.add(sid)
+        server = [dict(e["agent"], sid=sid) for sid, e in pend.items()]
+        out, merged = merge_shots(value, server, late, set(), TEXT_FIELDS)
+        reordered = False
+        if order:
+            out, reordered = merge_order(out, order["base"], order["agent"])
+        with self._lock:
+            slot = self._d.get((str(uid), key))
+            if slot:
+                for sid in done:
+                    slot["shots"].pop(sid, None)
+                if order and not reordered:
+                    slot["order"] = None
+        if not merged and not reordered:
+            return value, None
+        return out, {"merged": merged, "order": reordered, "human": sorted(touched)}
+
 def meta_key(pid):
     return "tp_" + str(pid).replace("-", "")[:29]
 
@@ -212,7 +413,7 @@ def work_get(conn, uid, pid):
     board = kv_get(conn, uid, board_key(pid)).get("value")
     meta = kv_get(conn, uid, meta_key(pid)).get("value")
     out = {"project_id": pid, "name": row[0],
-           "shots": [{"prompt": s.get("prompt"), "seconds": s.get("seconds")}
+           "shots": [{"sid": s.get("sid"), "prompt": s.get("prompt"), "seconds": s.get("seconds")}
                      for s in (board if isinstance(board, list) else []) if isinstance(s, dict)]}
     if isinstance(meta, dict) and isinstance(meta.get("template"), str):
         out["template"], out["fields"] = meta["template"], meta.get("fields") or {}
