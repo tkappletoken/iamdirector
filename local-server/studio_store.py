@@ -215,7 +215,16 @@ def _conflict(message, current):
     e.body["current"] = current
     return e
 
-def _board_cas(conn, uid, key, old, new, current):
+def _shot_view(board, idx):
+    if idx is None or not 0 <= idx < len(board):
+        return None
+    sh = board[idx] if isinstance(board[idx], dict) else {"prompt": str(board[idx])}
+    return {"shot": idx + 1, "sid": sh.get("sid"), "prompt": sh.get("prompt"), "seconds": sh.get("seconds")}
+
+def _order(board):
+    return [x.get("sid") if isinstance(x, dict) else None for x in board]
+
+def _board_cas(conn, uid, key, old, new, current_of):
     dump = lambda v: json.dumps(v, ensure_ascii=False, separators=(",", ":"))
     blob = dump(new)
     n = len(blob.encode("utf-8"))
@@ -226,7 +235,9 @@ def _board_cas(conn, uid, key, old, new, current):
                     " WHERE tenant_id = %s AND key = %s AND value = %s::jsonb",
                     (blob, n, uid, uid, key, dump(old)))
         if cur.rowcount != 1:
-            raise _conflict("分鏡在你讀過之後被改過了，沒有寫入；照 current 重新讀過再改", current)
+            now = kv_get(conn, uid, key).get("value")
+            raise _conflict("分鏡在你讀過之後被改過了，沒有寫入；照 current 重新讀過再改",
+                            current_of(now if isinstance(now, list) else []))
     return n
 
 def shot_edit(conn, uid, pid, shot, expect, prompt=_UNSET, seconds=_UNSET):
@@ -245,8 +256,7 @@ def shot_edit(conn, uid, pid, shot, expect, prompt=_UNSET, seconds=_UNSET):
         raise StoreError(404, "no_shot", "這部作品沒有這一鏡（shot 用 1 起算的第幾鏡，或 sid）")
     cur_shot = board[idx] if isinstance(board[idx], dict) else {"prompt": str(board[idx])}
     if str(cur_shot.get("prompt") or "") != expect:
-        raise _conflict("第 %d 鏡在你讀過之後被改過了，沒有寫入" % (idx + 1), {"shot": idx + 1, "sid": cur_shot.get("sid"),
-                                                                     "prompt": cur_shot.get("prompt"), "seconds": cur_shot.get("seconds")})
+        raise _conflict("第 %d 鏡在你讀過之後被改過了，沒有寫入" % (idx + 1), _shot_view(board, idx))
     sh = dict(cur_shot)
     if prompt is not _UNSET:
         sh["prompt"] = prompt.strip()
@@ -254,7 +264,8 @@ def shot_edit(conn, uid, pid, shot, expect, prompt=_UNSET, seconds=_UNSET):
         sh["seconds"] = seconds
     new = list(board)
     new[idx] = sh
-    _board_cas(conn, uid, key, board, new, {"shot": idx + 1, "sid": sh.get("sid")})
+    sid = sh.get("sid")
+    _board_cas(conn, uid, key, board, new, lambda b: _shot_view(b, _shot_at(b, sid) if sid else idx))
     return {"key": key, "shot": idx + 1, "sid": sh.get("sid"), "prompt": sh.get("prompt"), "seconds": sh.get("seconds"),
             "prev": {"prompt": cur_shot.get("prompt"), "seconds": cur_shot.get("seconds")}}
 
@@ -273,7 +284,7 @@ def shot_move(conn, uid, pid, shot, to, expect_order):
     new = list(board)
     moved = new.pop(idx)
     new.insert(to - 1, moved)
-    _board_cas(conn, uid, key, board, new, {"order": order})
+    _board_cas(conn, uid, key, board, new, lambda b: {"order": _order(b)})
     return {"key": key, "sid": moved.get("sid") if isinstance(moved, dict) else None, "from": idx + 1, "to": to,
             "order": [x.get("sid") if isinstance(x, dict) else None for x in new], "prev_order": order}
 

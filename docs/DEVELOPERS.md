@@ -85,6 +85,7 @@
 * **分鏡與導演控制**：`parse_shots`、`build_captions`、`storyboard_ai_quote`、`storyboard_ai`💰、`storyboard_quote`、`shots_confirm`💰、`dirctl_catalog`、`dirctl_compose`、`shot_dirctl_set`、`previs_rig`
 * **報價、核准卡、送件**：`estimate`、`quote`、`video_quote`、`request_approval`、`status`、`submit_approved`💰、`video_confirm`💰、`video_confirm_status`、`video_status`、`video_wait`、`video_archive_status`、`agent_pending_status`、`result`、`model_caps`
 * **圖片、素材、角色**：`image_generate`💰、`image_outpaint`💰、`character_angles`💰、`list_assets`、`asset_upload`、`asset_update`、`check_asset`、`check_refs`
+  （`character_angles` 在本機不估價、不扣款：每個角度建一張核准卡，回 `quote_id` 與 `approval`，核准後用 `submit_approved` 送出）
 * **聲音**：`audio_speech_quote`、`audio_music_quote`、`audio_confirm`💰、`audio_music_status`、`post_process`💰、`post_process_status`、`post_process_wait`
 * **品管**：`video_qc`💰、`qc_rate`💰、`qc_rating`
 * **每鏡候選與長片接力**：`take_list`、`take_add`、`take_update`、`take_qc`、`take_pick`、`take_retake_plan`、`chain_create`、`chain_next`、`chain_update`

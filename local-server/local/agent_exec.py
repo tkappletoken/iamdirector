@@ -541,7 +541,9 @@ def film_shots(data_dir, run):
         return None
     st = rec["state"]
     segs = {g.get("key"): g for g in ((st.get("plan") or {}).get("segments") or []) if isinstance(g, dict)}
-    return {"run": run, "phase": st.get("phase"), "project_id": (rec.get("exec") or {}).get("project_id"),
+    relayed = sorted({r["take"] for r in (rec.get("ids") or {}).values()
+                      if isinstance(r, dict) and r.get("relay") and r.get("take")})
+    return {"run": run, "relayed": relayed, "phase": st.get("phase"), "project_id": (rec.get("exec") or {}).get("project_id"),
             "request": st.get("request"), "model": (rec.get("exec") or {}).get("model"),
             "shots": [{"key": s["key"], "takes": [t["take"] for t in s.get("takes") or [] if t.get("take")],
                        "prompt": (segs.get(s["key"]) or {}).get("prompt"), "seconds": (segs.get(s["key"]) or {}).get("seconds")}

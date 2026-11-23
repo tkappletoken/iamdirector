@@ -212,6 +212,13 @@ def unit_prices(entry):
         return None
     return i, o
 
+def estimate_frames(raw):
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= MAX_FRAMES else None
+
 def price_cap(entry, n_frames):
     p = unit_prices(entry)
     if p is None:

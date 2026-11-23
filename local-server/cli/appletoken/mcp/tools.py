@@ -1,7 +1,9 @@
 
 import base64
 import hashlib
+import math
 import mimetypes
+import os
 import re
 from pathlib import Path
 
@@ -502,6 +504,19 @@ class Registry:
                  ["model", "prompt"]),
             lambda a: self._h_quote(_shot_payload(a)))
 
+        if gate_on("lipsync_shot"):
+            add("lipsync_shot",
+                "**免費**替一鏡對嘴影片報價：定裝圖 keyframe（asset:// 或網址）＋配音 audio（voice_line 回的音檔）當參考，"
+                "seconds 照 audio_seconds 無條件進位（不到模型下限就用下限）；配音比這個模型一鏡的上限還長就回錯、不截音"
+                "（先把台詞拆短）。cast=[\"名字\"] 沒給 keyframe 時用角色卡的參考圖（換裝那張優先）。回確認單，"
+                "要生成交給 video_confirm。",
+                _obj({"model": {"type": "string"}, "prompt": {"type": "string"}, "keyframe": {"type": "string"},
+                      "audio": {"type": "string"}, "audio_seconds": {"type": "number", "exclusiveMinimum": 0},
+                      "resolution": {"type": "string"}, "aspect_ratio": {"type": "string"},
+                      "cast": {"type": "array", "items": {"type": "string"}}},
+                     ["model", "prompt", "audio", "audio_seconds"]),
+                self._h_lipsync_shot)
+
         add("audio_speech_quote",
             "**免費**替一句台詞報價（配音）：回 quote_id、要花幾點、付款方。不送件、不扣款。"
             "要真的生成，把 quote_id 交給 audio_confirm（kind=tts）。報價 15 分鐘內有效。",
@@ -765,6 +780,19 @@ class Registry:
             _obj({"id": {"type": "string"}}, ["id"]), lambda a: wb.pitch_download(a["id"]))
 
         if self.allow_spend:
+            if gate_on("voice_line"):
+                add("voice_line",
+                    "替一句台詞配音（報價＋送出一次做完），回 {audio, seconds}——seconds 給 lipsync_shot 的 audio_seconds。"
+                    "**會花錢**：本站點數件報價要在 max_points 以內才送；自帶金鑰件扣自己的 AppleToken 額度。"
+                    "桌面本機要人核准時回核准卡（quote_id、approval，不是失敗、不要重送），核准後用 submit_approved(approval_id=approval.id) 送出。"
+                    "cast=true＋speaker：沒給 voice 時用角色卡的 voice（伺服器 STUDIO_CAST_REFS=blocks 才套）。"
+                    "**model 必填**，要寫供應商（provider/name）：沒寫供應商的名稱伺服器會補成 gmi/，那一家目前不能配音，"
+                    "送之前就擋（看補完之後實際送出的名稱），錯誤訊息會附一個目錄裡可用的模型。",
+                    _obj({"model": {"type": "string"}, "text": {"type": "string"}, "voice": {"type": "string"},
+                          "speed": {"type": "number"}, "speaker": {"type": "string"}, "cast": {"type": "boolean"},
+                          "max_points": {"type": "number", "exclusiveMinimum": 0}},
+                         ["model", "text"]),
+                    self._h_voice_line, spends=True)
             add("pitch_create",
                 "建立投稿包（背景打包成 zip：分集 mp4、字幕、封面、作品資料、AI 使用說明、授權聲明、規格檢查表）。"
                 "聲明要導演本人確認：likeness=none（沒有可辨識的真人肖像）或 consented（已取得書面同意，"
@@ -900,8 +928,11 @@ class Registry:
 
             add("character_angles",
                 "角色多角度參考圖（正面／側面／背面／四分之三）：每一個角度一次 image_generate。"
-                "**會扣款**，每一張都要在 max_points_each 以內（先估價，超過就不送）。"
-                "生好之後用 asset_upload 放進素材庫，就能當 video_quote／quote 的 input_references"
+                + ("桌面本機：不估價、不扣本站點數，每一張只建一張核准卡（回 quote_id 與 approval，不是失敗、不要重送），"
+                   "人核准或預先授權之後用 submit_approved(approval_id=approval.id) 送出；錢由核准卡的上限把關。"
+                   if self.local else
+                   "**會扣款**，每一張都要在 max_points_each 以內（先估價，超過就不送）。")
+                + "生好之後用 asset_upload 放進素材庫，就能當 video_quote／quote 的 input_references"
                 "（[{type: image, url: asset://ast_…, role: reference_image}]）；或存進角色庫，送件時帶 cast=true 由伺服器組。",
                 _obj({"model": {"type": "string"}, "name": {"type": "string"},
                       "description": {"type": "string"},
@@ -1025,14 +1056,14 @@ class Registry:
             "shot＝1 起算的第幾鏡或 sid。免費。",
             _obj({"project_id": {"type": "string"}, "shot": {"type": ["integer", "string"]}, "expect": {"type": "string"},
                   "prompt": {"type": "string"}, "seconds": {"type": ["number", "null"]}}, ["project_id", "shot", "expect"]),
-            lambda a: wb.shot_edit(a["project_id"], a["shot"], a["expect"], a.get("prompt"), a.get("seconds"),
-                                   set_seconds="seconds" in a))
+            lambda a: _shot_conflict(lambda: wb.shot_edit(a["project_id"], a["shot"], a["expect"], a.get("prompt"), a.get("seconds"),
+                                                         set_seconds="seconds" in a)))
         add("shot_move",
             "把作品分鏡的一鏡搬到第 to 鏡（1 起算），**不整份覆蓋**。expect_order＝你用 work_get 讀到的每一鏡 sid（照順序）；"
             "順序在你讀過之後變了就回 409 conflict（current.order 是現在的順序），什麼都不搬。免費。",
             _obj({"project_id": {"type": "string"}, "shot": {"type": ["integer", "string"]}, "to": {"type": "integer", "minimum": 1},
                   "expect_order": {"type": "array", "items": {"type": "string"}}}, ["project_id", "shot", "to", "expect_order"]),
-            lambda a: wb.shot_move(a["project_id"], a["shot"], a["to"], a["expect_order"]))
+            lambda a: _shot_conflict(lambda: wb.shot_move(a["project_id"], a["shot"], a["to"], a["expect_order"])))
         add("export_request",
             "請導演匯出剪輯軌成 mp4。**Agent 不直接送匯出**：工作台會打開匯出面板、列出授權警告"
             "（第三方素材、沒標可商用的），由人看過再按送出（r2-13）。回這一筆動態的 id。",
@@ -1379,8 +1410,8 @@ class Registry:
             "把幾支拍好的片（job id，照順序，2–30 支）接成一支，用這台電腦的 ffmpeg，**不花錢**。回 path（這台電腦上的檔案）"
             "與 lossless（規格一致時無損直接接）。要接「這一次拍片的定稿」用 agent_film_preview 比較方便。",
             _obj({"jobs": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 30},
-                  "name": {"type": "string"}}, ["jobs"]),
-            lambda a: wb.concat(a["jobs"], a.get("name")))
+                  "name": {"type": "string"}, "mute_model_audio": {"type": "boolean"}}, ["jobs"]),
+            lambda a: wb.concat(a["jobs"], a.get("name"), a.get("mute_model_audio")))
         add("agent_settings",
             "讀這台 App 的各個開關現在是什麼（主迴圈、Agent 直送、自動驗片、首幀接力、Agent 範圍、匯出引擎、接片引擎、介面描述檔）。"
             "只能讀；切換只有使用者本人在 App 的設定頁「Agent」區塊裡做（打不開的功能就請他去那裡打開）。免費。",
@@ -1537,6 +1568,7 @@ class Registry:
             for k in ("resolution", "aspect_ratio"):
                 if a.get(k) and k not in body:
                     body[k] = a[k]
+            model_caps.with_res_default(body)
             try:
                 sheet = self._h_quote(body)
             except Exception as e:
@@ -1567,7 +1599,7 @@ class Registry:
             except Exception as e:
                 res.append({"quote_id": qid, "error": str(e)})
         return {"results": res,
-                "pending": [r.get("pending_id") for r in res if r.get("pending_confirmation")],
+                "pending": [w.get("pending_id") or w.get("quote_id") for w in map(needs_human, res) if w],
                 "jobs": [r.get("id") for r in res if r.get("id")]}
 
     def _h_character_angles(self, a):
@@ -1587,13 +1619,102 @@ class Registry:
             except Exception as e:
                 out.append({"angle": ang, "error": str(e)})
                 continue
-            if isinstance(r, dict) and r.get("pending_confirmation"):
-                out.append({"angle": ang, "pending_id": r.get("pending_id")})
+            wait = needs_human(r)
+            if wait:
+                out.append(dict(wait, angle=ang))
                 continue
             urls = [d.get("url") for d in (r or {}).get("data") or [] if isinstance(d, dict)]
-            out.append({"angle": ang, "urls": urls, "charged_points": (r or {}).get("charged_points")})
+            out.append({"angle": ang, "urls": urls, "charged_points": (r or {}).get("charged_points"),
+                        "payer": (r or {}).get("payer")})
         return {"name": a["name"], "angles": out,
                 "next": "要當參考圖：asset_upload(url=…) 拿 asset://，再放進 video_quote 的 input_references"}
+
+    def _cast_cards(self):
+        try:
+            got = self.wb.store_get("characters")
+        except Exception:
+            return []
+        v = got.get("value") if isinstance(got, dict) and "value" in got else got
+        return [c for c in v if isinstance(c, dict) and isinstance(c.get("name"), str)] if isinstance(v, list) else []
+
+    def _tts_alternatives(self):
+        try:
+            ids = (self.wb.model_groups() or {}).get("audio") or []
+        except Exception:
+            return []
+        ok = [m for m in ids if isinstance(m, str) and m and not model_caps.tts_blocked(m)]
+        return sorted(ok, key=lambda m: not any(k in m.lower() for k in ("speech", "tts")))
+
+    def _h_voice_line(self, a):
+        model = str(a.get("model") or "").strip()
+        if not model or model_caps.tts_blocked(model):
+            alt = self._tts_alternatives()
+            hint = ("請改用 %s" % alt[0]) if alt else "目錄裡目前沒有可用的配音模型（請使用者到設定頁確認金鑰與目錄）"
+            if not model:
+                raise ValidationError("voice_line 的 model 必填：沒寫供應商的名稱會補成 %s，那一家目前不能用來配音。%s。"
+                                      "沒有送出任何請求。" % (model_caps.AUDIO_MODEL_PREFIX, hint))
+            sent = model_caps.tts_effective(model)
+            prov = sent.split("/", 1)[0] + "/"
+            via = ("在伺服器會補成 %s、走 %s 供應商" % (sent, prov)) if sent != model else ("走 %s 供應商" % prov)
+            raise ValidationError("%s %s，這一家目前不能用來配音，%s。沒有送出任何請求。" % (model, via, hint))
+        body = {"model": model, "input": a["text"]}
+        for k in ("voice", "speed"):
+            if a.get(k) is not None:
+                body[k] = a[k]
+        cast_note = None
+        if a.get("cast") is True and not body.get("voice"):
+            card = next((c for c in self._cast_cards() if c["name"] == a.get("speaker")), None)
+            voice = card.get("voice") if card and isinstance(card.get("voice"), str) and card["voice"].strip() else None
+            mode = cast_mode()
+            if mode == "blocks" and voice:
+                body["voice"] = voice.strip()
+            cast_note = {"mode": mode, "applied": mode == "blocks" and bool(voice)}
+            if mode == "shadow":
+                cast_note["reason"] = "voice_diff" if voice else "voice_same"
+        sheet = self._h_audio_quote(body, "tts")
+        wait = needs_human(sheet)
+        qid = (sheet or {}).get("quote_id") if isinstance(sheet, dict) else None
+        if not qid:
+            return sheet
+        if wait:
+            return dict(wait, next="請使用者核准這張配音卡，再用 submit_approved(approval_id=approval.id) 送出",
+                        cast_voice=cast_note)
+        if a.get("max_points") is not None and sheet.get("payer") != "own_key":
+            price = self._quoted.get(qid)
+            if price is None or price > float(a["max_points"]):
+                self.wb.speech_confirm(qid, confirm=False)
+                raise SpendBlocked("配音報價 %s 點超過（或看不到）你給的 max_points %.4f。沒有送出任何請求。"
+                                   % (price, float(a["max_points"])))
+        data = self._h_audio_confirm({"quote_id": qid, "kind": "tts"}) or {}
+        out = {"quote_id": qid, "audio": data.get("audio"), "seconds": data.get("seconds"), "payer": data.get("payer")}
+        if cast_note:
+            out["cast_voice"] = cast_note
+        return out
+
+    def _h_lipsync_shot(self, a):
+        kf = a.get("keyframe")
+        if not kf and a.get("cast") and cast_mode() == "blocks":
+            names = [n for n in a["cast"] if isinstance(n, str)]
+            for c in [c for c in self._cast_cards() if c["name"] in names]:
+                refs = [r for r in c.get("refs") or [] if isinstance(r, dict) and r.get("ref")]
+                pick = next((r for r in refs if r.get("role") == "outfit"), refs[0] if refs else None)
+                if pick:
+                    kf = pick["ref"]
+                    break
+        if not kf:
+            raise ValidationError("對嘴要一張定裝圖（keyframe）：只有音訊、沒有臉，模型對不了嘴。沒有送出任何請求。")
+        secs = float(a["audio_seconds"])
+        rule = _duration_rule(a["model"])
+        if secs > rule["max"]:
+            raise ValidationError("配音 %.2f 秒比這個模型一鏡的上限 %d 秒還長：先把台詞拆成幾句、各拍一鏡（不截音）。"
+                                  "沒有送出任何請求。" % (secs, rule["max"]))
+        body = {"model": a["model"], "prompt": a["prompt"], "seconds": max(int(rule["min"]), int(math.ceil(secs - 1e-9))),
+                "input_references": [{"type": "image", "url": kf, "role": "reference_image"},
+                                     {"type": "audio", "url": a["audio"], "role": "reference_audio"}]}
+        for k in ("resolution", "aspect_ratio"):
+            if a.get(k):
+                body[k] = a[k]
+        return self._h_quote(_shot_payload(body))
 
     def _h_image(self, a):
         payload = {k: v for k, v in a.items() if k != "max_points"}
@@ -1619,7 +1740,7 @@ class Registry:
         self._charge(price, "image_generate")
         data = self.wb.image_generate(payload)
         self.ledger.record_spend("image", self.session,
-                            points=(data or {}).get("price_charged"),
+                            points=(data or {}).get("charged_points"),
                             ref=(data or {}).get("id"))
         return data
 
@@ -1741,6 +1862,16 @@ class Registry:
         self.ledger.record_spend("post-process", self.session, ref=pid)
         return data
 
+def _shot_conflict(call):
+    try:
+        return call()
+    except ApiError as e:
+        p = e.payload if isinstance(e.payload, dict) else {}
+        err = p.get("error") if isinstance(p.get("error"), dict) else {}
+        if e.status == 409 and err.get("code") == "conflict" and "current" in p:
+            return {"error": err.get("message") or "被改過了，沒有寫入", "code": "conflict", "current": p["current"], "written": False}
+        raise
+
 def _submit_approved(wb, a):
     try:
         return wb.approval_submit(a["approval_id"], a.get("expect_amount"))
@@ -1792,10 +1923,39 @@ def _shot_payload(a):
     except model_caps.CapsError as e:
         raise ValidationError(str(e))
     body.update(extra)
-    return body
+    return model_caps.with_res_default(body)
+
+_GATED_TOOLS = {"voice_line": "STUDIO_VOICE_LINE", "lipsync_shot": "STUDIO_LIPSYNC_SHOT"}
+
+def gate_on(name):
+    return os.environ.get(_GATED_TOOLS[name], "").strip().lower() in ("1", "on", "true")
+
+def cast_mode():
+    v = os.environ.get("STUDIO_CAST_REFS", "").strip().lower()
+    return v if v in ("legacy", "blocks", "shadow") else "legacy"
+
+def _duration_rule(model):
+    try:
+        import studio_tools
+    except ImportError:
+        return {"min": 4, "max": 15}
+    return studio_tools.duration_rule(model)
+
+def needs_human(r):
+    if not isinstance(r, dict):
+        return None
+    if r.get("pending_confirmation"):
+        return {"pending_id": r.get("pending_id")}
+    if r.get("status") == "needs_confirmation" and r.get("quote_id") and r.get("approval"):
+        out = {"status": "needs_confirmation", "quote_id": r["quote_id"], "approval": r.get("approval")}
+        if r.get("note"):
+            out["note"] = r["note"]
+        return out
+    return None
 
 _SPENDING_NAMES = ("video_confirm", "submit_approved", "image_generate", "audio_confirm", "post_process",
                    "shots_confirm", "character_angles", "storyboard_ai",
+                   "voice_line",
                    "youtube_upload", "youtube_retry", "youtube_playlist_create", "youtube_auto_set",
                    "pitch_create")
 _DESTRUCTIVE_NAMES = ("project_delete", "asset_delete", "store_delete")

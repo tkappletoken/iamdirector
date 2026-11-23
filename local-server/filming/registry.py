@@ -1,4 +1,4 @@
-from . import contract
+from . import contract, dialogue
 
 GEN_BLOCKS = (
     {"id": "script", "line": "gen", "stage": "script", "label": "腳本（一句話 → 故事與分句）",
@@ -47,8 +47,16 @@ GEN_BLOCKS = (
      "front_only": ()},
 )
 
+DIALOGUE_BLOCK = {
+    "id": "dialogue", "line": "gen", "stage": "template", "label": "對白長片範本（台詞 → 配音 → 對嘴）",
+    "spends": True, "preview": "dry_run", "qc": False, "redo": ("line",),
+    "api": (), "mcp": (), "cli": (), "local_agent": False, "front_only": ()}
+
+def _all():
+    return GEN_BLOCKS + ((DIALOGUE_BLOCK,) if dialogue.enabled() else ())
+
 def blocks():
-    return [contract.check(b) for b in GEN_BLOCKS]
+    return [contract.check(b) for b in _all()]
 
 def gaps():
-    return {b["id"]: contract.grade(b) for b in GEN_BLOCKS}
+    return {b["id"]: contract.grade(b) for b in _all()}

@@ -68,6 +68,26 @@ image_recover_mode = upstream.image_recover_mode
 _dropped = upstream.dropped
 CONCAT_MAX = 30
 CONCAT_ENGINES = ("legacy", "shadow", "blocks")
+FILM_SEAM_TRIM_ENV = "STUDIO_FILM_SEAM_TRIM"
+FILM_SEAM_XFADE_ENV = "STUDIO_FILM_SEAM_XFADE"
+FILM_SEAM_XFADE_SECONDS_ENV = "STUDIO_FILM_SEAM_XFADE_SECONDS"
+FILM_SEAM_XFADE_DEFAULT = 0.2
+MUTE_MODEL_AUDIO_ENV = "STUDIO_MUTE_MODEL_AUDIO"
+
+def film_seam_xfade():
+    if os.environ.get(FILM_SEAM_XFADE_ENV, "").strip().lower() not in ("1", "on", "true"):
+        return None
+    try:
+        d = float(os.environ.get(FILM_SEAM_XFADE_SECONDS_ENV) or FILM_SEAM_XFADE_DEFAULT)
+    except ValueError:
+        return FILM_SEAM_XFADE_DEFAULT
+    return round(d, 3) if 0.05 <= d <= 1.5 else FILM_SEAM_XFADE_DEFAULT
+
+def mute_model_audio(asked):
+    if os.environ.get(MUTE_MODEL_AUDIO_ENV, "").strip().lower() not in ("1", "on", "true"):
+        return False
+    return asked is not False
+
 CONCAT_SHADOW_LOAD = 30.0
 _CONCAT_SHADOW = threading.Lock()
 CONCAT_NAME = re.compile(r"(?:^|/)download\?id=([A-Za-z0-9_-]{1,64})$")
@@ -121,6 +141,7 @@ LOCAL_API = (
     "/api/concat",
     "/api/assets", "/api/assets/support", "/api/assets/content",
     "/api/assets/update", "/api/check-asset", "/api/qc/rating",
+    "/api/qc/estimate",
     "/api/assets/delete", "/api/assets/uploads", "/api/assets/uploads/complete",
     "/api/image-outpaint", "/api/post-process", "/api/post-process-status", "/api/post-process-content",
     "/api/storyboard/quote", "/api/storyboard", "/api/parse-shots", "/api/captions",
@@ -177,7 +198,7 @@ AGENT_ALLOWED |= {("GET", "/api/dir-controls"), ("POST", "/api/dir-controls/prev
 AGENT_ALLOWED |= {("POST", "/api/concat"), ("GET", "/api/assets"), ("POST", "/api/assets"), ("GET", "/api/assets/support"),
                   ("POST", "/api/projects/create"), ("POST", "/api/projects/rename"), ("POST", "/api/projects/items"),
                   ("POST", "/api/captions"), ("POST", "/api/assets/update"), ("POST", "/api/check-asset"),
-                  ("GET", "/api/qc/rating"),
+                  ("GET", "/api/qc/rating"), ("GET", "/api/qc/estimate"),
                   ("GET", "/api/local/agent-scope"), ("GET", "/api/local/engine"), ("GET", "/api/local/concat-engine"),
                   ("GET", "/api/local/ui-profiles")}
 FRAME_RELAY_ENV = "STUDIO_LOCAL_FRAME_RELAY"
@@ -352,6 +373,7 @@ def _shot_index(board, shot):
 PREVIS_RIG_OFF = "3D 預演的對準角色已關閉（STUDIO_LOCAL_PREVIS_RIG=off）"
 _LOGIN = "登入 iamdirector 帳號後才有這一項"
 ACTIVITY_MAX = 200
+OPEN_FRESH = 45
 ACTIVITY_TOOLS = {"timeline_place": "place", "timeline_trim": "trim", "export_request": "export"}
 
 MISSING = {
@@ -456,6 +478,7 @@ class State:
         os.makedirs(self.media, mode=0o700, exist_ok=True)
         self.exports_root = os.path.join(data_dir, "exports")
         self.exports = {}
+        self.workbench_open = None
         self.activity = []
         self.export_lock = threading.Lock()
         self.media_lock = threading.Lock()
@@ -1240,6 +1263,11 @@ class Handler(BaseHTTPRequestHandler):
                 lim = max(1, min(200, int(lim or 50)))
             except ValueError:
                 return self._json(400, {"error": "limit 要是整數"})
+            if "open" in q:
+                op = one("open")
+                if op != "-" and not PROJECT_ID.match(op):
+                    return self._json(400, {"error": "open 要是作品 id 或 -"})
+                st.workbench_open = ("" if op == "-" else op.lower(), time.monotonic())
             with st.lock:
                 items = [dict(x) for x in st.activity if not since or x["at"] > since]
             return self._json(200, {"items": items[-lim:]})
@@ -1350,6 +1378,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, self._asset_overlay(got, one("tag")))
         if path == "/api/qc/rating":
             return self._qc_rating_local(one("job"))
+        if path == "/api/qc/estimate":
+            return self._qc_estimate_local(one("frames") or "3")
         if path == "/api/assets/content":
             aid = one("id")
             if not ASSET_ID.match(aid):
@@ -3090,6 +3120,38 @@ class Handler(BaseHTTPRequestHandler):
         text = r.get("text") if isinstance(r, dict) else None
         return self._json(200, {"text": text if isinstance(text, str) else "", "payer": "own_key"})
 
+    def _place_blocked(self, ids):
+        st = self.state
+        seen = st.workbench_open
+        if not seen or time.monotonic() - seen[1] > OPEN_FRESH:
+            return None
+        open_pid = seen[0]
+        try:
+            kv = st.db.run(studio_store.kv_get_many, ["simple_works", "jobs"])
+            projects = st.db.run(studio_store.list_projects)
+        except studio_store.StoreError:
+            return None
+        uids = {}
+        for j in kv.get("jobs") or []:
+            if isinstance(j, dict) and j.get("id") and j.get("uid"):
+                uids.setdefault(str(j["id"]), set()).add(str(j["uid"]))
+        owners = {}
+        for pid, w in (kv.get("simple_works") or {}).items():
+            for x in (w.get("jobs") if isinstance(w, dict) and isinstance(w.get("jobs"), list) else []):
+                if isinstance(x, dict) and x.get("uid"):
+                    owners.setdefault(str(x["uid"]), set()).add(str(pid).lower())
+        names = {str(p.get("id", "")).lower(): p.get("name") or "未命名" for p in projects.get("projects") or [] if isinstance(p, dict)}
+        for jid in ids:
+            pids = set().union(*[owners.get(u, set()) for u in uids.get(jid, ())])
+            if not pids or open_pid in pids:
+                continue
+            pid = sorted(pids)[0]
+            name = names.get(pid, "未命名")
+            where = "工作台現在沒有開著作品" if not open_pid else "工作台現在開著的是另一部作品"
+            return {"error": "這支片（%s）屬於作品「%s」，%s：請先開啟「%s」再放進剪輯軌" % (jid, name, where, name),
+                    "project_id": pid, "project_name": name}
+        return None
+
     def _agent_activity(self, body):
         tool, action = body.get("tool"), body.get("action")
         if ACTIVITY_TOOLS.get(tool) != action:
@@ -3102,6 +3164,9 @@ class Handler(BaseHTTPRequestHandler):
             ids = a.get("job_ids")
             if not isinstance(ids, list) or not 1 <= len(ids) <= 50 or not all(isinstance(x, str) and JOB_ID_OK.match(x) for x in ids):
                 return self._json(400, {"error": "job_ids 要是 1–50 個成片 id"})
+            blocked = self._place_blocked(ids)
+            if blocked:
+                return self._json(409, blocked)
             args = {"job_ids": ids}
         elif action == "trim":
             if not (isinstance(a.get("job_id"), str) and JOB_ID_OK.match(a["job_id"])):
@@ -3158,16 +3223,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "只能合併這台電腦裡的成片"})
             ids.append(m.group(1))
         try:
-            code, out = self._concat_jobs(ids, body.get("name") or "合併")
+            code, out = self._concat_jobs(ids, body.get("name") or "合併", mute=mute_model_audio(body.get("mute_model_audio")))
         except ConsoleError as e:
             return self._err(e, with_hints=False)
         return self._json(code, out)
 
-    def _concat_jobs(self, ids, name):
+    def _concat_jobs(self, ids, name, mute=False):
+        code, out = self._concat_engines(ids, name, mute)
+        return (code, dict(out, muted=True)) if mute and code == 200 else (code, out)
+
+    def _concat_engines(self, ids, name, mute):
         eng = self.state.concat_engine()
         if eng == "blocks":
             try:
-                code, out = self._concat_blocks(ids, name)
+                code, out = self._concat_blocks(ids, name, mute)
                 reason = None if code == 200 else "status_%d" % code
             except ConsoleError:
                 raise
@@ -3177,14 +3246,14 @@ class Handler(BaseHTTPRequestHandler):
                 return code, dict(out, engine="blocks")
             sys.stderr.write("[postblocks] %s\n" % json.dumps({"event": "fallback", "what": "concat", "engine": "blocks",
                                                                "reason": reason}))
-            code, out = self._concat_legacy(ids, name)
+            code, out = self._concat_legacy(ids, name, mute)
             return code, (dict(out, engine="legacy(fallback)") if code == 200 else out)
-        code, out = self._concat_legacy(ids, name)
+        code, out = self._concat_legacy(ids, name, mute)
         if eng == "shadow" and code == 200:
-            self._concat_shadow(ids, out.get("path"), out.get("lossless"))
+            self._concat_shadow(ids, out.get("path"), out.get("lossless"), mute)
         return code, out
 
-    def _concat_shadow(self, ids, legacy_path, lossless=False):
+    def _concat_shadow(self, ids, legacy_path, lossless=False, mute=False):
         def log(ev):
             sys.stderr.write("[postblocks] %s\n" % json.dumps(dict(ev, what="concat"), ensure_ascii=False))
 
@@ -3199,7 +3268,7 @@ class Handler(BaseHTTPRequestHandler):
                 return log({"event": "shadow_skipped", "reason": "busy"})
             work = None
             try:
-                work, path = self._concat_blocks_render(ids)
+                work, path = self._concat_blocks_render(ids, mute)
                 a, b = self._concat_probe(legacy_path), self._concat_probe(path)
                 diffs = [k for k in ("audio", "aspect") if a.get(k) != b.get(k)]
                 if abs((a.get("duration") or 0) - (b.get("duration") or 0)) > 0.1:
@@ -3231,7 +3300,7 @@ class Handler(BaseHTTPRequestHandler):
                 "frames": int(v.get("nb_read_packets") or 0), "aspect": round(w / h, 3) if h else None,
                 "audio": any(x.get("codec_type") == "audio" for x in ss)}
 
-    def _concat_spec_body(self, ids, paths):
+    def _concat_spec_body(self, ids, paths, mute=False, drop=(), xfade=None):
         infos = [self._concat_probe(p) for p in paths]
         st = self.state
         r = subprocess.run([st.ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
@@ -3243,21 +3312,25 @@ class Handler(BaseHTTPRequestHandler):
         short = min(w, h)
         res = min(export_spec.RESOLUTIONS, key=lambda x: abs(int(x[:-1]) - short))
         video, audio, at = [], [], 0.0
-        for j, info in zip(ids, infos):
+        for k, (j, info) in enumerate(zip(ids, infos)):
             dur = info["duration"]
-            video.append({"job": j, "in": 0, "out": dur})
-            if info["audio"]:
-                audio.append({"lane": "A1", "job": j, "at": round(at, 3), "in": 0, "dur": dur, "gain": 1.0})
-            at += dur
-        return {"format": {"aspect": aspect, "resolution": res, "fps": 24, "fit": "pad"}, "video": video, "audio": audio,
+            cut = round(dur / info["frames"], 3) if k in drop and info["frames"] else 0
+            video.append({"job": j, "in": cut, "out": dur})
+            if info["audio"] and not mute:
+                audio.append({"lane": "A1", "job": j, "at": round(at, 3), "in": cut, "dur": round(dur - cut, 3), "gain": 1.0})
+            at += dur - cut
+        body = {"format": {"aspect": aspect, "resolution": res, "fps": 24, "fit": "pad"}, "video": video, "audio": audio,
                 "subtitles": "none", "disclosure": {"on": False}}
+        if xfade is not None:
+            body["pipeline"] = [{"use": "transition", "params": {"duration": xfade, "style": "fade"}}]
+        return body
 
-    def _concat_blocks_render(self, ids):
+    def _concat_blocks_render(self, ids, mute=False, drop=(), xfade=None):
         st = self.state
         if not (st.ffmpeg and st.ffprobe):
             raise render.RenderError("這台找不到 ffmpeg，沒辦法合併")
         paths = [os.path.join(st.media, self._cache_job(j)) for j in ids]
-        req = export_spec.normalize(self._concat_spec_body(ids, paths))
+        req = export_spec.normalize(self._concat_spec_body(ids, paths, mute, drop, xfade))
         eid = "exp_" + secrets.token_hex(10)
         work = tempfile.mkdtemp(prefix="concat-blocks-", dir=st.data_dir)
         try:
@@ -3291,10 +3364,10 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(work, ignore_errors=True)
             raise
 
-    def _concat_blocks(self, ids, name):
+    def _concat_blocks(self, ids, name, mute=False, drop=(), xfade=None):
         st = self.state
         name = safe_filename(name, 60) or "合併"
-        work, out = self._concat_blocks_render(ids)
+        work, out = self._concat_blocks_render(ids, mute, drop, xfade)
         try:
             with open(out, "rb") as f:
                 sha = self._store_blob(f.read(), "video/mp4")
@@ -3307,7 +3380,7 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(work, ignore_errors=True)
         return 200, {"src": "/api/local/media?sha=" + sha, "file": name + ".mp4", "lossless": False, "path": kept}
 
-    def _concat_legacy(self, ids, name):
+    def _concat_legacy(self, ids, name, mute=False):
         st = self.state
         if not (st.ffmpeg and st.ffprobe):
             return 409, {"error": "這台找不到 ffmpeg，沒辦法合併"}
@@ -3358,6 +3431,14 @@ class Handler(BaseHTTPRequestHandler):
                     norm.append(y)
                 if not concat(norm):
                     return 500, {"error": "合併失敗"}
+            if mute:
+                quiet = os.path.join(work, "muted.mp4")
+                if run([st.ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-i", out, "-f", "lavfi", "-i",
+                        "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+                        "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest", "-movflags", "+faststart",
+                        quiet]).returncode != 0:
+                    return 500, {"error": "影片原聲靜音失敗"}
+                out = quiet
             with open(out, "rb") as f:
                 sha = self._store_blob(f.read(), "video/mp4")
             kept_dir = os.path.join(st.data_dir, "merged")
@@ -3392,7 +3473,12 @@ class Handler(BaseHTTPRequestHandler):
                     path, ctype = self._media_named(self._cache_job(files[0]))
                     out["film"] = {"src": "/api/download?id=" + files[0], "path": path, "content_type": ctype}
                 else:
-                    code, f = self._concat_jobs(files, "agent-film")
+                    mute, xf = mute_model_audio(None), film_seam_xfade()
+                    code, f = (self._film_trimmed(files, plan, shots, mute, xf)
+                               or self._concat_jobs(files, "agent-film", mute=mute))
+                    if code == 200 and xf is not None:
+                        qc_rep = self._film_seam_qc(files, shots, f)
+                        f = dict(f, seam_qc=qc_rep) if qc_rep else f
                     if code == 200:
                         out["film"] = f
                     else:
@@ -3400,6 +3486,71 @@ class Handler(BaseHTTPRequestHandler):
             except ConsoleError as e:
                 out["film_error"] = str(e)
         return self._json(200, out)
+
+    def _film_trimmed(self, files, plan, shots, mute, xfade=None):
+        relayed = set(plan.get("relayed") or ())
+        picked = [s for s in shots if s.get("picked")]
+        drop = [i for i, s in enumerate(picked) if i and s["picked"] in relayed]
+        if os.environ.get(FILM_SEAM_TRIM_ENV, "").strip().lower() not in ("1", "on", "true"):
+            drop = []
+        if not drop and xfade is None:
+            return None
+        try:
+            code, out = self._concat_blocks(files, "agent-film", mute, drop, xfade)
+            reason = None if code == 200 else "status_%d" % code
+        except ConsoleError:
+            raise
+        except Exception as e:
+            code, out, reason = 0, None, "error:" + type(e).__name__
+        if reason is None:
+            out = dict(out, engine="blocks")
+            if drop:
+                out["seams_trimmed"] = [picked[i]["key"] for i in drop]
+            if xfade is not None:
+                out["seam_xfade"] = xfade
+            return code, (dict(out, muted=True) if mute else out)
+        sys.stderr.write("[postblocks] %s\n" % json.dumps({"event": "fallback", "what": "film_seam", "reason": reason}))
+        return None
+
+    def _film_seam_qc(self, files, shots, film):
+        import postblocks.seam_check as sc
+        st = self.state
+        try:
+            picked = [s for s in shots if s.get("picked")]
+            drop = [i for i in range(1, len(files)) if picked[i]["key"] in (film.get("seams_trimmed") or ())]
+            xf = film.get("seam_xfade")
+            paths = [os.path.join(st.media, self._cache_job(j)) for j in files]
+            video = self._concat_spec_body(files, paths, drop=drop)["video"]
+            frames = [self._concat_probe(p)["frames"] for p in paths]
+            th = float(sc.SeamCheck.params["threshold"]["default"])
+            img_dir = os.path.splitext(film["path"])[0] + "-seams"
+            os.makedirs(img_dir, mode=0o700, exist_ok=True)
+            seams, at = [], 0.0
+            for k in range(len(files) - 1):
+                a, b = video[k], video[k + 1]
+                at += a["out"] - a["in"]
+                last = max(0.0, a["out"] - (a["out"] / frames[k] if frames[k] else 1.0 / 24))
+                score = sc.SeamCheck.ssim(st.ffmpeg, paths[k], last, paths[k + 1], b["in"])
+                name = "seam%d" % (k + 1)
+                img = os.path.join(img_dir, name + ".png")
+                mid = at + (xf / 2.0 if xf else 0.0)
+                r = subprocess.run([st.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                                    "-ss", "%.3f" % last, "-i", paths[k], "-ss", "%.3f" % mid, "-i", film["path"],
+                                    "-ss", "%.3f" % b["in"], "-i", paths[k + 1], "-filter_complex",
+                                    "[0:v]scale=-2:180,setsar=1[a];[1:v]scale=-2:180,setsar=1[m];[2:v]scale=-2:180,setsar=1[b];"
+                                    "[a][m][b]hstack=inputs=3", "-frames:v", "1", img],
+                                   capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+                ok = score is not None and score >= th
+                seams.append({"seam": name, "from": picked[k]["key"], "to": picked[k + 1]["key"],
+                              "ssim": None if score is None else round(score, 3), "ok": ok,
+                              "defects": [] if ok else (["unreadable"] if score is None else ["seam_jump"]),
+                              "image": img if r.returncode == 0 and os.path.exists(img) else None})
+            return {"threshold": th, "xfade": xf, "seams": seams, "redo": "none",
+                    "note": "只量不重抽：不合格的接縫只列出來，要不要重拍由人或 Agent 另外決定"}
+        except Exception as e:
+            sys.stderr.write("[postblocks] %s\n" % json.dumps({"event": "fallback", "what": "seam_qc",
+                                                               "reason": "error:" + type(e).__name__}))
+            return None
 
     def _film_picks(self, run):
         st = self.state
@@ -3753,6 +3904,19 @@ class Handler(BaseHTTPRequestHandler):
             items = [x for x in items if isinstance(x, dict) and tag in (x.get("tags") or [])]
         return dict(got, data=items)
 
+    def _qc_estimate_local(self, frames):
+        n = qc.estimate_frames(frames)
+        if n is None:
+            return self._json(400, {"error": "frames 要 1～%d" % qc.MAX_FRAMES})
+        try:
+            listing, _ = self.state.models_cached()
+            cap = qc.price_cap(qc.find_entry(listing, qc.MODEL), n)
+        except ConsoleError:
+            cap = None
+        if cap is None:
+            return self._json(503, {"error": "查不到驗片模型 %s 的單價" % qc.MODEL, "payer": "own_key"})
+        return self._json(200, {"payer": "own_key", "model": qc.MODEL, "frames": n, "cap_usd": cap, "upper_bound": True})
+
     def _qc_rating_local(self, job):
         if not isinstance(job, str) or not ID.match(job):
             return self._json(400, {"error": "job 不合法（上游的影片 id）"})
@@ -3958,9 +4122,10 @@ class Handler(BaseHTTPRequestHandler):
                 raw = st.call("/audio/speech", payload=a["payload"], raw=True, timeout=GENERATE_TIMEOUT, meta=meta)
                 if not raw:
                     return self._json(502, {"error": "上游沒回音檔", "payer": "own_key"})
-                return self._json(200, {"payer": "own_key", "provider": "appletoken", "quote_id": qid,
-                                        "audio": self._store_audio(raw, meta.get("content_type")),
-                                        "characters": meta.get("x-appletoken-characters")})
+                audio = self._store_audio(raw, meta.get("content_type"))
+                return self._json(200, {"payer": "own_key", "provider": "appletoken", "quote_id": qid, "audio": audio,
+                                        "characters": meta.get("x-appletoken-characters"),
+                                        "seconds": self._audio_seconds(audio)})
             r = st.call("/music/generations", payload=a["payload"], timeout=GENERATE_TIMEOUT)
         except ConsoleError as e:
             return self._err(e, payer="own_key")
@@ -3994,6 +4159,20 @@ class Handler(BaseHTTPRequestHandler):
 
     AUDIO_TYPES = ("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave", "audio/flac",
                    "audio/ogg", "audio/aac", "audio/mp4", "application/octet-stream")
+
+    def _audio_seconds(self, audio):
+        st = self.state
+        m = re.search(r"sha=([0-9a-f]{64})$", str((audio or {}).get("url") or ""))
+        if not (m and st.ffprobe):
+            return None
+        try:
+            r = subprocess.run([st.ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                os.path.join(st.media, m.group(1))], capture_output=True, text=True, timeout=30,
+                               stdin=subprocess.DEVNULL)
+            v = float(r.stdout.strip())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        return round(v, 3) if v > 0 else None
 
     def _store_audio(self, raw, ctype):
         mime = ((ctype or "").split(";")[0].strip().lower()) or "audio/mpeg"

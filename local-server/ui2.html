@@ -960,6 +960,8 @@ pre.err { color:var(--ng); }
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvBlocking"><label for="pvBlocking">3D 預演放進動作來源時，同步把站位寫進那一鏡的導演控制（左中右、前中後、面向、走到哪；可以還原；測試中，預設關）</label></div>
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvRig"><label for="pvRig">3D 預演加「景別照角色身高」與「對準角色」（過肩、反打、雙人；後者限桌面版；測試中，預設關）</label></div>
         
+        <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvCamAdj"><label for="pvCamAdj">3D 預演加「運鏡微調」（距離、機位升降、繞主體轉、焦距、滾轉疊在運鏡上；測試中，預設關）</label></div>
+        
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="dcPanel"><label for="dcPanel">分鏡每一鏡加「導演控制」（走位、表演、運鏡；測試中，預設關）</label></div>
         
         <div class="chk" id="agRunRow" hidden style="margin-top:10px"><input type="checkbox" id="agRun"><label for="agRun">右下角顯示「Agent 拍片進度」（第幾鏡、花了多少、Agent 的提問、交片；測試中，預設關）</label></div>
@@ -1339,6 +1341,11 @@ function resPricedDefault() {
   const el = document.getElementById('resolution');
   const ok = el ? [...el.options].filter(o => o.value && !o.disabled).map(o => o.value) : [];
   return ok.includes('720p') ? '720p' : (ok[0] || '720p');
+}
+
+function resDefaultFill(p) {
+  if (p && typeof p === 'object' && !p.resolution && !p.size && p.model && resPriced(p.model)) p.resolution = resPricedDefault();
+  return p;
 }
 
 function errMsg(x) {
@@ -3237,7 +3244,7 @@ $('jobs').addEventListener('click', e => {
   } else if (act === 'rerun') {
     unsureResendOk(j).then(ok => {
       if (!ok) return;
-      const p = JSON.parse(JSON.stringify(j.payload));
+      const p = resDefaultFill(JSON.parse(JSON.stringify(j.payload)));
       enqueue([p]); say('再排一支', true);
     });
   } else if (act === 'tweak') {
@@ -3875,7 +3882,7 @@ async function aiStoryboard(opts, onErr) {
     try { d = await r.json(); } catch (e) { d = {}; }
     return { ok: r.ok, status: r.status, d };
   };
-  const msg = d => (d && typeof d.error === 'string' ? d.error : JSON.stringify((d && d.error) || d || {}).slice(0, 200));
+  const msg = d => (errMsg(d) || JSON.stringify(d || {})).slice(0, 200);
   const body = { story: opts.story, shots: opts.shots };
   if (opts.style) body.style = opts.style;
   if (opts.video_model) body.video_model = opts.video_model;
@@ -4558,7 +4565,7 @@ document.addEventListener('keydown', e => {
           const r = await fetch('/api/studio/name', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                                       body: JSON.stringify({ name: v }), credentials: 'same-origin' });
           const d = await r.json().catch(() => ({}));
-          if (!r.ok || !d.ok) { msg.textContent = d.error || ('存不進去（' + r.status + '）'); return; }
+          if (!r.ok || !d.ok) { msg.textContent = errMsg(d) || ('存不進去（' + r.status + '）'); return; }
           S.name = d.name; inp.value = d.name; paint(d.name); msg.textContent = '已儲存';
         } catch (e) { msg.textContent = '連不上伺服器，請再按一次'; }
         finally { save.disabled = false; }
@@ -5782,7 +5789,7 @@ document.addEventListener('keydown', e => {
         body: '{}'
       });
       const d = await r.json().catch(() => ({ error: '伺服器回了看不懂的東西（HTTP ' + r.status + '）' }));
-      if (!r.ok || !d.checkout_url) { say(d.error || '建立訂閱失敗', false); return; }
+      if (!r.ok || !d.checkout_url) { say(errMsg(d) || '建立訂閱失敗', false); return; }
       location.href = d.checkout_url;
     } catch (e) {
       say('建立訂閱失敗：' + e.message, false);
@@ -5799,7 +5806,7 @@ document.addEventListener('keydown', e => {
         body: JSON.stringify({ amount: amount })
       });
       const d = await r.json().catch(() => ({ error: '伺服器回了看不懂的東西（HTTP ' + r.status + '）' }));
-      if (!r.ok || !d.checkout_url) { say(d.error || '建立付款失敗', false); return; }
+      if (!r.ok || !d.checkout_url) { say(errMsg(d) || '建立付款失敗', false); return; }
       location.href = d.checkout_url;
     } catch (e) {
       say('建立付款失敗：' + e.message, false);
@@ -9922,6 +9929,7 @@ document.addEventListener('keydown', e => {
         .forEach(k => { delete p[k]; });
       p.model = p.model || j.model;
       p.prompt = rtPrompt.value.trim() || p.prompt || j.prompt;
+      resDefaultFill(p);
       if (!p.model || !p.prompt) { say('原鏡少了模型或提示詞，沒辦法重抽'); return; }
       const want = RT.e - RT.s;
       const al = (typeof window.__ALIGN_SECONDS__ === 'function')
@@ -9941,11 +9949,23 @@ document.addEventListener('keydown', e => {
       } catch (err) { say('取幀失敗：' + err.message + '，改用純提示詞重抽'); frames.length = 0; }
       if (frames.length) p.frame_images = frames; else delete p.frame_images;
       const mark = { srcUid: RT.uid, s: RT.s, e: RT.e };
-      enqueue([p], { retake: mark });
+      const batch = enqueue([p], { retake: mark });
       say('重抽已排入（' + fmtS(mark.s) + ' → ' + fmtS(mark.e) + '，生 ' + p.seconds + ' 秒）；拍好之後在這裡比較、套用', true);
+      const keep = RT;
       RT = null;
       drawTL();
+      const t0 = Date.now(), path0 = location.pathname;
+      clearInterval(rtWatch);
+      const tick = rtWatch = setInterval(() => {
+        if (location.pathname !== path0) { clearInterval(tick); rtWatch = null; return; }
+        const nj = jobs.find(x => x && x.batch === batch);
+        if (nj && nj.id) { clearInterval(tick); return; }
+        if (!nj) { clearInterval(tick); if (!RT && jobByUid(keep.uid)) { RT = keep; drawTL(); } return; }
+        if (Date.now() - t0 > RT_WATCH_MS) clearInterval(tick);
+      }, 300);
     }
+    let rtWatch = null;
+    const RT_WATCH_MS = 600000;
 
     function applyRetake(nj) {
       const r = nj.retake;
@@ -10074,7 +10094,7 @@ document.addEventListener('keydown', e => {
       });
     }
     window.__RETAKE__ = { mark: markAt, go: retakeGo, apply: applyRetake, pending: pendingRetakes,
-                          state: () => RT && { uid: RT.uid, s: RT.s, e: RT.e } };
+                          state: () => RT && { uid: RT.uid, s: RT.s, e: RT.e }, watching: () => rtWatch != null };
 
     lanes.V1.addEventListener('pointerdown', e => {
       const el = e.target.closest('.tl-clip');
@@ -10690,7 +10710,7 @@ document.addEventListener('keydown', e => {
         .forEach(k => { delete p[k]; });
       p.model = p.model || j.model;
       p.prompt = p.prompt || j.prompt;
-      return p;
+      return resDefaultFill(p);
     }
     async function rerollMany(i, c, p, n) {
       const ask = window.__NSET_ASK__;
@@ -13094,7 +13114,7 @@ document.addEventListener('keydown', e => {
   }
   const mirrorPost = body => prevFetch('/api/assets/mirror', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status)); return d; });
+    .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(errMsg(d) || ('HTTP ' + r.status)); return d; });
   let syncing = null;
   async function syncAssets(to, from) {
     const ids = usedAssetIds();
@@ -13428,7 +13448,7 @@ document.addEventListener('keydown', e => {
             body: JSON.stringify({ provider: s.id }) });
           const d = await resp.json().catch(() => ({}));
           if (resp.ok) { STATE = d; if (pointsOn() && !LOCALM) setPref('video', 'points'); draw(); }
-          else { msg.className = 'payer-msg bad'; msg.textContent = d.error || '移除失敗'; del.disabled = false; }
+          else { msg.className = 'payer-msg bad'; msg.textContent = errMsg(d) || '移除失敗'; del.disabled = false; }
         };
         key.append(chip, swap, del);
       } else if (s.available === false) {
@@ -13544,6 +13564,12 @@ document.addEventListener('keydown', e => {
     };
     save.onclick = run;
     inp.onkeydown = e => { if (e.key === 'Enter') run(); };
+    if (window.__STUDIO__ && window.__STUDIO__.key_autosave === true) {
+      inp.addEventListener('paste', () => setTimeout(() => {
+        const v = inp.value.trim();
+        if (v.length >= 16 && !/\s/.test(v) && !save.disabled) run();
+      }, 0));
+    }
     row.append(inp, save);
     box.append(t, row, msg);
     return box;
@@ -16217,6 +16243,7 @@ document.addEventListener('keydown', e => {
       },
       onClose: () => { try { renderShots(); } catch (e) {} },
       ...(window.__PREVIS_RIG__ && window.__PREVIS_RIG__.isOn() ? window.__PREVIS_RIG__.ctx() : {}),
+      ...(window.__PREVIS_CAMADJ__ && window.__PREVIS_CAMADJ__.isOn() ? { camAdjOn: true } : {}),
     };
   }
 
@@ -19502,7 +19529,7 @@ document.addEventListener('keydown', e => {
         try { d = await r.json(); } catch (e) {}
       }
     } catch (e) { r = { ok: false }; d = { error: '連不上伺服器' }; }
-    if (!r.ok) { say('匯出沒有送出：' + ((d && d.error) || '伺服器拒絕')); paint(); return; }
+    if (!r.ok) { say('匯出沒有送出：' + (errMsg(d) || '伺服器拒絕')); paint(); return; }
     const cur = window.__CLOUD__ && typeof window.__CLOUD__.current === 'function' ? window.__CLOUD__.current() : null;
     HIST.unshift(Object.assign({ id: d.id, title: S.snap.body.title || ('第 ' + (HIST.length + 1) + ' 部'), created: Date.now(), state: d.state || 'staging' },
                                cur && cur.id ? { pid: cur.id } : {}));
@@ -20906,7 +20933,7 @@ document.addEventListener('keydown', e => {
     const r = await fetch(path, { method, headers: body ? { 'Content-Type': 'application/json' } : {},
                                   body: body ? JSON.stringify(body) : undefined });
     let d = {}; try { d = await r.json(); } catch (_) {}
-    if (!r.ok && r.status !== 202) throw new Error(d.error || ('HTTP ' + r.status));
+    if (!r.ok && r.status !== 202) throw new Error(errMsg(d) || ('HTTP ' + r.status));
     return d;
   };
   const copy = async (text, btn) => {
@@ -21228,7 +21255,8 @@ document.addEventListener('keydown', e => {
     if (!document.hidden) {
       try {
         const q = FEED.since ? '?since=' + encodeURIComponent(FEED.since) : '?limit=30';
-        const r = await fetch('/api/agent/activity' + q, { cache: 'no-store' });
+        const op = /^\/w\/([0-9a-fA-F-]{36})$/.exec(location.pathname);
+        const r = await fetch('/api/agent/activity' + q + '&open=' + (op ? op[1] : '-'), { cache: 'no-store' });
         if (r.status === 404) return;
         if (r.ok) {
           const d = await r.json(); const fresh = d.items || [];
@@ -21490,6 +21518,13 @@ document.addEventListener('keydown', e => {
     '.qc-recon .sp{flex:1}',
     '.qc-recon .qc-refresh{flex:0 0 auto;width:auto;font-size:var(--fs-m);padding:3px 10px;background:transparent;border:1px solid var(--edge2);color:var(--pencil)}',
     '.qc-recon .qc-refresh:hover{color:var(--paper);border-color:var(--pencil)}',
+    '.qc-recon .qc-unv{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 6px;font-size:var(--fs-m);color:var(--pencil)}',
+    '.qc-recon .qc-unv button{width:auto;font-size:var(--fs-m);padding:3px 10px}',
+    '.qc-recon .qc-unv .qc-unv-back{background:transparent;border:1px solid var(--edge2);color:var(--pencil)}',
+    '.qc-recon .qc-reqc-w{display:inline-flex;align-items:center;gap:4px;margin-left:6px;flex-wrap:wrap}',
+    '.qc-recon .qc-reqc-w button{width:auto;font-size:var(--fs-s,11px);padding:1px 6px;background:transparent;border:1px solid var(--edge2);color:var(--pencil)}',
+    '.qc-recon .qc-reqc-q{font-size:var(--fs-s,11px);color:var(--pencil)}',
+    '.qc-recon .qc-cached{display:block;font-size:var(--fs-s,11px);color:var(--pencil)}',
     '.qc-recon .qc-scroll{overflow-x:auto}',
     '.qc-recon table{width:100%;border-collapse:collapse;font-size:var(--fs-m)}',
     '.qc-recon th{font:600 var(--fs-s)/1.3 var(--mono);letter-spacing:0;color:var(--faint);text-align:right;padding:8px 10px;border-bottom:1px solid var(--edge);white-space:nowrap}',
@@ -21587,6 +21622,9 @@ document.addEventListener('keydown', e => {
         qcell.append(sp);
       } else qcell.textContent = q.skip ? '—' : (jj && jj.status === 'completed' && QCFG.auto ? '…' : '—');
       if (q.skip) qcell.title = q.why || '';
+      if (q.prev && q.prev.overall != null) qcell.title = (qcell.title ? qcell.title + ' · ' : '') + '上一次 ' + q.prev.overall + '/10（已重驗，蓋掉）';
+      if (q.cached && q.again) { qcell.append(h('small', 'qc-cached', '這組畫面已驗過，沿用上次結果，未扣費')); qcell.title = (qcell.title ? qcell.title + ' · ' : '') + '這組畫面已驗過，沿用上次結果，未扣費'; }
+      if (jj && jj.id && jj.src && jj.status === 'completed' && (v || q.skip)) qcell.append(reqcCtl(jj));
       const rcell = h('td');
       if (jj && jj.id && jj.status === 'completed') {
         const b = h('button', 'qc-rate' + (q.rated ? '' : ' none'), q.rated ? '★ ' + q.rated.score : (q.rateErr ? '未回傳' : '評分'));
@@ -21615,10 +21653,81 @@ document.addEventListener('keydown', e => {
     sum.append(h('span', 'k', '淨扣'), net, h('span', 'd', '實扣 ' + fmt(tot.charged) + ' − 退點 ' + fmt(tot.refunded)));
     if (tot.usd) sum.append(h('span', 'u', '上游 USD ' + tot.usd.toFixed(4)));
     body.textContent = '';
+    const unv = unverifiedOf(g.jobs);
+    if (unv.length) body.append(unvBar(g, unv));
+    else if (unvAsk === g.key) unvAsk = null;
     body.append(t);
     box.querySelectorAll('.qc-sum').forEach(x => x.remove());
     box.append(sum);
   }
+  let unvAsk = null, unvRun = false;
+  const estCache = new Map();
+  function qcEstimate(j) {
+    if (!estCache.has(j.id)) estCache.set(j.id, fetch('/api/qc/estimate?job=' + encodeURIComponent(j.id) + '&frames=3')
+      .then(r => (r.ok ? r.json() : null)).then(d => (d && d.cap_usd != null ? d : null)).catch(() => null));
+    return estCache.get(j.id);
+  }
+  function estLine(ds) {
+    if (!ds.length || ds.some(d => !d)) return '';
+    const pts = ds.filter(d => d.payer === 'points'), own = ds.filter(d => d.payer !== 'points');
+    if (pts.some(d => d.cap_points == null || !isFinite(Number(d.cap_points)))) return '';
+    const parts = [];
+    if (pts.length) parts.push('約 ' + fmt(pts.reduce((a, d) => a + Number(d.cap_points), 0)) + ' 點');
+    if (own.length) parts.push('約 USD ' + own.reduce((a, d) => a + Number(d.cap_usd), 0).toFixed(4) + '（從你的 AppleToken 額度扣）');
+    return '上限' + parts.join('＋') + '，實際照用量、不會超過';
+  }
+  function fillEst(el, base, list) {
+    Promise.all(list.map(qcEstimate)).then(ds => { const t = estLine(ds); if (t && el.isConnected) { el.textContent = base + '；' + t; el.dataset.est = '1'; } });
+  }
+  const unverifiedOf = list => (list || []).filter(j => j && j.id && j.src && j.status === 'completed' && !j.qc && !busy.has(j.uid));
+  function unvBar(g, unv) {
+    const bar = h('div', 'qc-unv'), n = unv.length;
+    if (unvRun) { bar.append(h('span', 'd', '驗片中…')); return bar; }
+    if (unvAsk !== g.key) {
+      const b = h('button', 'qc-unv-go', '驗未驗的 ' + n + ' 支'); b.type = 'button';
+      b.title = '這一輪有 ' + n + ' 支完成了還沒驗片。按了先問一次，確定才驗';
+      b.onclick = () => { unvAsk = g.key; paint(); };
+      bar.append(b);
+      return bar;
+    }
+    bar.classList.add('ask');
+    const q = h('span', 'qc-unv-q', '要驗 ' + n + ' 支，會產生費用（每支打一次文字模型）');
+    bar.append(q);
+    fillEst(q, q.textContent, unv);
+    const ok = h('button', 'qc-unv-ok', '驗 ' + n + ' 支'); ok.type = 'button';
+    const back = h('button', 'qc-unv-back', '返回'); back.type = 'button';
+    back.onclick = () => { unvAsk = null; paint(); };
+    ok.onclick = async () => {
+      unvAsk = null; unvRun = true; paint();
+      try { for (const j of unverifiedOf(g.jobs)) await qcJob(j); }
+      finally { unvRun = false; paint(); }
+    };
+    bar.append(ok, back);
+    return bar;
+  }
+
+  let reAsk = null;
+  function reqcCtl(j) {
+    const w = h('span', 'qc-reqc-w');
+    if (busy.has(j.uid)) { w.append(h('span', 'd', ' 驗片中…')); return w; }
+    if (reAsk !== j.uid) {
+      const b = h('button', 'qc-reqc', '重驗'); b.type = 'button';
+      b.title = '換一組畫面再驗一次（會產生費用），結果蓋掉這個分數';
+      b.onclick = () => { reAsk = j.uid; paint(); };
+      w.append(b);
+      return w;
+    }
+    const q = h('span', 'qc-reqc-q', '重驗這支，會產生費用（打一次文字模型）');
+    w.append(q);
+    fillEst(q, q.textContent, [j]);
+    const ok = h('button', 'qc-reqc-ok', '重驗'); ok.type = 'button';
+    const back = h('button', 'qc-reqc-back', '返回'); back.type = 'button';
+    back.onclick = () => { reAsk = null; paint(); };
+    ok.onclick = async () => { reAsk = null; const p = qcJob(j, true); paint(); await p; paint(); };
+    w.append(ok, back);
+    return w;
+  }
+
   const QC_KEY = 'qc-cfg';
   let QCFG = QC_DEFAULT;
   try { QCFG = qcCfgOf(JSON.parse(localStorage.getItem(QC_KEY) || 'null')); } catch (e) { QCFG = qcCfgOf(null); }
@@ -21640,37 +21749,42 @@ document.addEventListener('keydown', e => {
     }
     return cutsMemo[k];
   }
-  async function qcJob(j) {
+  const QC_AT = [0.15, 0.5, 0.9], QC_AT_AGAIN = [0.25, 0.6, 0.8];
+  const qcAgainAt = k => QC_AT_AGAIN.map(r => Math.round((r + ((Math.max(1, k) - 1) * 0.037) % 0.185) * 1000) / 1000);
+  async function qcJob(j, fresh) {
     if (!j || !j.id || !j.src || busy.has(j.uid)) return j && j.qc;
-    if (j.qc && (j.qc.verdict || j.qc.skip)) return j.qc;
+    if (!fresh && j.qc && (j.qc.verdict || j.qc.skip)) return j.qc;
+    const prev = fresh && j.qc && j.qc.verdict && j.qc.verdict.ok ? { overall: j.qc.verdict.overall, at: j.qc.at } : (j.qc && j.qc.prev) || null;
+    const again = fresh ? ((j.qc && j.qc.again) || 0) + 1 : ((j.qc && j.qc.again) || 0);
     busy.add(j.uid);
     try {
       const frames = [];
-      for (const r of [0.15, 0.5, 0.9]) frames.push(await grabFrame(j.src, r, 512));
+      for (const r of (fresh ? qcAgainAt(again) : QC_AT)) frames.push(await grabFrame(j.src, r, 512));
       const qb = { job: j.id, frames, expect: expectFor(j.prompt || (j.payload && j.payload.prompt), castNow()) };
       if (await cutsAllowed()) qb.allow_cuts = true;
       const res = await api('POST', '/api/qc', qb);
       if (!res.ok) {
         const er = res.d && res.d.error;
-        j.qc = { skip: true, why: (typeof er === 'string' ? er : er && (er.message || er.code)) || ('驗片失敗（' + res.status + '）'), at: Date.now() };
+        j.qc = { skip: true, why: (typeof er === 'string' ? er : er && (er.message || er.code)) || ('驗片失敗（' + res.status + '）'), at: Date.now(), prev, again };
       } else {
-        j.qc = { verdict: res.d.verdict, rating: res.d.rating || null, model: res.d.model, at: Date.now() };
+        j.qc = { verdict: res.d.verdict, rating: res.d.rating || null, model: res.d.model, at: Date.now(), prev, again, cached: !!res.d.cached };
         if (QCFG.rate && res.d.rating) await rateJob(j, res.d.rating, 'auto');
       }
     } catch (e) {
-      j.qc = { skip: true, why: '取幀或驗片失敗：' + (e && e.message || e), at: Date.now() };
+      j.qc = { skip: true, why: '取幀或驗片失敗：' + (e && e.message || e), at: Date.now(), prev, again };
     } finally { busy.delete(j.uid); }
     try { save(); } catch (e) {}
     return j.qc;
   }
   async function rateJob(j, r, how) {
     const res = await api('POST', '/api/qc/rate', { job: j.id, score: r.score, tags: r.tags || [], comment: r.comment || '' });
+    const er = res.d && res.d.error;
     j.qc = Object.assign({}, j.qc || {}, { rated: res.ok ? { score: r.score, tags: r.tags || [], how, at: Date.now() } : null,
-                                          rateErr: res.ok ? null : ((res.d && res.d.error) || ('評分回傳失敗（' + res.status + '）')) });
+                                          rateErr: res.ok ? null : ((typeof er === 'string' ? er : er && (er.message || er.code)) || ('評分回傳失敗（' + res.status + '）')) });
     return res.ok;
   }
   function retakeOf(j) {
-    const p = JSON.parse(JSON.stringify(j.payload || {}));
+    const p = resDefaultFill(JSON.parse(JSON.stringify(j.payload || {})));
     const extra = { fromBoard: true, takeOf: j.uid, qcTry: (j.qcTry || 0) + 1, qcRoot: j.qcRoot || j.uid };
     if (j.chain) Object.assign(extra, { chain: j.chain, shot: j.shot, chainOf: j.chainOf });
     if (j.applied && j.applied.sid) extra.shotSid = j.applied.sid;
@@ -21700,7 +21814,7 @@ document.addEventListener('keydown', e => {
     return best;
   }
   window.__CHAIN_QC__ = qcGate;
-  window.__QC__ = { job: qcJob, auto: () => !!QCFG.auto, threshold: () => QCFG.threshold, busy: u => busy.has(u) };
+  window.__QC__ = { job: qcJob, auto: () => !!QCFG.auto, threshold: () => QCFG.threshold, busy: u => busy.has(u), againAt: qcAgainAt };
   function sweep() {
     if (!QCFG.auto || typeof jobs === 'undefined') return;
     jobs.filter(j => j.fromBoard && !j.chain && j.status === 'completed' && j.src && j.id && !j.qc && !busy.has(j.uid))
@@ -22656,6 +22770,7 @@ document.addEventListener('keydown', e => {
     if (MODE === 'simple') render(true);
   }
   async function filmSync(pid) {
+    if (pid && !PROJ.some(x => x.id === pid)) refreshProjects(true);
     if (!pid || pid !== curPid()) return null;
     const key = boardKey(pid);
     let vals;
@@ -22695,6 +22810,18 @@ document.addEventListener('keydown', e => {
     return { added: add.length };
   }
   window.__MAINLINE_FILM_SYNC__ = filmSync;
+  let projAt = 0;
+  async function refreshProjects(force) {
+    if (!loaded || (!force && Date.now() - projAt < 5000)) return false;
+    projAt = Date.now();
+    const before = JSON.stringify([PROJ, ITEMS]);
+    try { await loadProjects(); } catch (_) { return false; }
+    if (before === JSON.stringify([PROJ, ITEMS])) return false;
+    const a = document.activeElement;
+    const typing = a && root.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
+    if (MODE === 'simple' && !curPid() && !typing) render();
+    return true;
+  }
   function curPid() {
     if (!location.pathname.startsWith('/w/')) return null;
     let seg = location.pathname.slice(3);
@@ -24404,7 +24531,11 @@ document.addEventListener('keydown', e => {
     const ch = h('div', 'sm-choices');
     [['voice', '配音＋配樂', lines.length ? lines.length + ' 句台詞依角色配音，再墊一段配樂' : '這部片沒有台詞：墊一段配樂，每鏡原聲照留'],
      ['orig', '只用影片原聲', '每一鏡用生成時自帶的聲音，' + PT('不花點數', '不花錢')]].forEach(([k, t, sub]) => {
-      const b = btn('sm-choice', null, () => { w.sound.mode = k; saveWorks(true); render(true); });
+      const b = btn('sm-choice', null, () => {
+        w.sound.mode = k;
+        if (k === 'voice' && (w.done.sound === 'orig' || w.done.sound === 'ai')) delete w.done.sound;
+        saveWorks(true); render(true);
+      });
       b.setAttribute('aria-pressed', String(mode === k));
       b.append(h('b', null, t), h('small', null, sub));
       ch.append(b);
@@ -24473,6 +24604,7 @@ document.addEventListener('keydown', e => {
     const why = h('span', 'why');
     const next = btn('sm-main', '下一步：剪輯字幕 →', () => goStep(w, 6));
     if (mode === 'orig') {
+      if (ready && !w.done.sound) { w.done.sound = 'orig'; saveWorks(true); }
       why.textContent = w.done.sound ? '用影片原聲；剪輯字幕那一步會把原聲接好。' : '不花' + PT('點數', '錢') + '。';
       const ai = btn('sm-ai', 'AI 幫我做：用影片原聲', () => { w.sound.mode = 'orig'; w.done.sound = 'orig'; goStep(w, 6); });
       return [why, ai, next];
@@ -24804,6 +24936,7 @@ document.addEventListener('keydown', e => {
     if (MODE !== 'simple') return;
     if (location.pathname.startsWith('/w/') && !curPid()) { history.replaceState(null, '', '/projects' + location.hash); window.dispatchEvent(new PopStateEvent('popstate')); return; }
     render();
+    if (!curPid()) refreshProjects(false);
   }
 
   window.__CLOUD__ = {
@@ -25197,9 +25330,16 @@ document.addEventListener('keydown', e => {
     if (m === 'simple') {
       try { await loadProjects(); } catch (e) { say('作品清單讀不到：' + e.message); }
       loaded = true;
-      setMode('simple', false);
-      if (FIRST && !curPid() && !PROJ.length) {
-        const t = document.getElementById('smOneLine'); if (t) t.focus();
+      if (MODE === 'simple') {
+        setMode('simple', false);
+        if (FIRST && !curPid() && !PROJ.length) {
+          const t = document.getElementById('smOneLine'); if (t) t.focus();
+        }
+      }
+      if (MODE === 'simple' && window.__STUDIO__ && window.__STUDIO__.landing_idea === true && !curPid()) {
+        let idea = '';
+        try { idea = String(sessionStorage.getItem('iamd.pendingIdea') || '').trim(); sessionStorage.removeItem('iamd.pendingIdea'); } catch (_) { idea = ''; }
+        if (idea) { NEW.text = idea.slice(0, 400); startOneLine({ disabled: false, textContent: '' }); }
       }
     } else {
       setMode('advanced', false);
@@ -25249,6 +25389,7 @@ document.addEventListener('keydown', e => {
         }
       }
     }
+    if (webOn() && !st.twist.manual && st.twist.at == null && st.twist.hint != null) st.twist.at = Number(st.twist.hint);
     st.loaded = true; st.busy = false;
     if (repaint) repaint();
     return st;
@@ -26219,7 +26360,7 @@ document.addEventListener('keydown', e => {
       if (window.__MEME__) b2 = window.__MEME__.apply(b2);
       b2.pipeline = pipeline(st);
       fetch('/api/pipeline/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b2) })
-        .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => { lastPreview = ok ? d : { error: d.error || '預覽失敗' }; paintOut(out); })
+        .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => { lastPreview = ok ? d : { error: errMsg(d) || '預覽失敗' }; paintOut(out); })
         .catch(e => { lastPreview = { error: String(e) }; paintOut(out); })
         .finally(() => { pv.disabled = false; });
     };
@@ -27416,7 +27557,7 @@ window.__UI_CTX__ = { resolve: kind => uiCtxResolve(kind, uiCtxEnv()) };
           .then(r => r.json().then(d => ({ ok: r.ok, d })))
           .then(({ ok, d }) => {
             out.textContent = ok ? d.prompt + (d.warnings && d.warnings.length ? '\n⚠ ' + d.warnings.join('、') : '')
-                                 : '組不出來：' + ((d && d.error) || '未知的錯誤');
+                                 : '組不出來：' + (errMsg(d) || '未知的錯誤');
           })
           .catch(() => { out.textContent = '組不出來：連不到本機伺服器'; });
       };
@@ -27635,12 +27776,23 @@ window.__UI_CTX__ = { resolve: kind => uiCtxResolve(kind, uiCtxEnv()) };
   function rig(scene, spec) {
     return fetch('/api/previs-rig', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ scene, spec }) })
-      .then(r => r.json().then(d => { if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status)); return d; }));
+      .then(r => r.json().then(d => { if (!r.ok) throw new Error(errMsg(d) || ('HTTP ' + r.status)); return d; }));
   }
   window.__PREVIS_RIG__ = {
     isOn: () => on,
     ctx: () => (LOCAL ? { rigOn: true, rig } : { rigOn: true }),
   };
+})();
+(function studioPrevisCamAdj() {
+  const KEY = 'iamd-previs-camadj';
+  const box = document.getElementById('pvCamAdj');
+  let on = false;
+  try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
+  if (box) {
+    box.checked = on;
+    box.onchange = () => { on = box.checked; try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {} };
+  }
+  window.__PREVIS_CAMADJ__ = { isOn: () => on };
 })();
 const AGRUN_PHASE = { budget: '規劃中', execute: '拍攝中', deliver: '交片中', done: '完成', stopped: '已停止' };
 const AGRUN_SHOT = { pending: '還沒拍', checking: '檢查中', wait_refund: '等退款', ok: '通過', accepted: '收下了', exhausted: '重做用完' };
@@ -27793,7 +27945,7 @@ function agFilmModel(st, items) {
     const p = files.length === 1 ? Promise.resolve({ src: files[0] })
       : fetch('/api/concat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                body: JSON.stringify({ files, name: 'agent-film' }) })
-          .then(r => r.json().catch(() => ({})).then(d => (r.ok && d.src ? { src: d.src } : { err: (d && d.error) || ('HTTP ' + r.status) })))
+          .then(r => r.json().catch(() => ({})).then(d => (r.ok && d.src ? { src: d.src } : { err: errMsg(d) || ('HTTP ' + r.status) })))
           .catch(e => ({ err: String(e && e.message || e) }));
     stitch = { key, p };
     p.then(x => { if (x.err && stitch && stitch.key === key) stitch = null; });
@@ -27831,7 +27983,7 @@ function agFilmModel(st, items) {
     try {
       const r = await fetch('/api/takes/pick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) msg = (d && d.error) || ('HTTP ' + r.status);
+      if (!r.ok) msg = errMsg(d) || ('HTTP ' + r.status);
     } catch (e) { msg = '送不出去：' + (e && e.message || e); }
     busy = false; refresh();
   }
@@ -27874,7 +28026,7 @@ function agFilmModel(st, items) {
       const r = await fetch('/api/local/agent/step', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                                        body: JSON.stringify({ run, decision }) });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) msg = (d && d.error) || ('HTTP ' + r.status);
+      if (!r.ok) msg = errMsg(d) || ('HTTP ' + r.status);
       if (d && d.mainline && run === mlRun) mainline = d.mainline;
     } catch (e) { msg = '送不出去：' + (e && e.message || e); }
     busy = false; refresh();

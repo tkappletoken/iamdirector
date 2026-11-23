@@ -29,12 +29,18 @@ from .color_grade import ColorGrade
 from .speed import Speed
 from .cover import Cover
 from .dub_align import DubAlign
+from . import push_in as _push_in
 
 REGISTRY = {b.id: b for b in (TwistDetect, SeamCheck, Format, ClipTrim, Fps, Fit, Transition, Concat, PadBlack, WhiteFlash, MemeCaptions, VideoFade,
                               Disclosure, Subtitles, Titles, AudioClip, AudioFade, MusicDuck, Mix, Loudness, Encode)}
 for _b in (ColorGrade, Watermark, Speed, Cover, DubAlign):
     REGISTRY[_b.id] = _b
 del _b
+GATED = {}
+if _push_in.enabled():
+    REGISTRY[_push_in.PushIn.id] = _push_in.PushIn
+else:
+    GATED[_push_in.PushIn.id] = _push_in.ENV
 
 ENGINES = ("legacy", "blocks", "shadow")
 ENGINE_ENV = "POSTBLOCKS_ENGINE"
