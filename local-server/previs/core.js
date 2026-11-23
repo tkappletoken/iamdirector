@@ -305,6 +305,176 @@ export function subjectTarget(scene, t, size) {
   return acc.map(v => r3(v / list.length));
 }
 
+export const BLOCK_XS = ['left', 'center', 'right'];
+export const BLOCK_DEPTHS = ['front', 'mid', 'back'];
+export const BLOCK_FACINGS = ['camera', 'left', 'right', 'away'];
+export const BLOCK_MAX = 8;
+const BLOCK_NAME_MAX = 40;
+const BLOCK_TEXT_MAX = 120;
+const BLOCK_FRONT = 0.15, BLOCK_BACK = -0.3;
+const BLOCK_FACE_TOL = 20;
+const FACE_AXIS = { camera: 0, right: 90, away: 180, left: -90 };
+const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const unit3 = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const angDiff = (a, b) => { const d = ((a - b) % 360 + 540) % 360 - 180; return Math.abs(d); };
+
+export function blockingOf(scene, t) {
+  const s = scene || {};
+  const tt = num(t, 0);
+  const notes = [];
+  const cam = sampleCam(s.cam || { base: { p: [0, 1.55, 5], look: [0, 1.2, 0], mm: 35 } }, tt);
+  const fwd = unit3(sub3(cam.look, cam.p));
+  const right = unit3([-fwd[2], 0, fwd[0]]);
+  const [aw, ah] = String(s.aspect || '16:9').split(':').map(Number);
+  const halfV = Math.tan(rad(vfov(cam.mm) / 2)), halfH = halfV * ((aw > 0 && ah > 0) ? aw / ah : 16 / 9);
+  const dLook = dot3(sub3(cam.look, cam.p), fwd);
+  const fh = 2 * Math.max(0.05, dLook) * halfV;
+  const fwdH = unit3([fwd[0], 0, fwd[2]]);
+  const where = (o, p) => {
+    const c = [p[0], clamp(cam.look[1], p[1], p[1] + o.size[1]), p[2]];
+    const v = sub3(c, cam.p);
+    const zc = dot3(v, fwd);
+    if (zc <= 0.05) return null;
+    const xs = dot3(v, right) / (zc * halfH);
+    if (Math.abs(xs) > 1) return null;
+    const dz = (dLook - zc) / fh;
+    return { x: xs < -1 / 3 ? 'left' : xs > 1 / 3 ? 'right' : 'center',
+             depth: dz >= BLOCK_FRONT ? 'front' : dz <= BLOCK_BACK ? 'back' : 'mid' };
+  };
+  const chars = (s.objs || []).filter(o => o && o.kind === 'char');
+  const seen = new Set(), list = [];
+  chars.forEach(o => {
+    const name = String(o.who || o.name || '').replace(/\s+/g, ' ').trim().slice(0, BLOCK_NAME_MAX);
+    if (!name) { notes.push('unnamed'); return; }
+    if (seen.has(name)) { notes.push('duplicate:' + name); return; }
+    seen.add(name);
+    list.push({ o, name, p: sampleObj(o, tt).p, yaw: sampleObj(o, tt).r[1] });
+  });
+  const out = [];
+  list.forEach(a => {
+    if (out.length >= BLOCK_MAX) { notes.push('too_many:' + a.name); return; }
+    const at = where(a.o, a.p);
+    if (!at) { notes.push('offscreen:' + a.name); return; }
+    const one = { name: a.name, at };
+    const f = [Math.sin(rad(a.yaw)), 0, Math.cos(rad(a.yaw))];
+    const phi = Math.atan2(dot3(f, right), -dot3(f, fwdH)) * 180 / Math.PI;
+    let best = null;
+    Object.entries(FACE_AXIS).forEach(([k, deg]) => { const e = angDiff(phi, deg); if (!best || e < best.e) best = { k, e }; });
+    list.forEach(b => {
+      if (b === a) return;
+      const d = sub3(b.p, a.p);
+      if (Math.hypot(d[0], d[2]) < 1e-6) return;
+      const e = angDiff(a.yaw, Math.atan2(d[0], d[2]) * 180 / Math.PI);
+      if (e <= BLOCK_FACE_TOL && e < best.e) best = { k: b.name, e };
+    });
+    one.facing = best.k;
+    const ks = a.o.keys || [];
+    if (ks.length > 1) {
+      const end = where(a.o, ks[ks.length - 1].p);
+      if (end) {
+        const to = {};
+        if (end.x !== at.x) to.x = end.x;
+        if (end.depth !== at.depth) to.depth = end.depth;
+        if (Object.keys(to).length) one.to = to;
+      } else notes.push('offscreen_end:' + a.name);
+    }
+    out.push(one);
+  });
+  const names = new Set(out.map(b => b.name));
+  out.forEach(b => {
+    if (BLOCK_FACINGS.includes(b.facing) || names.has(b.facing)) return;
+    const a = list.find(x => x.name === b.name);
+    const phi = Math.atan2(dot3([Math.sin(rad(a.yaw)), 0, Math.cos(rad(a.yaw))], right), -dot3([Math.sin(rad(a.yaw)), 0, Math.cos(rad(a.yaw))], fwdH)) * 180 / Math.PI;
+    b.facing = Object.entries(FACE_AXIS).sort((x, y) => angDiff(phi, x[1]) - angDiff(phi, y[1]))[0][0];
+  });
+  return { blocking: out, notes };
+}
+
+export function blockingCheck(list) {
+  if (!Array.isArray(list) || list.length > BLOCK_MAX) return 'blocking 要是最多 ' + BLOCK_MAX + ' 個角色的清單';
+  const txt = v => String(v).replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+  const names = new Set(list.filter(b => b && typeof b === 'object').map(b => (typeof b.name === 'string' ? txt(b.name) : '')));
+  const mark = (m, w, needX) => {
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return w + ' 要是物件';
+    if (Object.keys(m).some(k => !['x', 'depth'].includes(k))) return w + ' 只收 x、depth';
+    if ((m.x != null || needX) && !BLOCK_XS.includes(m.x)) return w + '.x 只能是 ' + BLOCK_XS.join('／');
+    if (m.depth != null && !BLOCK_DEPTHS.includes(m.depth)) return w + '.depth 只能是 ' + BLOCK_DEPTHS.join('／');
+    if (m.x == null && m.depth == null) return w + ' 至少要有 x 或 depth';
+    return '';
+  };
+  const seen = new Set();
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i], w = 'blocking[' + i + ']';
+    if (!b || typeof b !== 'object' || Array.isArray(b)) return w + ' 要是物件';
+    if (Object.keys(b).some(k => !['name', 'at', 'facing', 'to', 'action'].includes(k))) return w + ' 有不認得的欄位';
+    if (typeof b.name !== 'string') return w + '.name 要是字串';
+    const name = txt(b.name);
+    if (!name) return w + '.name 不能是空的';
+    if (name.length > BLOCK_NAME_MAX) return w + '.name 最多 ' + BLOCK_NAME_MAX + ' 字';
+    if (seen.has(name)) return w + '.name 重複：' + name;
+    seen.add(name);
+    const e = mark(b.at, w + '.at', true);
+    if (e) return e;
+    if (b.facing != null && b.facing !== '') {
+      if (typeof b.facing !== 'string') return w + '.facing 要是字串';
+      const fc = txt(b.facing);
+      if (fc.length > BLOCK_NAME_MAX) return w + '.facing 最多 ' + BLOCK_NAME_MAX + ' 字';
+      if (!BLOCK_FACINGS.includes(fc) && !names.has(fc)) return w + '.facing 只能是 ' + BLOCK_FACINGS.join('／') + ' 或另一個角色的名字';
+      if (fc === name) return w + '.facing 不能面向自己';
+    }
+    if (b.to != null) { const e2 = mark(b.to, w + '.to', false); if (e2) return e2; }
+    if (b.action != null) {
+      if (typeof b.action !== 'string') return w + '.action 要是字串';
+      if (txt(b.action).length > BLOCK_TEXT_MAX) return w + '.action 最多 ' + BLOCK_TEXT_MAX + ' 字';
+    }
+  }
+  return '';
+}
+
+export function blockingFlat(list) {
+  return (list || []).map(b => {
+    const f = { name: b.name };
+    if (b.at && b.at.x) f.x = b.at.x;
+    if (b.at && b.at.depth) f.depth = b.at.depth;
+    if (b.facing) f.facing = b.facing;
+    if (b.to && b.to.x) f.tox = b.to.x;
+    if (b.to && b.to.depth) f.todepth = b.to.depth;
+    if (b.action) f.action = b.action;
+    return f;
+  });
+}
+export function blockingNested(rows) {
+  return (rows || []).map(r => {
+    const b = r && typeof r === 'object' ? r : {};
+    const one = { name: b.name, at: {} };
+    if (b.x) one.at.x = b.x;
+    if (b.depth) one.at.depth = b.depth;
+    if (b.facing) one.facing = b.facing;
+    const to = {};
+    if (b.tox) to.x = b.tox;
+    if (b.todepth) to.depth = b.todepth;
+    if (Object.keys(to).length) one.to = to;
+    if (b.action) one.action = b.action;
+    return one;
+  });
+}
+
+export function mergeBlocking(prev, next) {
+  const old = Array.isArray(prev) ? prev.filter(b => b && typeof b === 'object') : [];
+  const nx = Array.isArray(next) ? next : [];
+  const out = old.map(b => {
+    const n = nx.find(x => x.name === b.name);
+    if (!n) return Object.assign({}, b);
+    const m = Object.assign({}, n);
+    delete m.action;
+    if (b.action) m.action = b.action;
+    return m;
+  });
+  nx.forEach(n => { if (!old.some(b => b.name === n.name)) out.push(Object.assign({}, n)); });
+  return out;
+}
+
 export function alignDur(want, align) {
   const w = clamp(num(want, 5), 0.5, 30);
   let a = {};

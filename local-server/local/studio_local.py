@@ -132,6 +132,7 @@ LOCAL_API = (
     "/api/works/create", "/api/local/mcp", "/api/local/mcp-token", "/api/local/result",
     "/api/works/quote", "/api/works/export", "/api/twist",
     "/api/works/get", "/api/works/clone",
+    "/api/works/shot-edit", "/api/works/shot-move",
     "/api/local/engine",
     "/api/local/concat-engine",
     "/api/blocks", "/api/pipeline/preview",
@@ -248,6 +249,7 @@ AGENT_FULL = {
     ("GET", "/api/audio/music-content"), ("GET", "/api/audio/content"),
     ("POST", "/api/image-generate"), ("POST", "/api/image"), ("POST", "/api/qc"),
     ("POST", "/api/qc/rate"),
+    ("POST", "/api/works/shot-edit"), ("POST", "/api/works/shot-move"),
 }
 AGENT_SWITCHES = ("/api/local/agent-loop", "/api/local/mcp-direct", "/api/local/agent-qc", "/api/local/frame-relay",
                   "/api/local/agent-scope", "/api/local/engine", "/api/local/concat-engine", "/api/local/ui-profiles")
@@ -1584,6 +1586,21 @@ class Handler(BaseHTTPRequestHandler):
             if shots is None and isinstance(body.get("story"), str):
                 shots = studio_tools.parse_shots(studio_tools.story_to_script(body["story"]), body.get("model"))
             return self._store(studio_store.create_work, body.get("name"), shots)
+        if path in ("/api/works/shot-edit", "/api/works/shot-move"):
+            pid = str(body.get("project_id") or "")
+            try:
+                if path == "/api/works/shot-edit":
+                    kw = {k: body[k] for k in ("prompt", "seconds") if k in body}
+                    out = self.state.db.run(lambda c, u: studio_store.shot_edit(c, u, pid, body.get("shot"), body.get("expect"), **kw))
+                    tool, args, note = "shot_edit", {"project_id": pid, "sids": [out["sid"]]}, "改了第 %d 鏡" % out["shot"]
+                else:
+                    out = self.state.db.run(studio_store.shot_move, pid, body.get("shot"), body.get("to"), body.get("expect_order"))
+                    tool, args, note = "shot_move", {"project_id": pid, "order": out["order"]}, "第 %d 鏡搬到第 %d 鏡" % (out["from"], out["to"])
+            except studio_store.StoreError as e:
+                return self._json(e.code, e.body)
+            if not self._human():
+                self._activity_record(tool, note, out.get("sid"), args)
+            return self._json(200, out)
         if path == "/api/works/clone":
             def go(c, u):
                 src = studio_store.work_get(c, u, str(body.get("project_id") or ""))
@@ -2288,26 +2305,7 @@ class Handler(BaseHTTPRequestHandler):
 
         def tx(conn, uid):
             srv = studio_store.kv_get(conn, uid, key).get("value")
-            by = {s.get("sid"): s for s in (srv if isinstance(srv, list) else []) if isinstance(s, dict) and s.get("sid")}
-            out, merged = [], []
-            for i, s in enumerate(value):
-                sid = s.get("sid") if isinstance(s, dict) else None
-                if sid not in late or sid not in by:
-                    out.append(s)
-                    continue
-                s, a = dict(s), by[sid]
-                if sid in touched:
-                    if a.get("dc") and a.get("dc") != s.get("dc"):
-                        s["dc_prev"] = a["dc"]
-                    kept = "human"
-                else:
-                    for k in ("dc", "dc_prev"):
-                        s.pop(k, None)
-                        if a.get(k):
-                            s[k] = a[k]
-                    kept = "agent"
-                merged.append({"shot": i + 1, "sid": sid, "kept": kept, "dc": s.get("dc"), "dc_prev": s.get("dc_prev")})
-                out.append(s)
+            out, merged = studio_store.merge_shots(value, srv, late, touched, studio_store.DC_FIELDS, studio_store.DC_PREV)
             r = studio_store.kv_put(conn, uid, key, out)
             return {"ok": True, "bytes": r["bytes"], "rev": cur, "merged": merged}
         try:
@@ -3134,6 +3132,20 @@ class Handler(BaseHTTPRequestHandler):
             st.activity.append(it)
             del st.activity[:-ACTIVITY_MAX]
         return self._json(200, {"id": it["id"], "at": it["at"]})
+
+    def _activity_record(self, tool, note, ref, args):
+        st = self.state
+        it = {"id": "act_" + secrets.token_hex(8), "at": None, "tool": tool, "ok": True, "note": str(note or "")[:200],
+              "ref": ref if isinstance(ref, str) else None, "action": None, "args": args, "token_name": "Agent"}
+        with st.lock:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if st.activity:
+                last = datetime.datetime.fromisoformat(st.activity[-1]["at"])
+                if now <= last:
+                    now = last + datetime.timedelta(microseconds=1)
+            it["at"] = now.isoformat(timespec="microseconds")
+            st.activity.append(it)
+            del st.activity[:-ACTIVITY_MAX]
 
     def _concat(self, body):
         files = body.get("files")

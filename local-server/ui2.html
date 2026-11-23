@@ -957,6 +957,7 @@ pre.err { color:var(--ng); }
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pbM6"><label for="pbM6">積木清單的新積木（調色、浮水印、變速、封面）用完整參數表單（測試中，預設關）</label></div>
         
+        <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvBlocking"><label for="pvBlocking">3D 預演放進動作來源時，同步把站位寫進那一鏡的導演控制（左中右、前中後、面向、走到哪；可以還原；測試中，預設關）</label></div>
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvRig"><label for="pvRig">3D 預演加「景別照角色身高」與「對準角色」（過肩、反打、雙人；後者限桌面版；測試中，預設關）</label></div>
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="dcPanel"><label for="dcPanel">分鏡每一鏡加「導演控制」（走位、表演、運鏡；測試中，預設關）</label></div>
@@ -3657,6 +3658,7 @@ $('castUse').onclick = () => {
   const el = $('prompt');
   el.value = (el.value.trim() ? el.value.trim() + ', ' : '') + '@' + name;
   el.dispatchEvent(new Event('input'));
+  const mm = document.getElementById('studioMention'); if (mm) mm.hidden = true;
   document.querySelector('.tabs button[data-tab="jobs"]').click();
   say('@' + name + ' 帶進提示詞了', true);
 };
@@ -16075,6 +16077,30 @@ document.addEventListener('keydown', e => {
   const byId = id => document.getElementById(id);
   const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
   const R3 = () => window.__R3__ || {};
+  const BLOCKING_KEY = 'iamd-previs-blocking';
+  let previsMod = null;
+  const blockingOn = () => { try { return localStorage.getItem(BLOCKING_KEY) === 'on'; } catch (e) { return false; } };
+  (() => {
+    const box = document.getElementById('pvBlocking');
+    if (!box) return;
+    box.checked = blockingOn();
+    box.onchange = () => { try { localStorage.setItem(BLOCKING_KEY, box.checked ? 'on' : 'off'); } catch (e) {} };
+  })();
+  async function writeBlocking(sh, meta) {
+    const list = Array.isArray(meta && meta.blocking) ? meta.blocking : [];
+    const notes = Array.isArray(meta && meta.blockingNotes) ? meta.blockingNotes : [];
+    if (!list.length) return '；站位沒寫進導演控制（預演裡沒有看得到、有名字的人偶' + (notes.length ? '：' + notes.join('、') : '') + '）';
+    let C;
+    C = window.__PREVIS_CORE__ || (previsMod && previsMod.core);
+    if (!C) return '；站位沒寫進導演控制（讀不到換算程式）';
+    const prev = sh.dc && typeof sh.dc === 'object' ? JSON.parse(JSON.stringify(sh.dc)) : null;
+    const merged = C.mergeBlocking(prev && prev.blocking, C.blockingFlat(list));
+    const why = C.blockingCheck(C.blockingNested(merged));
+    if (why) return '；站位沒寫進導演控制（' + why + '）';
+    if (prev) sh.dc_prev = prev;
+    sh.dc = Object.assign({}, prev || {}, { blocking: merged, by: 'human' });
+    return '；' + list.length + ' 個角色的站位寫進了第 ' + (shots.indexOf(sh) + 1) + ' 鏡的導演控制（可以還原）' + (notes.length ? '，' + notes.join('、') : '');
+  }
   const R2 = () => window.__R2__ || {};
 
   const suffixNow = () => {
@@ -16183,9 +16209,10 @@ document.addEventListener('keydown', e => {
                       who: Array.isArray(meta.who) ? meta.who.slice(0, 12) : [] };
         sh.seconds = meta.dur;
         if (meta.added && meta.added.length && typeof R3().setKeys === 'function') R3().setKeys(meta.keys);
+        const bk = blockingOn() ? await writeBlocking(sh, meta) : '';
         saveShots();
         try { renderShots(); } catch (e) {}
-        say('第 ' + (shots.indexOf(sh) + 1) + ' 鏡：3D 預演已放進動作來源（' + meta.dur + ' 秒），送件時排在參考包第一張', true);
+        say('第 ' + (shots.indexOf(sh) + 1) + ' 鏡：3D 預演已放進動作來源（' + meta.dur + ' 秒），送件時排在參考包第一張' + bk, true);
         return ref;
       },
       onClose: () => { try { renderShots(); } catch (e) {} },
@@ -16203,6 +16230,7 @@ document.addEventListener('keydown', e => {
     topBtn.disabled = true; topBtn.textContent = '載入 3D…';
     try {
       const m = await import('/previs/editor.js');
+      previsMod = m;
       await m.open(ctxFor(), sid);
     } catch (e) {
       say('3D 預演載入失敗：' + (e && e.message || e) + '（需要支援 WebGL 的瀏覽器）');
@@ -16374,6 +16402,10 @@ document.addEventListener('keydown', e => {
     const p = JSON.parse(JSON.stringify(base || {}));
     p.model = model;
     const notes = [];
+    if (!p.resolution && !p.size && typeof resPriced === 'function' && resPriced(model)) {
+      p.resolution = resPricedDefault();
+      notes.push('照解析度計價：解析度用預設 ' + p.resolution);
+    }
     const why = typeof window.__VIDEO_REF_WHY__ === 'function' ? window.__VIDEO_REF_WHY__(model) : '';
     if (why && (p.input_references || []).some(r => r && r.type === 'video')) {
       p.input_references = p.input_references.filter(r => !(r && r.type === 'video'));
@@ -16840,17 +16872,22 @@ document.addEventListener('keydown', e => {
     } catch (e) { return { at: null, pts: null }; }
   }
   async function imgMake(body, name) {
-    const r = await fetch('/api/image-generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await fetch('/api/image-generate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                   body: JSON.stringify(Object.assign({}, body, { response_format: 'b64_json' })) });
     const d = await r.json();
     if (!r.ok) throw new Error((errMsg(d) || 'HTTP ' + r.status).slice(0, 200));
     const it = (d.data || [])[0] || {};
-    const src = it.url || (it.b64_json ? 'data:image/png;base64,' + it.b64_json : '');
+    const src = it.b64_json ? 'data:image/png;base64,' + it.b64_json : it.url || '';
     if (!src) throw new Error('回應沒有圖片');
-    const blob = await (await fetch(src)).blob();
+    const got = await fetch(src).catch(() => { throw new Error('圖片抓不回來（上游網址讀不到）'); });
+    if (!got.ok) throw new Error('抓不到上游回的圖片（HTTP ' + got.status + '）');
+    const blob = await got.blob();
     const up = await uploadAsset(new File([blob], name + '.png', { type: blob.type || 'image/png' }));
     const ref = up && (up.reference || (up.id && 'asset://' + up.id));
     if (!ref) throw new Error('轉存素材失敗：上游沒回素材 id');
-    return { ref, src: up.url || src, charged: d.charged_points != null ? d.charged_points : null, payer: d.payer || '' };
+    const id = up.id || String(ref).replace(/^asset:\/\//, '');
+    const short = up.url || (/^data:/.test(src) && id ? '/api/assets/content?id=' + encodeURIComponent(id) : src);
+    return { ref, src: short, raw: src, charged: d.charged_points != null ? d.charged_points : null, payer: d.payer || '' };
   }
   let measure = src => new Promise(res => {
     try { const im = new Image(); im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight }); im.onerror = () => res(null); im.src = src; }
@@ -16969,7 +17006,7 @@ document.addEventListener('keydown', e => {
           st0.busy = true; ex.disabled = true; ex.textContent = '生成中…（同步扣款）';
           try {
             const out = await imgMake(cellBody(cell), 'shot' + n + '-cell' + cell);
-            const got = await measure(out.src);
+            const got = await measure(out.raw || out.src);
             const [w, hh] = size.split('x').map(Number);
             sh.first = { ref: out.ref, src: out.src, w: got ? got.w : null, h: got ? got.h : null, size,
                          from: { grid: sh.grid.ref, cell, setup: x[0], src: sh.grid.from }, at: Date.now() };
@@ -18287,12 +18324,14 @@ document.addEventListener('keydown', e => {
       for (const a of list) {
         go.textContent = '生成 ' + ANG[a][0] + '…';
         try {
-          const r = await post('/api/image-generate', turnBody(c, a, src, model));
+          const r = await post('/api/image-generate', Object.assign(turnBody(c, a, src, model), { response_format: 'b64_json' }));
           if (!r.ok) throw new Error(errText(r.d));
           const it = (r.d.data || [])[0] || {};
-          const url = it.url || (it.b64_json ? 'data:image/png;base64,' + it.b64_json : '');
+          const url = it.b64_json ? 'data:image/png;base64,' + it.b64_json : it.url || '';
           if (!url) throw new Error('回應沒有圖片');
-          const blob = await (await fetch(url)).blob();
+          const got = await fetch(url).catch(() => { throw new Error('圖片抓不回來（上游網址讀不到）'); });
+          if (!got.ok) throw new Error('抓不到上游回的圖片（HTTP ' + got.status + '）');
+          const blob = await got.blob();
           const file = new File([blob], c.name + '-' + a + '.png', { type: blob.type || 'image/png' });
           const up = await uploadAsset(file);
           const ref = up && (up.reference || (up.id && 'asset://' + up.id));
@@ -18318,7 +18357,9 @@ document.addEventListener('keydown', e => {
   function puppetPayload(ref, model, dur) {
     const el = byId('aspect_ratio'); const ar = el && /^\d{1,2}:\d{1,2}$/.test(el.value || '') ? el.value : '16:9';
     const seconds = Number(dur) > 0 ? Math.ceil(Number(dur) - 1e-6) : 5;
-    return { model, prompt: PUPPET_PROMPT, input_references: [{ type: 'video', url: ref, role: 'reference_video' }], seconds, aspect_ratio: ar };
+    const p = { model, prompt: PUPPET_PROMPT, input_references: [{ type: 'video', url: ref, role: 'reference_video' }], seconds, aspect_ratio: ar };
+    if (typeof resPriced === 'function' && resPriced(model)) p.resolution = resPricedDefault();
+    return p;
   }
   function puppetJob(sid) { return jobs.find(j => j && j.puppetFor === sid && !j.puppetDone && ['queued', 'processing', 'retrying'].includes(j.status)); }
   function openPuppet(sh) {
@@ -18359,12 +18400,30 @@ document.addEventListener('keydown', e => {
           ref = d && (d.reference || (d.id && 'asset://' + d.id));
           if (!ref) throw new Error('上游沒回素材 id');
         }
-        enqueue([puppetPayload(ref, model, m0 && ref === m0.ref ? m0.dur : sh.seconds)], { noPlace: true, puppetFor: sh.sid, puppetShot: n, title: '人偶預演 · 第 ' + n + ' 鏡' });
+        const batch = enqueue([puppetPayload(ref, model, m0 && ref === m0.ref ? m0.dur : sh.seconds)], { noPlace: true, puppetFor: sh.sid, puppetShot: n, title: '人偶預演 · 第 ' + n + ' 鏡' });
         close();
+        watchPuppet(batch, sh, n);
         say('第 ' + n + ' 鏡的人偶預演排進佇列：確認單會先列出價格', true);
         try { renderShots(); } catch (e) {}
       } catch (e) { go.disabled = false; go.textContent = '排進佇列（先出確認單）'; say('轉人偶預演失敗：' + (e && e.message || e)); }
     };
+  }
+  function watchPuppet(batch, sh, n) {
+    const t0 = Date.now();
+    let saw = false;
+    const repaint = () => { try { renderShots(); } catch (e) {} };
+    const tick = setInterval(() => {
+      const j = (typeof jobs !== 'undefined' ? jobs : []).find(x => x && x.batch === batch);
+      const sheetUp = window.__DIRECTOR_SHEET__ && window.__DIRECTOR_SHEET__.job && window.__DIRECTOR_SHEET__.job.batch === batch;
+      if (sheetUp) { saw = true; return; }
+      if (saw || !j) { clearInterval(tick); repaint(); return; }
+      if (j.id || Date.now() - t0 > 120000) { clearInterval(tick); return; }
+      if (j.status !== 'failed' || !j.error) return;
+      clearInterval(tick);
+      const msg = '第 ' + n + ' 鏡的人偶預演沒送出：' + errMsg(j.error);
+      const b = document.querySelector('#sbTable .r6-pup[data-sid="' + String(sh.sid).replace(/"/g, '') + '"]');
+      if (!(b && typeof window.__ERR_AT__ === 'function' && window.__ERR_AT__(b, msg))) say(msg);
+    }, 300);
   }
   let attaching = false;
   async function attachPuppets() {
@@ -18403,7 +18462,7 @@ document.addEventListener('keydown', e => {
       if (!sh || !r3row || r3row.querySelector('.r6-pup')) return;
       const wait = puppetJob(sh.sid);
       const b = h('button', 'r3-pill r6-pup' + (wait ? ' busy' : ''), wait ? '◇ 人偶預演生成中…' : sh.motion && sh.motion.puppet ? '◇ 重轉人偶預演' : '◇ 轉人偶預演');
-      b.type = 'button';
+      b.type = 'button'; b.dataset.sid = sh.sid;
       b.title = '把參考影片送影片模型轉成無外觀的人偶預演，放回這一鏡的動作來源（會扣費，先出確認單）';
       b.disabled = !!wait;
       b.onclick = () => openPuppet(sh);
@@ -21123,6 +21182,9 @@ document.addEventListener('keydown', e => {
     if (it.action === 'film_sync' && a.project_id && typeof window.__MAINLINE_FILM_SYNC__ === 'function') {
       try { window.__MAINLINE_FILM_SYNC__(String(a.project_id)); } catch (_) {}
     }
+    if ((it.tool === 'shot_edit' || it.tool === 'shot_move') && !it.action && a.project_id && typeof window.__MAINLINE_SHOT_SYNC__ === 'function') {
+      try { window.__MAINLINE_SHOT_SYNC__(String(a.project_id), a.sids, a.order); } catch (_) {}
+    }
     if (it.action === 'place' && Array.isArray(a.job_ids)) tryPlace(a.job_ids.map(String), it);
     if (it.action === 'trim' && a.job_id) {
       const cv = canvas(); const j = uidsFor([String(a.job_id)])[0];
@@ -23630,6 +23692,33 @@ document.addEventListener('keydown', e => {
     boardSave();
   }
   const snapBoard = pid => JSON.parse(JSON.stringify(board(pid) || []));
+  async function shotSync(pid, sids, order) {
+    if (!pid || pid !== curPid()) return null;
+    const L = board(pid);
+    if (!L) return null;
+    let sb;
+    try {
+      const r = await fetch('/api/store?key=' + encodeURIComponent(boardKey(pid)), { cache: 'no-store' });
+      if (!r.ok) return null;
+      sb = ((await r.json()) || {}).value;
+    } catch (_) { return null; }
+    if (!Array.isArray(sb) || pid !== curPid() || board(pid) !== L) return null;
+    const srv = new Map(sb.filter(x => x && x.sid).map(x => [x.sid, x]));
+    let n = 0;
+    (Array.isArray(sids) ? sids : []).forEach(sid => {
+      const i = L.findIndex(x => x && x.sid === sid), x = srv.get(sid);
+      if (i >= 0 && x) { L[i] = Object.assign({}, L[i], x); n++; }
+    });
+    if (Array.isArray(order) && order.length) {
+      const pos = new Map(order.map((sid, i) => [sid, i]));
+      const at = x => (x && pos.has(x.sid) ? pos.get(x.sid) : order.length);
+      const next = L.slice().sort((a, b) => at(a) - at(b));
+      if (next.some((x, i) => x !== L[i])) { L.splice(0, L.length, ...next); n++; }
+    }
+    if (n) { boardSave(); if (MODE === 'simple') render(true); }
+    return { changed: n };
+  }
+  window.__MAINLINE_SHOT_SYNC__ = shotSync;
   function boardGate(host, pid) {
     if (board(pid)) return null;
     host.append(h('h2', null, boardErr ? '分鏡讀不到' : '分鏡載入中…'), h('p', 'lead', boardErr || '正在讀這部作品的分鏡。'));
@@ -24721,10 +24810,183 @@ document.addEventListener('keydown', e => {
     current: () => { const pid = curPid(); return pid ? (PROJ.find(x => x.id === pid) || null) : null; },
     sync: p => cloudSyncWork(p), list: () => cloudListSheet(), link: () => cloudLinkSheet({}),
   };
+  const A2_ZH = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10, 十一: 11, 十二: 12 };
+  const a2n = v => (v == null ? null : /^\d+$/.test(v) ? Number(v) : A2_ZH[v] || null);
+  const A2_N = '(\\d+|十[一二]?|[一二兩三四五六七八九十])';
+  function a2When(t) {
+    const d = new Date(); d.setSeconds(0, 0);
+    if (/後天/.test(t)) d.setDate(d.getDate() + 2); else if (/明天|明晚/.test(t)) d.setDate(d.getDate() + 1);
+    let hh = 19, mm = 0;
+    const m = t.match(new RegExp(A2_N + '\\s*(?:點|:|：)\\s*(半|\\d{1,2})?'));
+    if (m) { hh = a2n(m[1]); mm = m[2] === '半' ? 30 : m[2] ? Number(m[2]) : 0; if (/下午|晚上|晚|傍晚/.test(t) && hh < 12) hh += 12; }
+    if (hh == null || hh > 23 || mm > 59) return null;
+    d.setHours(hh, mm, 0, 0);
+    if (d.getTime() <= Date.now()) return null;
+    const p2 = x => String(x).padStart(2, '0');
+    return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + 'T' + p2(hh) + ':' + p2(mm);
+  }
+  const a2Wait = (fn, ms) => new Promise(res => { const t0 = Date.now(); const k = setInterval(() => { const v = fn(); if (v || Date.now() - t0 > (ms || 8000)) { clearInterval(k); res(v); } }, 120); });
+  function assistA2(text, cmd, arg, pid, w) {
+    const L = pid ? (board(pid) || []) : [];
+    const shotN = (s, nth) => { const m = String(s).match(new RegExp('第\\s*' + A2_N + '\\s*鏡')); return m ? a2n(m[1]) : null; };
+    const needW = () => ({ help: '先打開一部作品，或用「/新片 一句話」開一部新的。' });
+    const badN = n => ({ help: '這部片有 ' + L.length + ' 鏡，找不到第 ' + n + ' 鏡。' });
+    const p = pid && PROJ.find(x => x.id === pid);
+
+    const isOp = cmd === '改比例' || (!cmd && /(圖|照片|參考)/.test(text) && /(改成|換成|轉成|改為)\s*(直|橫|9\s*:\s*16|16\s*:\s*9)/.test(text));
+    if (isOp) {
+      const asp = /橫|16\s*:\s*9/.test(arg) ? '16:9' : /直|9\s*:\s*16/.test(arg) ? '9:16' : null;
+      const lib = (typeof cast !== 'undefined' && Array.isArray(cast)) ? cast : [];
+      const withRef = lib.filter(c => (c.refs || []).some(r => /^asset:\/\/ast_[0-9a-f]{20}$/.test(String(r && r.ref || ''))));
+      const named = withRef.find(c => text.includes(c.name));
+      const c = named || (withRef.length === 1 ? withRef[0] : null);
+      if (!c) return { help: withRef.length ? '要改哪一張？例：/改比例 9:16 ' + withRef[0].name : '角色庫裡還沒有可以改的參考圖。' };
+      const r = c.refs.find(x => /^asset:\/\/ast_[0-9a-f]{20}$/.test(String(x && x.ref || '')));
+      return { title: '把「' + c.name + '」的參考圖改成 ' + (asp || '另一個比例'), spend: true,
+        lines: ['打開改比例：只補兩側，主體一個像素都不動', '會先報價，按鈕上寫著價格，你按了才送；產出是一份新素材'],
+        run: async () => {
+          if (typeof window.__openOutpaint__ !== 'function') return '這裡還不能改比例。';
+          const f = document.createElement('figure'); const cap = document.createElement('figcaption'); cap.textContent = c.name; f.append(cap);
+          if (r.src) { const im = document.createElement('img'); im.src = r.src; f.append(im); }
+          window.__openOutpaint__(f, String(r.ref).slice(8));
+          if (asp) {
+            const b = await a2Wait(() => { const x = document.querySelector('.op-ar button[data-ar="' + asp + '"]'); return x && !x.disabled ? x : null; });
+            if (b) b.click();
+          }
+          return '改比例的視窗開好了' + (asp ? '、選了 ' + asp : '') + '；按鈕上的價格確認了再按。';
+        } };
+    }
+    if (cmd === '比較' || (!cmd && /(比較|候選|另一版|換一版|挑一支)/.test(text) && /鏡/.test(text))) {
+      if (!w) return needW();
+      const n = cmd === '比較' ? a2n((arg.match(new RegExp(A2_N)) || [])[1]) : shotN(text);
+      if (!n) return { help: '要比較第幾鏡？例：/比較 2' };
+      if (n < 1 || n > L.length) return badN(n);
+      const t = curTake(w, L[n - 1]);
+      const many = t && t.idx >= 0 && window.__TL_TAKES__ && (window.__TL_TAKES__.get(t.idx) || { list: [] }).list.length > 1;
+      if (!many) return { help: '第 ' + n + ' 鏡現在只有一個版本；要多一版可以說「重抽第 ' + n + ' 鏡」。' };
+      return { title: '比較第 ' + n + ' 鏡的版本', spend: false, lines: ['打開挑版：並排看，挑一支改用（不花錢）'],
+        run: async () => { if (w.step !== 4) { w.step = 4; saveWorks(); render(); } window.__TAKES_OPEN__(t.idx); return '挑版開好了，按「用這版」就換。'; } };
+    }
+    if (!cmd && /(再試一次|失敗的.*(重送|重試|再送))/.test(text)) {
+      if (!w) return needW();
+      return { title: '失敗的那一鏡再試一次', spend: true, lines: ['到第 4 步按「再試一次」：會重新報價、跳出確認單，你按確認才送'],
+        run: async () => {
+          if (w.step !== 4) { w.step = 4; saveWorks(); render(); }
+          const b = await a2Wait(() => [...root.querySelectorAll('.sm button')].find(x => /再試一次/.test(x.textContent) && !x.disabled), 3000);
+          if (!b) return '現在沒有失敗要重試的鏡頭。';
+          b.click(); return '確認單在畫面上，你按確認才會送出。';
+        } };
+    }
+    if (!cmd && /(整份重拆|AI\s*重拆|全部重拆|重新拆分鏡)/i.test(text)) {
+      if (!w) return needW();
+      return { title: 'AI 把整份分鏡重拆一次', spend: true, lines: ['到第 3 步按「AI 幫我做：整份重拆」', '會先跳 AI 的報價確認單，你按確認才拆；拆完 10 秒內可以復原'],
+        run: async () => {
+          if (w.step !== 3) { w.step = 3; saveWorks(); render(); }
+          const b = await a2Wait(() => [...root.querySelectorAll('.sm-act button.sm-ai')].find(x => /整份重拆/.test(x.textContent) && !x.disabled), 3000);
+          if (!b) return '第 3 步現在不能整份重拆（還沒有故事或分鏡）。';
+          b.click(); return '確認單在畫面上，你按確認才會拆。';
+        } };
+    }
+    if (!cmd && /(讓|用|請)\s*AI\s*(改寫|寫自然|寫得自然|潤|修)/i.test(text) && /鏡/.test(text) && /(改成|換成|變成|改為)/.test(text)) {
+      if (!w) return needW();
+      if (!L.length) return { help: '這部作品還沒有分鏡，先到第 3 步拆分鏡。' };
+      const ask = text.replace(/[，,、。]?\s*(讓|用|請)\s*AI\s*(改寫|寫自然|寫得自然|潤飾?|修)[^，,。]*/i, '').trim();
+      const pp = parseAsk(ask, L.length);
+      if (pp.error) return { help: pp.error };
+      return { title: '讓 AI 改寫：' + pp.targets.map(i => '第 ' + (i + 1) + ' 鏡').join('、'), spend: true,
+        lines: ['先給你看照字面改的樣子，再交給 AI 改寫', 'AI 改寫會先跳報價確認單，你按確認才寫；寫好再給你看一次，確認才改'],
+        run: async () => {
+          if (w.step !== 3 && w.step !== 4) { w.step = 3; saveWorks(); render(); }
+          askPreview(w, pid, ask, null);
+          const b = await a2Wait(() => [...document.querySelectorAll('.sm-dlg button')].find(x => /讓 AI 改寫/.test(x.textContent)), 3000);
+          if (b) b.click();
+          return 'AI 改寫的確認單在畫面上，你按確認才會寫。';
+        } };
+    }
+    const add = cmd === '加鏡' ? arg : (text.match(/^(?:再)?加(?:一|1)?(?:個)?鏡(?:頭)?\s*[:：]\s*(.+)$/) || [])[1];
+    if (add) {
+      if (!w) return needW();
+      return { title: '加一個鏡頭（第 ' + (L.length + 1) + ' 鏡）', spend: false, lines: ['內容：' + add.slice(0, 60), '只改分鏡，不花錢'],
+        run: async () => { const B = board(pid); if (!B) return '分鏡還沒載好，稍等一下再說一次。';
+          B.push({ sid: newSid(), prompt: add.trim(), seconds: defSec(), pick: true }); boardSave(); w.step = 3; saveWorks(); render(); return '加好了：第 ' + B.length + ' 鏡。'; } };
+    }
+    const del = cmd === '刪鏡' ? a2n((arg.match(new RegExp(A2_N)) || [])[1]) : (/^(刪掉|刪除|拿掉|移除)/.test(text) && /鏡/.test(text) && !/作品/.test(text) ? shotN(text) : null);
+    if (del) {
+      if (!w) return needW();
+      if (del < 1 || del > L.length) return badN(del);
+      return { title: '刪掉第 ' + del + ' 鏡', spend: false, lines: ['「' + String(L[del - 1].prompt || '').slice(0, 40) + '」', '10 秒內可以按「復原」'],
+        run: async () => { const B = board(pid); if (!B || !B[del - 1]) return '找不到那一鏡了。';
+          const removed = B.splice(del - 1, 1)[0]; boardSave(); w.step = 3; saveWorks(); render();
+          window.__UNDO__.offer({ label: '已刪掉鏡頭 ' + del, undo: () => { B.splice(Math.min(del - 1, B.length), 0, removed); boardSave(); render(true); } });
+          return '刪好了；後悔的話按下面的「復原」。'; } };
+    }
+    const mv = text.match(new RegExp('第\\s*' + A2_N + '\\s*鏡\\s*(?:移|搬|放)到\\s*第\\s*' + A2_N));
+    if (mv) {
+      if (!w) return needW();
+      const a = a2n(mv[1]), b = a2n(mv[2]);
+      if (!a || !b || a > L.length || b > L.length) return badN(Math.max(a || 0, b || 0));
+      return { title: '第 ' + a + ' 鏡移到第 ' + b, spend: false, lines: ['只換順序，不花錢'],
+        run: async () => { const B = board(pid); if (!B) return '分鏡還沒載好。'; const x = B.splice(a - 1, 1)[0]; B.splice(b - 1, 0, x); boardSave(); w.step = 3; saveWorks(); render(); return '移好了。'; } };
+    }
+    if (cmd === '換配樂' || (!cmd && /(配樂|音樂|歌).*(換|另一首|重做)|換.*(配樂|一首|首歌)/.test(text))) {
+      if (!w) return needW();
+      return { title: '換一首配樂', spend: false, lines: ['打開聲音面板的配樂（不花錢）', '在那裡按生成配樂會先跳確認單，你按確認才做'],
+        run: async () => { if (w.step !== 5) { w.step = 5; saveWorks(); render(); }
+          if (window.__R6__ && typeof window.__R6__.openSound === 'function') { await window.__R6__.openSound(); return '聲音面板開好了。'; }
+          return '到第 5 步了，聲音面板在「展開」裡。'; } };
+    }
+    if (!cmd && /字幕/.test(text) && /(大|小|上方|下方|上面|下面|顏色|樣式|字體|位置)/.test(text)) {
+      if (!w) return needW();
+      return { title: '改字幕樣式', spend: false, lines: ['打開匯出面板的字幕設定，由你選（不花錢）'],
+        run: async () => { if (w.step !== 6) { w.step = 6; saveWorks(); render(); }
+          if (window.__R7__ && typeof window.__R7__.open === 'function') { await window.__R7__.open({ simple: true }); return '匯出面板開好了，字幕設定在「要不要字幕」那一區。'; }
+          return '到第 6 步了。'; } };
+    }
+    if (cmd === '下載' || (!cmd && /^(下載|載下來|存下來)/.test(text) && !/範本/.test(text))) {
+      if (!w) return needW();
+      const R7 = window.__R7__;
+      const x = w.exportId && R7 && (R7.hist || []).find(e => e.id === w.exportId);
+      if (!x || x.state !== 'done') return { help: '這部片還沒匯出好；先說「匯出」，好了再說「下載」。' };
+      return { title: '下載成片', spend: false, lines: ['下載最近一次匯出的 mp4（不花錢）'],
+        run: async () => { await R7.download(x, 'url'); return '下載開始了。'; } };
+    }
+    const pubW = PUB('上架', '');
+    if (pubW && !cmd && text.includes(pubW) && /(排程|點|明天|今天|後天|私人|不公開|公開)/.test(text) && w) {
+      const priv = /不公開/.test(text) ? 'unlisted' : /私人/.test(text) ? 'private' : /排程|點|明天|今天|後天/.test(text) ? 'scheduled' : 'public';
+      const when = priv === 'scheduled' ? a2When(text) : null;
+      if (priv === 'scheduled' && !when) return { help: '要排在什麼時候？例：「排程明天晚上 7 點」（要是之後的時間）。' };
+      const say0 = { private: '私人', unlisted: '不公開', public: '公開', scheduled: '排程 ' + (when || '').replace('T', ' ') };
+      return { title: PUB('準備上架：', '') + say0[priv], spend: false,
+        lines: ['到第 7 步預填好；公開或排程要你自己勾「我確認」', '上傳也是你按了才送（不花錢）'],
+        run: async () => { const F = pubForm(w, p); F.privacy = priv; if (when) F.when = when; F.ack = false; w.step = 7; saveWorks(true); render(); return '填好了，確認無誤再按上傳。'; } };
+    }
+    const nm = cmd === '改名' ? arg : (text.match(/^(?:把作品)?(?:改名成|改名為|名字改成|改叫|改名)\s*[:：]?\s*(.+)$/) || [])[1];
+    if (nm) {
+      if (!p) return needW();
+      const want = nm.replace(/^[「『"]|[」』"]$/g, '').trim().slice(0, 60);
+      return { title: '作品改名成「' + want + '」', spend: false, lines: ['打開改名框、先填好，你按確定才改'],
+        run: async () => {
+          const go2 = renameWork(p);
+          const inp = await a2Wait(() => document.querySelector('.proj-ask .proj-ask-input'), 3000);
+          if (inp) { inp.value = want; inp.dispatchEvent(new Event('input', { bubbles: true })); inp.focus(); }
+          await go2; return '好了。';
+        } };
+    }
+    if (!cmd && w && /(改成|換成|改為)\s*(橫|直|16\s*:\s*9|9\s*:\s*16)/.test(text) && !/(圖|照片|參考|鏡)/.test(text)) {
+      const asp = /橫|16\s*:\s*9/.test(text) ? '16:9' : '9:16';
+      return { title: '這部作品改成 ' + asp + (asp === '16:9' ? '（橫的）' : '（直的）'), spend: false,
+        lines: ['之後新拍的鏡照這個比例；已經拍好的不重拍（不花錢）'],
+        run: async () => { w.aspect = asp; saveWorks(true); render(true); return '改好了：' + asp + '。'; } };
+    }
+    return null;
+  }
   const ASSIST = !LOCALM && window.__STUDIO__.assistant === true && window.__STUDIO__.studio_open !== false;
   const AS_CMDS = [['/新片', '一句話開新片，例：/新片 深夜末班車上一隻橘貓'], ['/範本', '挑範本，例：/範本 迷因'],
     ['/生成', '到第 4 步，跳出生成的確認單'], ['/重抽', '重抽第 N 鏡，例：/重抽 2'], ['/配音', '到第 5 步，跳出配音配樂的確認單'],
-    ['/字幕', '到第 6 步剪輯字幕'], ['/匯出', '到第 6 步匯出'], [PUB('/上架', ''), PUB('到第 7 步上架', '')], ['/說明', '看助手會做哪些事']].filter(([k]) => k);
+    ['/字幕', '到第 6 步剪輯字幕'], ['/匯出', '到第 6 步匯出'], [PUB('/上架', ''), PUB('到第 7 步上架', '')],
+    ['/比較', '比較第 N 鏡的版本，例：/比較 2'], ['/改比例', '參考圖改成直式或橫式，例：/改比例 9:16 小美'], ['/加鏡', '加一個鏡頭，例：/加鏡 公車的燈亮起'],
+    ['/刪鏡', '刪掉第 N 鏡，例：/刪鏡 3'], ['/換配樂', '打開聲音面板換一首配樂'], ['/下載', '下載匯出好的成片'], ['/改名', '作品改名，例：/改名 雨夜'],
+    ['/說明', '看助手會做哪些事']].filter(([k]) => k);
   const AS_CN = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
   const asNum = v => (v == null ? null : /^\d+$/.test(v) ? Number(v) : AS_CN[v] || null);
   function assistIntent(raw) {
@@ -24737,6 +24999,8 @@ document.addEventListener('keydown', e => {
     const toStep = (n, ai, title, lines, spend) => ({ title, lines, spend, run: () => assistStep(n, ai) });
     const needWork = () => ({ help: '先打開一部作品，或用「/新片 一句話」開一部新的。' });
     if (cmd === '說明' || cmd === 'help' || /^(\?|？|說明|你會做什麼|可以做什麼)$/.test(text)) return { help: '' };
+    const a2 = assistA2(text, cmd, arg, pid, w);
+    if (a2) return a2;
     const tplWord = cmd === '範本' ? arg : (text.match(/(?:用|套用?|開)\s*(.{1,12}?)\s*範本/) || [])[1];
     if (cmd === '範本' || tplWord) {
       const t = tplWord ? TEMPLATES.find(x => x.name.includes(tplWord) || (x.short && tplWord.includes(x.short)) || x.id === tplWord) : null;
@@ -25577,20 +25841,24 @@ document.addEventListener('keydown', e => {
     const autoWarn = el('p', 'margin:0;font-size:12px;line-height:1.6',
       '開啟後，agent 在上限內的花費不會再問你。要同時設好單支上限與每日上限；超過上限的還是會出卡片等你核准。');
     const autoUsed = el('p', 'margin:0;font-size:12px;color:var(--faint,#999)'); autoUsed.id = 'apvAutoUsed';
+    const snap = () => JSON.stringify([auto.checked].concat(keys.map(([k]) => inputs[k].value.trim())));
+    const DIRTY = '還有未儲存的變更：剛才那次存好了，之後改的還沒存——再按一次「儲存上限」。';
     const off = btn('立刻關閉', async () => {
       const bodyL = { auto_approve: false }; keys.forEach(([k]) => { bodyL[k] = inputs[k].value.trim() || null; });
+      const at = snap();
       const r = await getJ('/api/approvals/limits', bodyL);
       msg.textContent = r.ok ? '自動核准已關閉：之後每一支都會先問你。' : (errText(r.d) || '沒有關掉，請再按一次');
-      if (r.ok) fill(r.d);
+      if (r.ok) { if (snap() === at) fill(r.d); else msg.textContent += ' ' + DIRTY; }
     });
     off.id = 'apvAutoOff';
     autoBox.append(autoL, autoWarn, autoUsed, off);
     const save = btn('儲存上限', async () => {
       const bodyL = { auto_approve: auto.checked }; keys.forEach(([k]) => { bodyL[k] = inputs[k].value.trim() || null; });
+      const at = snap();
       const r = await getJ('/api/approvals/limits', bodyL);
       msg.textContent = r.ok ? (r.d.auto_approve ? '已儲存。自動核准開著：上限內的不再問你，超過的會出卡片。' : '已儲存。超過上限的卡會被擋下。')
                              : (errText(r.d) || '存不下來');
-      if (r.ok) fill(r.d);
+      if (r.ok) { if (snap() === at) fill(r.d); else msg.textContent = DIRTY; }
     });
     save.id = 'apvSave';
     form.append(autoBox, save, used, msg);

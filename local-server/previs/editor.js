@@ -3,6 +3,8 @@ import { OrbitControls } from './vendor/OrbitControls.js';
 import { TransformControls } from './vendor/TransformControls.js';
 import * as C from './core.js';
 
+export const core = C;
+
 const RAD = Math.PI / 180;
 const $h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const btn = (cls, txt, title, fn) => { const b = $h('button', cls, txt); b.type = 'button'; if (title) b.title = title; if (fn) b.onclick = fn; return b; };
@@ -1698,7 +1700,9 @@ class Editor {
         try {
           const file = new File([res.blob], name, { type: res.mime });
           const who = [...new Set((this.scene.objs || []).filter(o => o.who && (o.kind === 'char' || o.kind === 'prop')).map(o => o.who))];
-          const meta = { dur: this.scene.dur, w: res.w, h: res.h, note: C.motionNote(this.scene), keys: keys.keys, added: keys.added, who };
+          const bk = C.blockingOf(this.scene, 0);
+          const meta = { dur: this.scene.dur, w: res.w, h: res.h, note: C.motionNote(this.scene), keys: keys.keys, added: keys.added, who,
+                         blocking: bk.blocking, blockingNotes: bk.notes };
           await this.ctx.attachMotion(this.sid, file, meta);
           this.closeModal();
           this.renderTop();
