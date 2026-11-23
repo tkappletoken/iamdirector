@@ -2,6 +2,7 @@ import contextlib
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -90,6 +91,14 @@ def check_switches(root):
     wrong = ["%s=%r（要 %r）" % (k, got.get(k), v) for k, v in SWITCHES_OFF.items() if got.get(k) != v]
     return "開關預設不是關的：%s" % "、".join(wrong) if wrong else None
 
+def all_encoders(ffmpeg):
+    try:
+        r = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    return set(re.findall(r"^\s*[VAS][A-Z.]{5}\s+(\S+)", r.stdout, re.M))
+
 def check_ffmpeg(ffmpeg, platform=None):
     import render
     enc = render.ffmpeg_caps(ffmpeg).get("encoders")
@@ -98,7 +107,7 @@ def check_ffmpeg(ffmpeg, platform=None):
     if (platform or sys.platform) == "darwin":
         return None if any(e in enc for e in MAC_H264) else "macOS 的 ffmpeg 沒有 %s" % "／".join(MAC_H264)
     if (platform or sys.platform).startswith("linux"):
-        miss = [e for e in LINUX_WEBM if e not in enc]
+        miss = [e for e in LINUX_WEBM if e not in enc | all_encoders(ffmpeg)]
         return "Linux 的 ffmpeg 沒有 %s（WebM 匯出要它）" % "／".join(miss) if miss else None
     try:
         render.video_codec_args({"encoders": enc}, 720)
