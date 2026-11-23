@@ -223,6 +223,14 @@ const ICON = {
 };
 const svg = k => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + ICON[k] + '</svg>';
 
+const CAM_ADJ = [
+  ['d_scale', '距離', 0.5, 2, 0.05, v => '×' + v.toFixed(2)],
+  ['y_off', '機位升降', -3, 3, 0.1, v => (v > 0 ? '+' : '') + v.toFixed(1) + ' m'],
+  ['az_off', '繞主體轉', -180, 180, 1, v => (v > 0 ? '+' : '') + Math.round(v) + '°'],
+  ['mm_scale', '焦距', 0.5, 2, 0.05, v => '×' + v.toFixed(2)],
+  ['roll_off', '滾轉', -45, 45, 1, v => (v > 0 ? '+' : '') + Math.round(v) + '°'],
+];
+const CAM_ADJ_ZERO = { d_scale: 1, y_off: 0, az_off: 0, mm_scale: 1, roll_off: 0 };
 const RIG_TYPES = { ots: '過肩', reverse: '反打（過肩對調）', two_shot: '雙人鏡' };
 const RIG_SIZES1 = { cu: '特寫', mcu: '近景', ms: '中景' };
 const RIG_SIZES2 = { ms: '中景', ws: '遠景' };
@@ -1230,6 +1238,7 @@ class Editor {
     r3.append(btn('pv-btn pri', '產生攝影機路徑', '照上面的運鏡、景別、角度與速度，產生起始的攝影機關鍵幀（會取代目前的攝影機路徑，可以復原）', () => this.genPath(sel.value)));
     m.append(r3);
     if (this.ctx.rigOn === true) this.rigSection(m);
+    if (this.ctx.camAdjOn === true) this.adjSection(m);
     if (this.pathNote) m.append($h('div', 'pv-note', this.pathNote));
     m.append($h('div', 'pv-note', '最後 1 秒停穩不動（研究：終點沒交代時最後一秒會晃）。產生之後可以在時間軸上拖關鍵幀、或在鏡頭視角直接修。'));
     if (cam.keys.length) {
@@ -1239,8 +1248,11 @@ class Editor {
     }
     R.append(m);
   }
-  genPath(move) {
+  genPath(move, adjust) {
     const sc = Object.assign({}, this.shot.cam || {}, { move });
+    const adjOn = this.ctx.camAdjOn === true;
+    const adj = adjOn ? (adjust !== undefined ? C.camAdjust(adjust) : (this.scene.cam.adjust || null)) : null;
+    if (adj) sc.adjust = adj;
     const fol = (() => {
       const ch = this.scene.objs.filter(o => o.kind === 'char' && o.keys.length);
       if (!ch.length) return null;
@@ -1256,12 +1268,34 @@ class Editor {
     this.beginEdit();
     const c = this.scene.cam;
     c.move = move;
+    if (adjOn && adjust !== undefined) { if (adj) c.adjust = adj; else delete c.adjust; }
     c.keys = res.keys.length > 1 ? res.keys : [];
     const k0 = res.keys[0];
     if (k0) c.base = { p: k0.p, look: k0.look, mm: k0.mm, roll: k0.roll };
     this.pathNote = res.note;
     this.commit(); this.applyTime(); this.renderRight(); this.paintHud();
     this.toast('攝影機路徑：' + ((this.ctx.camMoves()[move] || {}).zh || move) + ' · ' + c.keys.length + ' 個關鍵幀');
+  }
+
+  adjSection(m) {
+    const cur = Object.assign({}, CAM_ADJ_ZERO, this.scene.cam.adjust || {});
+    const hd = $h('div', 'pv-h'); hd.append(document.createTextNode('運鏡微調'), $h('em', null, this.scene.cam.adjust ? '已調整' : '沒有調整'));
+    m.append(hd);
+    const move = () => this.scene.cam.move || this.pickMove || (this.shot.cam || {}).move || 'static';
+    CAM_ADJ.forEach(([k, name, lo, hi, step, fmt]) => {
+      const lab = $h('div', 'pv-h'); lab.append(document.createTextNode(name), $h('em', null, fmt(cur[k])));
+      const rg = $h('input'); rg.type = 'range'; rg.min = String(lo); rg.max = String(hi); rg.step = String(step); rg.value = String(cur[k]);
+      rg.setAttribute('aria-label', name);
+      rg.oninput = () => { lab.lastChild.textContent = fmt(Number(rg.value)); };
+      rg.onchange = () => { cur[k] = Number(rg.value); this.genPath(move(), Object.assign({}, cur)); };
+      m.append(lab, rg);
+    });
+    if (this.scene.cam.adjust) {
+      const r = $h('div', 'pv-row');
+      r.append(btn('pv-btn', '微調歸零', '拿掉運鏡微調，照原本的運鏡重產路徑', () => this.genPath(move(), null)));
+      m.append(r);
+    }
+    m.append($h('div', 'pv-note', '微調疊在運鏡算好的每一個關鍵幀上，以攝影機看的那一點為中心。放開滑桿就照目前的運鏡重產路徑（會取代手動修過的關鍵幀，可以復原）。'));
   }
 
   tallest() {

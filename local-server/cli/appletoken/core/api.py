@@ -238,6 +238,12 @@ class Workbench:
         _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         return self.c.get("/api/qc/rating", params={"job": job_id})
 
+    def qc_estimate(self, job_id, frames=3):
+        _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
+        if isinstance(frames, bool) or not isinstance(frames, int) or not 1 <= frames <= 4:
+            raise ValidationError("frames 要是 1–4 的整數")
+        return self.c.get("/api/qc/estimate", params={"job": job_id, "frames": str(frames)})
+
     def download(self, job_id):
         _check(job_id, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         return self.c.get("/api/download", params={"id": job_id}, raw=True)
@@ -583,12 +589,14 @@ class Workbench:
             raise ValueError("沒有這個開關：%s" % name)
         return self.c.get(self.LOCAL_SWITCHES[name])
 
-    def concat(self, job_ids, name=None):
+    def concat(self, job_ids, name=None, mute_model_audio=None):
         for j in job_ids:
             _check(j, JOB_ID_RE, "job id", "^[A-Za-z0-9_-]{1,64}$")
         body = {"files": ["/api/download?id=%s" % j for j in job_ids]}
         if name:
             body["name"] = name
+        if mute_model_audio is not None:
+            body["mute_model_audio"] = bool(mute_model_audio)
         return self.c.post("/api/concat", body)
 
     def local_result(self, job_id):

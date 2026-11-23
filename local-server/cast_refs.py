@@ -14,6 +14,7 @@ MAX_DESC = 1000
 MAX_REFS_PER_CARD = 8
 MAX_NOTES = 10
 MAX_NOTE = 200
+MAX_VOICE = 80
 REF_OK = re.compile(r"^(asset://|https?://|data:image/)", re.I)
 
 class CastError(ValueError):
@@ -48,6 +49,8 @@ def clean_cards(raw):
                 card[k] = c[k][:MAX_NAME]
         if c.get("auto") is True:
             card["auto"] = True
+        if isinstance(c.get("voice"), str) and c["voice"].strip():
+            card["voice"] = c["voice"].strip()[:MAX_VOICE]
         notes = [re.sub(r"\s+", " ", n).strip()[:MAX_NOTE] for n in (c.get("notes") or [])
                  if isinstance(n, str) and n.strip()] if isinstance(c.get("notes"), list) else []
         if notes:

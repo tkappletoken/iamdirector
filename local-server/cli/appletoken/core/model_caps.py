@@ -1,6 +1,11 @@
 
 DEFAULT_FIELD = "frame_images_obj"
 
+RES_PRICED_MARKERS = ("minimax-h3", "hailuo", "seedance")
+RES_DEFAULT = "720p"
+TTS_BLOCKED_PREFIXES = ("gmi/",)
+AUDIO_MODEL_PREFIX = "gmi/"
+
 CAPS = {
     "gputw/minimax-h3": {
         "first_frame": {"status": "ok", "field": "frame_images_str", "drift": "yes",
@@ -64,6 +69,22 @@ def frames_payload(model, first=None, last=None):
         return {"image_url": first}, notes
     frames = [{"frame_type": t, "image_url": u} for t, u in (("first_frame", first), ("last_frame", last)) if u]
     return {"frame_images": frames}, notes
+
+def res_priced(model):
+    m = str(model or "").lower()
+    return any(k in m for k in RES_PRICED_MARKERS)
+
+def with_res_default(body):
+    if isinstance(body, dict) and res_priced(body.get("model")) and not body.get("resolution") and not body.get("size"):
+        body["resolution"] = RES_DEFAULT
+    return body
+
+def tts_effective(model):
+    m = str(model or "").strip()
+    return AUDIO_MODEL_PREFIX + m if m and "/" not in m else m
+
+def tts_blocked(model):
+    return tts_effective(model).lower().startswith(TTS_BLOCKED_PREFIXES)
 
 def table():
     out = []

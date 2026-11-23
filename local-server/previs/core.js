@@ -91,6 +91,8 @@ export function normalize(raw, fallback) {
     move: String(c.move || '').slice(0, 20),
     base: { p: v3(cb.p, [0, 1.55, 5]), look: v3(cb.look, [0, 1.2, 0]), mm: clamp(num(cb.mm, 35), 8, 300), roll: clamp(num(cb.roll, 0), -180, 180) },
   };
+  const adj = camAdjust(c.adjust);
+  if (adj) cam.adjust = adj;
   cam.keys = normKeys(c.keys, k => ({ t: k.t, p: v3(k.p, cam.base.p), look: v3(k.look, cam.base.look),
                                       mm: clamp(num(k.mm, cam.base.mm), 8, 300), roll: clamp(num(k.roll, 0), -400, 400) }));
   return {
@@ -286,7 +288,28 @@ export function camPath(cam, ctx) {
     case 'rack': at(0, base(0, f.d, f.y)); note = '移焦在積木預演裡看不出來：機位固定，對焦變化寫在提示詞'; break;
     default: at(0, base(0, f.d, f.y));
   }
-  return { keys: out.filter((x, i, a) => i === 0 || x.t - a[i - 1].t > 1e-4), note };
+  const keys = out.filter((x, i, a) => i === 0 || x.t - a[i - 1].t > 1e-4);
+  const adj = camAdjust(c.adjust);
+  return { keys: adj ? keys.map(k => adjustKey(k, adj)) : keys, note };
+}
+
+const ADJUST = { d_scale: [1, 0.5, 2], y_off: [0, -3, 3], az_off: [0, -180, 180], mm_scale: [1, 0.5, 2], roll_off: [0, -45, 45] };
+export function camAdjust(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  let moved = false;
+  for (const [k, [d, lo, hi]] of Object.entries(ADJUST)) {
+    out[k] = raw[k] == null ? d : clamp(num(raw[k], d), lo, hi);
+    if (out[k] !== d) moved = true;
+  }
+  return moved ? out : null;
+}
+function adjustKey(k, a) {
+  const L = k.look, v = [k.p[0] - L[0], k.p[1] - L[1], k.p[2] - L[2]];
+  const r = rad(a.az_off), cs = Math.cos(r), sn = Math.sin(r);
+  const x = (v[0] * cs + v[2] * sn) * a.d_scale, z = (v[2] * cs - v[0] * sn) * a.d_scale;
+  return Object.assign({}, k, { p: [L[0] + x, L[1] + v[1] * a.d_scale + a.y_off, L[2] + z].map(r3),
+                                 mm: r3(k.mm * a.mm_scale), roll: r3((k.roll || 0) + a.roll_off) });
 }
 
 const AIM = { ecu: 0.93, cu: 0.92, mcu: 0.88, ms: 0.74, ws: 0.55, ews: 0.5 };
