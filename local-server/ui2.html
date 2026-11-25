@@ -22769,9 +22769,10 @@ document.addEventListener('keydown', e => {
     try { if (typeof window.__CANVAS_DRAW__ === 'function') window.__CANVAS_DRAW__(); } catch (_) {}
     if (MODE === 'simple') render(true);
   }
+  const AFS = (() => { try { return localStorage.getItem('iamd-agentfilm-sync') !== 'off'; } catch (_) { return true; } })();
   async function filmSync(pid) {
     if (pid && !PROJ.some(x => x.id === pid)) refreshProjects(true);
-    if (!pid || pid !== curPid()) return null;
+    if (!pid || (!AFS && pid !== curPid())) return null;
     const key = boardKey(pid);
     let vals;
     try {
@@ -22779,7 +22780,8 @@ document.addEventListener('keydown', e => {
       if (!r.ok) return null;
       vals = ((await r.json()) || {}).values || {};
     } catch (_) { return null; }
-    if (pid !== curPid() || typeof jobs === 'undefined') return null;
+    if ((!AFS && pid !== curPid()) || typeof jobs === 'undefined') return null;
+    const cur = pid === curPid();
     const add = [];
     for (const s of (Array.isArray(vals.jobs) ? vals.jobs : [])) {
       if (!s || !s.uid) continue;
@@ -22798,13 +22800,17 @@ document.addEventListener('keydown', e => {
       if (Number(sw.step) > w.step) w.step = Math.min(Number(sw.step), STEPS.length);
     }
     const sb = vals[key];
-    if (BOARD === key && Array.isArray(sb) && sb.length && !(typeof shots !== 'undefined' && shots.length)) {
+    if (cur && BOARD === key && Array.isArray(sb) && sb.length && !(typeof shots !== 'undefined' && shots.length)) {
       sb.forEach(x => { if (x && !x.sid) x.sid = newSid(); });
       shots = sb;
       try { renderShots(); } catch (_) {}
     }
     save();
     await saveWorks(true);
+    if (!cur) {
+      if (MODE === 'simple' && !curPid() && !homeTyping()) render();
+      return { added: add.length, other: true };
+    }
     if (BOARD !== key) await syncBoard();
     if (MODE === 'simple') render(true);
     return { added: add.length };
@@ -22817,10 +22823,16 @@ document.addEventListener('keydown', e => {
     const before = JSON.stringify([PROJ, ITEMS]);
     try { await loadProjects(); } catch (_) { return false; }
     if (before === JSON.stringify([PROJ, ITEMS])) return false;
-    const a = document.activeElement;
-    const typing = a && root.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
-    if (MODE === 'simple' && !curPid() && !typing) render();
+    if (MODE === 'simple' && !curPid() && !homeTyping()) render();
     return true;
+  }
+  root.addEventListener('input', e => { const t = e.target; if (t && t.dataset) t.dataset.typed = '1'; }, true);
+  function homeTyping() {
+    const a = document.activeElement;
+    const field = a && root.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
+    if (!field) return false;
+    if (!AFS) return true;
+    return a.dataset.typed === '1' && String(a.isContentEditable ? a.textContent : a.value || '').trim() !== '';
   }
   function curPid() {
     if (!location.pathname.startsWith('/w/')) return null;
