@@ -793,6 +793,24 @@ class Registry:
                           "max_points": {"type": "number", "exclusiveMinimum": 0}},
                          ["model", "text"]),
                     self._h_voice_line, spends=True)
+            if gate_on("dub_lipsync_shot"):
+                add("dub_lipsync_shot",
+                    "先配音、再替對嘴影片報價，一次做完：text 用 tts_model 配音（要 mp3，**會花錢**，同 voice_line 的規則與"
+                    " max_points）→ 音檔上傳成 asset:// → 秒數照配音長度無條件進位 → 定裝圖 keyframe＋這段配音當參考報價"
+                    "（免費）。回 {stage, audio_ref, seconds, quote}；stage=quoted 時把 quote 交給 video_confirm 生成。"
+                    "其他 stage 都沒有報影片價：voice_pending（桌面本機配音要人核准：核准後 submit_approved 會回 audio，"
+                    "再呼叫一次並帶 audio＝那個 audio.url，不會重配）、upload_failed／need_seconds／too_long"
+                    "（配音已經做好、交回 audio 或 audio_ref，帶回來續跑就好，不要重配）。"
+                    "已經有配音時帶 audio（asset://、網址或 /api/audio/content?sha=）與 audio_seconds，就不再配音。"
+                    "cast=true＋speaker：沒給 voice 用角色卡的 voice、沒給 keyframe 用角色卡的參考圖（STUDIO_CAST_REFS=blocks 才套）。",
+                    _obj({"model": {"type": "string"}, "prompt": {"type": "string"}, "keyframe": {"type": "string"},
+                          "tts_model": {"type": "string"}, "text": {"type": "string"}, "voice": {"type": "string"},
+                          "speed": {"type": "number"}, "speaker": {"type": "string"}, "cast": {"type": "boolean"},
+                          "max_points": {"type": "number", "exclusiveMinimum": 0},
+                          "audio": {"type": "string"}, "audio_seconds": {"type": "number", "exclusiveMinimum": 0},
+                          "resolution": {"type": "string"}, "aspect_ratio": {"type": "string"}},
+                         ["model", "prompt"]),
+                    self._h_dub_lipsync_shot, spends=True)
             add("pitch_create",
                 "建立投稿包（背景打包成 zip：分集 mp4、字幕、封面、作品資料、AI 使用說明、授權聲明、規格檢查表）。"
                 "聲明要導演本人確認：likeness=none（沒有可辨識的真人肖像）或 consented（已取得書面同意，"
@@ -927,13 +945,18 @@ class Registry:
                 self._h_shots_confirm, spends=True)
 
             add("character_angles",
-                "角色多角度參考圖（正面／側面／背面／四分之三）：每一個角度一次 image_generate。"
+                "角色多角度參考圖：每一個角度各自一次 image_generate（文生圖，只靠提示詞描述同一個角色，"
+                "不拿前一張當參考，所以長相不保證一致，生好要自己看過）。沒帶 angles 預設 front、side、back、three-quarter"
+                "（正面／側面／背面／四分之三）；另外可選 close-up、full-body。"
                 + ("桌面本機：不估價、不扣本站點數，每一張只建一張核准卡（回 quote_id 與 approval，不是失敗、不要重送），"
                    "人核准或預先授權之後用 submit_approved(approval_id=approval.id) 送出；錢由核准卡的上限把關。"
+                   "max_points_each 仍然必填，但本機不拿它擋。"
                    if self.local else
-                   "**會扣款**，每一張都要在 max_points_each 以內（先估價，超過就不送）。")
-                + "生好之後用 asset_upload 放進素材庫，就能當 video_quote／quote 的 input_references"
-                "（[{type: image, url: asset://ast_…, role: reference_image}]）；或存進角色庫，送件時帶 cast=true 由伺服器組。",
+                   "**會扣款**，每一張都要在 max_points_each 以內（先估價，超過就不送）：某一張超過就停在那一張，"
+                   "後面的角度不送、也不會出現在回傳裡；其他錯誤記在那一張、繼續下一張。開了確認模式時那一張回 pending_id（待人核准）。")
+                + "這支只回每個角度的圖片網址（urls），不存角色庫、也不放進素材庫。要當 video_quote／quote 的 input_references，"
+                "先用 asset_upload 拿 asset://（[{type: image, url: asset://ast_…, role: reference_image}]）；"
+                "要給送件時的 cast=true 用，另外把它寫進角色庫。",
                 _obj({"model": {"type": "string"}, "name": {"type": "string"},
                       "description": {"type": "string"},
                       "angles": {"type": "array", "minItems": 1, "maxItems": 6,
@@ -1645,7 +1668,7 @@ class Registry:
         ok = [m for m in ids if isinstance(m, str) and m and not model_caps.tts_blocked(m)]
         return sorted(ok, key=lambda m: not any(k in m.lower() for k in ("speech", "tts")))
 
-    def _h_voice_line(self, a):
+    def _h_voice_line(self, a, fmt=None):
         model = str(a.get("model") or "").strip()
         if not model or model_caps.tts_blocked(model):
             alt = self._tts_alternatives()
@@ -1661,6 +1684,8 @@ class Registry:
         for k in ("voice", "speed"):
             if a.get(k) is not None:
                 body[k] = a[k]
+        if fmt:
+            body["response_format"] = fmt
         cast_note = None
         if a.get("cast") is True and not body.get("voice"):
             card = next((c for c in self._cast_cards() if c["name"] == a.get("speaker")), None)
@@ -1715,6 +1740,80 @@ class Registry:
             if a.get(k):
                 body[k] = a[k]
         return self._h_quote(_shot_payload(body))
+
+    def _dub_keyframe(self, keyframe, cast, speaker):
+        if keyframe or not (cast and speaker and cast_mode() == "blocks"):
+            return keyframe
+        for c in [c for c in self._cast_cards() if c["name"] == speaker]:
+            refs = [r for r in c.get("refs") or [] if isinstance(r, dict) and r.get("ref")]
+            pick = next((r for r in refs if r.get("role") == "outfit"), refs[0] if refs else None)
+            if pick:
+                return pick["ref"]
+        return None
+
+    def _dub_upload(self, audio):
+        url = audio.get("url") if isinstance(audio, dict) else audio
+        url = str(url or "").strip()
+        if url.startswith("asset://") or re.match(r"^https?://", url):
+            return url, None
+        m = re.match(r"^/api/audio/content\?sha=([0-9a-f]{64})$", url)
+        d = re.match(r"^data:(audio/[A-Za-z0-9.+-]+)?(?:;[^,]*)?;base64,(.*)$", url, re.S)
+        if m:
+            raw = self.wb.audio_content(m.group(1))
+        elif d:
+            raw = base64.b64decode(d.group(2))
+        else:
+            raise ValidationError("audio 要是 asset://、網址、/api/audio/content?sha= 或 data: 音檔。沒有送出任何請求。")
+        if not isinstance(raw, (bytes, bytearray)) or not raw:
+            raise ApiError(502, "讀不到配音的音檔")
+        got = self.wb.asset_upload("data:%s;base64,%s" % (_audio_mime(raw, d and d.group(1)),
+                                                          base64.b64encode(raw).decode()), name="voice_line")
+        aid = got.get("id") if isinstance(got, dict) else None
+        if not aid:
+            raise ApiError(502, "上傳配音沒有回素材 id")
+        return "asset://" + aid, bytes(raw)
+
+    def _h_dub_lipsync_shot(self, a):
+        keyframe = self._dub_keyframe(a.get("keyframe"), a.get("cast"), a.get("speaker"))
+        if not keyframe:
+            raise ValidationError("對嘴要一張定裝圖（keyframe）：只有音訊、沒有臉，模型對不了嘴。還沒配音，沒有花錢。")
+        audio, secs, voice = a.get("audio"), a.get("audio_seconds"), None
+        if not audio:
+            if not (a.get("text") and a.get("tts_model")):
+                raise ValidationError("沒帶 audio 時 text 與 tts_model 必填（要先配音）。沒有送出任何請求。")
+            voice = self._h_voice_line({"model": a.get("tts_model"), "text": a.get("text"), "voice": a.get("voice"),
+                                        "speed": a.get("speed"), "speaker": a.get("speaker"), "cast": a.get("cast"),
+                                        "max_points": a.get("max_points")}, fmt="mp3")
+            if isinstance(voice, dict) and voice.get("approval"):
+                return dict(voice, stage="voice_pending",
+                            next="請使用者核准這張配音卡；submit_approved(approval_id=approval.id) 會回 audio，"
+                                 "再呼叫 dub_lipsync_shot 帶 audio=那個 audio.url（不會重配）")
+            audio = (voice or {}).get("audio")
+            secs = (voice or {}).get("seconds")
+            if not audio:
+                return {"stage": "voice_failed", "voice": voice}
+        try:
+            ref, raw = self._dub_upload(audio)
+        except ApiError as e:
+            return {"stage": "upload_failed", "audio": audio, "seconds": secs, "error": str(e),
+                    "next": "配音已經做好：之後帶 audio=這個音檔再呼叫一次就好，不要重配"}
+        if not secs and raw:
+            secs = _audio_seconds(raw)
+        out = {"audio_ref": ref, "seconds": secs}
+        if voice:
+            out["voice"] = {k: voice[k] for k in ("quote_id", "payer", "cast_voice") if voice.get(k) is not None}
+        if not secs:
+            return dict(out, stage="need_seconds", next="量不到配音秒數：帶 audio=audio_ref 與 audio_seconds 再呼叫一次")
+        rule = _duration_rule(a["model"])
+        if float(secs) > rule["max"]:
+            return dict(out, stage="too_long", next="配音 %.2f 秒比這個模型一鏡的上限 %d 秒還長：把台詞拆短再配（不截音）"
+                                                     % (float(secs), rule["max"]))
+        args = {"model": a["model"], "prompt": a["prompt"], "keyframe": keyframe, "audio": ref, "audio_seconds": secs}
+        for k in ("resolution", "aspect_ratio"):
+            if a.get(k):
+                args[k] = a[k]
+        sheet = self._h_lipsync_shot(args)
+        return dict(out, stage="quoted", quote=sheet, next="要生成就把 quote 交給 video_confirm")
 
     def _h_image(self, a):
         payload = {k: v for k, v in a.items() if k != "max_points"}
@@ -1925,7 +2024,50 @@ def _shot_payload(a):
     body.update(extra)
     return model_caps.with_res_default(body)
 
-_GATED_TOOLS = {"voice_line": "STUDIO_VOICE_LINE", "lipsync_shot": "STUDIO_LIPSYNC_SHOT"}
+_GATED_TOOLS = {"voice_line": "STUDIO_VOICE_LINE", "lipsync_shot": "STUDIO_LIPSYNC_SHOT",
+                "dub_lipsync_shot": "STUDIO_TTS_FIRST"}
+
+_MP3_BITRATE = {1: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+                2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)}
+_MP3_RATE = {3: (44100, 48000, 32000), 2: (22050, 24000, 16000), 0: (11025, 12000, 8000)}
+
+def _audio_mime(raw, hint=None):
+    if raw[:4] == b"RIFF":
+        return "audio/wav"
+    if raw[:3] == b"ID3" or (len(raw) > 1 and raw[0] == 0xFF and raw[1] & 0xE0 == 0xE0):
+        return "audio/mpeg"
+    return hint or "audio/mpeg"
+
+def _audio_seconds(raw):
+    raw = bytes(raw or b"")
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
+        i, rate, size = 12, None, None
+        while i + 8 <= len(raw):
+            cid, n = raw[i:i + 4], int.from_bytes(raw[i + 4:i + 8], "little")
+            if cid == b"fmt " and n >= 12:
+                rate = int.from_bytes(raw[i + 16:i + 20], "little")
+            elif cid == b"data":
+                size = min(n, len(raw) - i - 8)
+                break
+            i += 8 + n + (n & 1)
+        return round(size / rate, 3) if rate and size else None
+    i = 0
+    if raw[:3] == b"ID3" and len(raw) >= 10:
+        i = 10 + ((raw[6] & 0x7F) << 21 | (raw[7] & 0x7F) << 14 | (raw[8] & 0x7F) << 7 | (raw[9] & 0x7F))
+        i += 10 if raw[5] & 0x10 else 0
+    total = 0.0
+    while i + 4 <= len(raw):
+        h = int.from_bytes(raw[i:i + 4], "big")
+        ver, layer = (h >> 19) & 3, (h >> 17) & 3
+        br_i, sr_i, pad = (h >> 12) & 15, (h >> 10) & 3, (h >> 9) & 1
+        if (h >> 21) != 0x7FF or ver == 1 or layer != 1 or br_i in (0, 15) or sr_i == 3:
+            break
+        br = _MP3_BITRATE[1 if ver == 3 else 2][br_i] * 1000
+        rate = _MP3_RATE[ver][sr_i]
+        samples = 1152 if ver == 3 else 576
+        total += samples / rate
+        i += samples // 8 * br // rate + pad
+    return round(total, 3) if total else None
 
 def gate_on(name):
     return os.environ.get(_GATED_TOOLS[name], "").strip().lower() in ("1", "on", "true")
@@ -1956,6 +2098,7 @@ def needs_human(r):
 _SPENDING_NAMES = ("video_confirm", "submit_approved", "image_generate", "audio_confirm", "post_process",
                    "shots_confirm", "character_angles", "storyboard_ai",
                    "voice_line",
+                   "dub_lipsync_shot",
                    "youtube_upload", "youtube_retry", "youtube_playlist_create", "youtube_auto_set",
                    "pitch_create")
 _DESTRUCTIVE_NAMES = ("project_delete", "asset_delete", "store_delete")
