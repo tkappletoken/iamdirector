@@ -756,8 +756,9 @@ async function startLocal() {
   localRuntime = runtime;
   const oh = openh264.applies({ fs, platform: process.platform, ffmpegDir: runtime.ffmpegDir })
     && settings.get().openh264 === 'enabled' ? openh264.verifyInstalled({ fs, userData: app.getPath('userData') }) : null;
+  const flags = localServer.pickFlags(settings.get().serverFlags);
   const srv = localServer.start({
-    spawn, runtime, keystore, openh264Dir: oh,
+    spawn, runtime, keystore, openh264Dir: oh, flags,
     dataDir: path.join(app.getPath('userData'), 'local'),
     gatewayBase: localServer.gatewayOverride(process.env.IAMDIRECTOR_GATEWAY_BASE, app.isPackaged),
     onExit: (code) => {
@@ -770,10 +771,35 @@ async function startLocal() {
   });
   const port = await srv.ready;
   localSrv = srv;
+  activeFlags = flags;
   START_URL = 'http://127.0.0.1:' + port + '/';
   policy.setLocalOnly(true);
   trace('local-server-ready', { pid: srv.pid });
 }
+
+// Settings page switches for the local server (localServer.SERVER_FLAGS, all default off).
+// Saved to settings.json; the server reads them at start, so a change applies after relaunch.
+let activeFlags = null;
+function flagState() {
+  return { keys: [...localServer.SERVER_FLAGS], saved: localServer.pickFlags(settings.get().serverFlags),
+    active: localServer.pickFlags(activeFlags) };
+}
+ipcMain.handle('desktop:server-flags', async (e) => {
+  if (!fromOwnPage(e) || MODE !== 'local') return null;
+  return flagState();
+});
+ipcMain.handle('desktop:server-flags-set', async (e, name, on) => {
+  if (!fromOwnPage(e) || MODE !== 'local') return null;
+  if (!localServer.SERVER_FLAGS.includes(name) || typeof on !== 'boolean') return null;
+  settings.set({ serverFlags: { ...localServer.pickFlags(settings.get().serverFlags), [name]: on } });
+  return flagState();
+});
+ipcMain.handle('desktop:relaunch', async (e) => {
+  if (!fromOwnPage(e) || MODE !== 'local') return false;
+  app.relaunch();
+  app.quit();
+  return true;
+});
 
 let quitting = false;
 app.on('will-quit', () => { quitting = true; if (localSrv) localSrv.stop(); });

@@ -797,8 +797,12 @@ class Registry:
                 add("dub_lipsync_shot",
                     "先配音、再替對嘴影片報價，一次做完：text 用 tts_model 配音（要 mp3，**會花錢**，同 voice_line 的規則與"
                     " max_points）→ 音檔上傳成 asset:// → 秒數照配音長度無條件進位 → 定裝圖 keyframe＋這段配音當參考報價"
-                    "（免費）。回 {stage, audio_ref, seconds, quote}；stage=quoted 時把 quote 交給 video_confirm 生成。"
-                    "其他 stage 都沒有報影片價：voice_pending（桌面本機配音要人核准：核准後 submit_approved 會回 audio，"
+                    "（免費）。回 {stage, audio_ref, seconds, quote}；"
+                    + ("stage=quoted 時（桌面本機）用 request_approval(quote_id=quote.quote_id) 取得核准卡，"
+                       "人核准或預先授權之後用 submit_approved(approval_id=approval.id) 生成。"
+                       if self.local else
+                       "stage=quoted 時把 quote 交給 video_confirm 生成。")
+                    + "其他 stage 都沒有報影片價：voice_pending（桌面本機配音要人核准：核准後 submit_approved 會回 audio，"
                     "再呼叫一次並帶 audio＝那個 audio.url，不會重配）、upload_failed／need_seconds／too_long"
                     "（配音已經做好、交回 audio 或 audio_ref，帶回來續跑就好，不要重配）。"
                     "已經有配音時帶 audio（asset://、網址或 /api/audio/content?sha=）與 audio_seconds，就不再配音。"
@@ -1813,7 +1817,9 @@ class Registry:
             if a.get(k):
                 args[k] = a[k]
         sheet = self._h_lipsync_shot(args)
-        return dict(out, stage="quoted", quote=sheet, next="要生成就把 quote 交給 video_confirm")
+        nxt = ("要生成就用 request_approval(quote_id=quote.quote_id) 取得核准卡，人核准或預先授權之後用 "
+               "submit_approved(approval_id=approval.id) 送出" if self.local else "要生成就把 quote 交給 video_confirm")
+        return dict(out, stage="quoted", quote=sheet, next=nxt)
 
     def _h_image(self, a):
         payload = {k: v for k, v in a.items() if k != "max_points"}

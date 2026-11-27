@@ -528,6 +528,9 @@ pre.err { color:var(--ng); }
 #alert.bad { border-color:var(--ng); color:var(--ng); }
 #alert.good { border-color:var(--good); color:var(--good); }
 #alert.info { border-color:var(--rolling,#5BC8D8); color:var(--rolling,#5BC8D8); }
+#alert .no-payer-go { pointer-events:auto; margin-left:10px; width:auto; min-height:28px; padding:2px 10px; border-radius:6px; cursor:pointer;
+  background:rgba(255,255,255,.14); color:inherit; border:1px solid currentColor; font:inherit; }
+#alert.show:has(.no-payer-go) { pointer-events:auto; }
 
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration:.001ms !important; transition-duration:.001ms !important; }
@@ -944,6 +947,16 @@ pre.err { color:var(--ng); }
             <div class="hint" id="frameRelayNote">打開之後，每接一鏡會用你自己的 AppleToken 金鑰上傳一張圖（上一鏡的最後一格）。預設關。</div>
           </div>
         </div>
+        
+        <div id="srvFlagsWrap" hidden style="margin-top:14px">
+          <div class="printed" style="font-weight:600">配音與對嘴（測試中）</div>
+          <div class="chk" style="margin-top:6px"><input type="checkbox" id="sfVoiceLine"><label for="sfVoiceLine">一句台詞配音<span class="note"> · Agent 可以替一句台詞配音（voice_line）；會產生費用</span></label></div>
+          <div class="chk" style="margin-top:6px"><input type="checkbox" id="sfLipsyncShot"><label for="sfLipsyncShot">對嘴一鏡<span class="note"> · Agent 可以用定裝圖＋配音替對嘴影片報價（lipsync_shot）；生成時會產生費用</span></label></div>
+          <div class="chk" style="margin-top:6px"><input type="checkbox" id="sfTtsFirst"><label for="sfTtsFirst">先配音再對嘴<span class="note"> · Agent 一次做完配音＋對嘴報價（dub_lipsync_shot）；配音會產生費用</span></label></div>
+          <div class="hint" id="srvFlagsNote">預設全關。打開之後 Agent 經本機 MCP 多出對應的工具；花錢照舊走核准卡與上限。改了要重新開啟 App 才生效。</div>
+          <button type="button" id="srvFlagsRelaunch" class="ghost" hidden style="margin-top:6px">重新開啟 App 套用</button>
+        </div>
+        
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pbPanel"><label for="pbPanel">匯出面板用積木清單（測試中，預設是原本的面板）</label></div>
         
@@ -3873,6 +3886,32 @@ function sbTextModelNow() {
   const el = document.getElementById('sbTextModel');
   return (el && el.value.trim()) || (window.__MODEL_DEFAULTS__ && window.__MODEL_DEFAULTS__.get('text')) || '';
 }
+function noPayerHint(pid) {
+  const el = $('alert');
+  if (!el) return;
+  el.textContent = '還沒有付款方式：貼上金鑰後就能報價。';
+  el.className = 'alert show info';
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'no-payer-go'; b.textContent = '去貼金鑰';
+  b.onclick = () => {
+    el.className = 'alert';
+    const S = window.__SIMPLE__;
+    if (S && S.mode === 'simple' && pid && typeof S.work === 'function') {
+      const w = S.work(pid); w.step = 4; S.saveWorks(); S.render();
+      let n = 0, seen = 0;
+      const t = setInterval(() => {
+        const i = document.querySelector('.sm .payer-inline input[type=password]');
+        const a = document.activeElement;
+        if (i && a !== i && (!a || a === document.body || seen === 0)) { i.scrollIntoView({ block: 'center' }); i.focus(); }
+        if (i) seen++;
+        if (seen > 10 || ++n > 50) clearInterval(t);
+      }, 100);
+    } else if (window.__STUDIO_PAYER__) window.__STUDIO_PAYER__.open();
+  };
+  el.append(b);
+  clearTimeout(alertTimer);
+  alertTimer = setTimeout(() => { el.className = 'alert'; }, 12000);
+}
 async function aiStoryboard(opts, onErr) {
   const fail = m => { (onErr || say)(m); return null; };
   const post = async (url, body) => {
@@ -3890,6 +3929,7 @@ async function aiStoryboard(opts, onErr) {
   const tm = sbTextModelNow();
   if (tm) body.text_model = tm;
   const q = await post('/api/storyboard/quote', body);
+  if (!q.ok && q.d && q.d.need_key === true) { noPayerHint(opts.project_id); return null; }
   if (!q.ok || !q.d.quote_id) return fail('AI 分鏡報價失敗：' + msg(q.d));
   const own = q.d.payer === 'own_key';
   const pts = q.d.charge_points != null ? Number(q.d.charge_points) : null;
@@ -24168,11 +24208,13 @@ document.addEventListener('keydown', e => {
         catch (e) { b.disabled = false; b.textContent = GO; window.__ERR_AT__(b, e.message || String(e), '送不出去'); }
       });
       go.disabled = true;
+      go.dataset.pending = '1';
       const P = window.__STUDIO_PAYER__;
       (P && P.reload ? P.reload().catch(() => {}) : Promise.resolve()).then(() => {
         if (P && P.keyForm && !P.effective('video')) {
           big.textContent = '最後一步：接上你自己的 AppleToken 金鑰，費用會從你的 AppleToken 額度扣，按確認之前不會花錢。';
           big.after(P.keyForm('video', () => { if (MODE === 'simple' && w.step === 4) render(true); }));
+          delete go.dataset.pending;
           return;
         }
         quoteCost();
@@ -24187,7 +24229,8 @@ document.addEventListener('keydown', e => {
           const top = btn('sm-link', '去儲值', () => { const b = document.getElementById('studioQuota'); if (b) b.click(); });
           why.append(top);
         } else { go.disabled = false; why.textContent = ''; }
-      }).catch(e => { big.textContent = '算不出' + PT('點數', '費用') + '：' + e.message; });
+      }).catch(e => { big.textContent = '算不出' + PT('點數', '費用') + '：' + e.message; })
+        .finally(() => { delete go.dataset.pending; });
       return [why, go];
     }
     host.append(h('h2', null, '生成'), h('p', 'lead', '每個鏡頭各自生成，好了就會出現在這裡；可以先離開這一頁，回來會接著顯示。點「比較」並排看候選、挑一支；不滿意就重抽（重抽一樣先看確認單）。'));
@@ -25209,7 +25252,12 @@ document.addEventListener('keydown', e => {
     w.step = n; saveWorks(); render();
     if (!ai) return '到第 ' + n + ' 步「' + STEPS[n - 1] + '」了。';
     await new Promise(r => setTimeout(r, 50));
-    const b = [...root.querySelectorAll('.sm-act button.sm-ai')].find(x => /AI 幫我做/.test(x.textContent));
+    let b;
+    for (let t = 0; t < 600; t++) {
+      b = [...root.querySelectorAll('.sm-act button.sm-ai')].find(x => /AI 幫我做/.test(x.textContent));
+      if (!b || !b.disabled || !b.dataset.pending) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
     if (!b) return '到第 ' + n + ' 步了，這一步現在沒有「AI 幫我做」可以按。';
     if (b.disabled) return '到第 ' + n + ' 步了，但「' + b.textContent.trim() + '」現在不能按' + (b.title ? '：' + b.title : '') + '。';
     b.click();
@@ -26212,6 +26260,44 @@ document.addEventListener('keydown', e => {
   });
   const lim = $('agDirectLimits');
   if (lim) lim.addEventListener('click', () => { if (window.__APPROVALS__ && window.__APPROVALS__.limits) window.__APPROVALS__.limits(); });
+})();
+
+(() => {
+  if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
+  const desk = window.iamdirectorDesktop;
+  if (!desk || !desk.serverFlags || typeof desk.serverFlags.get !== 'function') return;
+  const $ = id => document.getElementById(id);
+  const wrap = $('srvFlagsWrap'), note = $('srvFlagsNote'), again = $('srvFlagsRelaunch');
+  if (!wrap) return;
+  const BASE = note ? note.textContent : '';
+  const ROWS = [{ id: 'sfVoiceLine', key: 'STUDIO_VOICE_LINE' }, { id: 'sfLipsyncShot', key: 'STUDIO_LIPSYNC_SHOT' },
+    { id: 'sfTtsFirst', key: 'STUDIO_TTS_FIRST' }];
+  const show = st => {
+    if (!st || !st.saved || !st.active) return false;
+    let pending = false;
+    ROWS.forEach(row => {
+      const ctl = $(row.id);
+      if (!ctl) return;
+      ctl.checked = st.saved[row.key] === true;
+      if ((st.saved[row.key] === true) !== (st.active[row.key] === true)) pending = true;
+    });
+    wrap.hidden = false;
+    if (note) note.textContent = BASE + (pending ? ' 已經存好，重新開啟 App 之後才會生效。' : '');
+    if (again) again.hidden = !pending;
+    return true;
+  };
+  Promise.resolve(desk.serverFlags.get()).then(show).catch(() => {});
+  ROWS.forEach(row => {
+    const ctl = $(row.id);
+    if (!ctl) return;
+    ctl.addEventListener('change', () => {
+      const want = ctl.checked;
+      Promise.resolve(desk.serverFlags.set(row.key, ctl.checked))
+        .then(st => { if (!show(st)) ctl.checked = !want; })
+        .catch(() => { ctl.checked = !want; });
+    });
+  });
+  if (again) again.addEventListener('click', () => { Promise.resolve(desk.serverFlags.relaunch()).catch(() => {}); });
 })();
 
 (() => {

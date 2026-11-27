@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld('iamdirectorDesktop', Object.freeze({
     openWeb: () => ipcRenderer.send('desktop:cloud-open-web'),
   }),
   h264: Object.freeze({ ensure: () => ipcRenderer.invoke('desktop:h264-ensure') }),
+  serverFlags: Object.freeze({
+    get: () => ipcRenderer.invoke('desktop:server-flags'),
+    set: (name, on) => ipcRenderer.invoke('desktop:server-flags-set', String(name || ''), on === true),
+    relaunch: () => ipcRenderer.invoke('desktop:relaunch'),
+  }),
   revealPath: (p) => ipcRenderer.send('desktop:reveal', String(p || '').slice(0, 1024)),
   liveJobs: (n) => ipcRenderer.sendSync('desktop:live-jobs', Math.max(0, Math.min(9999, Number(n) || 0))),
 }));
