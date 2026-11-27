@@ -24172,6 +24172,7 @@ document.addEventListener('keydown', e => {
     });
   }
   let pollT = null;
+  const AUTO_QUOTED = new Set();
   SM_PAGES[4] = function genPage(host, w, pid) {
     clearInterval(pollT);
     const gate = boardGate(host, pid); if (gate) return gate;
@@ -24204,8 +24205,8 @@ document.addEventListener('keydown', e => {
       const GO = 'AI 幫我做：報價並全部生成';
       const go = btn('sm-ai', GO, async function () {
         const b = this; b.disabled = true; b.textContent = '跟平台確認每一鏡的價格…';
-        try { if (await sendShots(w, L.map((_, i) => i), pid)) render(); else { b.disabled = false; b.textContent = GO; } }
-        catch (e) { b.disabled = false; b.textContent = GO; window.__ERR_AT__(b, e.message || String(e), '送不出去'); }
+        try { if (await sendShots(w, L.map((_, i) => i), pid)) render(); else { b.disabled = false; b.textContent = GO; delete b.dataset.auto; } }
+        catch (e) { b.disabled = false; b.textContent = GO; delete b.dataset.auto; window.__ERR_AT__(b, e.message || String(e), '送不出去'); }
       });
       go.disabled = true;
       go.dataset.pending = '1';
@@ -24219,6 +24220,13 @@ document.addEventListener('keydown', e => {
         }
         quoteCost();
       });
+      const autoQuote = () => {
+        if (!(window.__STUDIO__ && window.__STUDIO__.spine_auto_quote === true) || AUTO_QUOTED.has(pid)) return;
+        if (MODE !== 'simple' || w.step !== 4 || !go.isConnected || go.disabled) return;
+        AUTO_QUOTED.add(pid);
+        go.dataset.auto = '1';
+        go.click();
+      };
       const quoteCost = () => quoteShots(L).then(q => {
         big.textContent = '';
         if (!q) { big.textContent = '還算不出' + PT('點數', '費用') + '（工作台還沒挑模型）。'; return; }
@@ -24228,7 +24236,7 @@ document.addEventListener('keydown', e => {
           why.textContent = '點數不夠：現在有 ' + q.avail.toFixed(2) + ' 點，還差 ' + (q.pts - q.avail).toFixed(2) + ' 點。';
           const top = btn('sm-link', '去儲值', () => { const b = document.getElementById('studioQuota'); if (b) b.click(); });
           why.append(top);
-        } else { go.disabled = false; why.textContent = ''; }
+        } else { go.disabled = false; why.textContent = ''; autoQuote(); }
       }).catch(e => { big.textContent = '算不出' + PT('點數', '費用') + '：' + e.message; })
         .finally(() => { delete go.dataset.pending; });
       return [why, go];
@@ -25254,6 +25262,7 @@ document.addEventListener('keydown', e => {
     await new Promise(r => setTimeout(r, 50));
     let b;
     for (let t = 0; t < 600; t++) {
+      if (root.querySelector('.sm-act button.sm-ai[data-auto]')) return '到第 ' + n + ' 步，確認單在畫面上，你按確認才會送出。';
       b = [...root.querySelectorAll('.sm-act button.sm-ai')].find(x => /AI 幫我做/.test(x.textContent));
       if (!b || !b.disabled || !b.dataset.pending) break;
       await new Promise(r => setTimeout(r, 100));
@@ -25484,6 +25493,7 @@ document.addEventListener('keydown', e => {
       m.classList.toggle('end', k > 0.8); m.classList.toggle('cand', cand);
       lab.textContent = (k > 0.8 ? word + at.toFixed(2) + 's ▼' : '▼ ' + word + at.toFixed(2) + 's'); };
     place(Number(st.twist.at));
+    m.__place = place;
     m.title = isLocal() ? '拖動微調反轉點（寫進 twist.at，匯出時字卡照它對齊）' : webOn() ? WEB_ON_WHY : WEB_WHY;
     if (editable()) {
       m.addEventListener('pointerdown', e => {
@@ -25491,9 +25501,11 @@ document.addEventListener('keydown', e => {
         m.setPointerCapture(e.pointerId);
         const r = map.getBoundingClientRect();
         const at = ev => Math.round(Math.min(T.body, Math.max(0, (ev.clientX - r.left - 34) / Math.max(1, r.width - 34) * T.total)) * 100) / 100;
-        const move = ev => { st.twist.at = at(ev); st.twist.manual = true; place(st.twist.at); };
-        const up = ev => { m.removeEventListener('pointermove', move); m.removeEventListener('pointerup', up); move(ev); save(pid); repaint(); };
-        m.addEventListener('pointermove', move); m.addEventListener('pointerup', up);
+        const move = ev => { st.twist.at = at(ev); st.twist.manual = true;
+          const cur = m.isConnected ? m : document.getElementById('r7Twist');
+          if (cur === m) place(st.twist.at); else if (cur && cur.__place) cur.__place(st.twist.at); };
+        const up = ev => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); move(ev); save(pid); repaint(); };
+        window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
       });
       m.addEventListener('click', e => e.stopPropagation());
     }

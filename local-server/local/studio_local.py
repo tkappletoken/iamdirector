@@ -2956,7 +2956,7 @@ class Handler(BaseHTTPRequestHandler):
             return _rpc_err(mid, -32602, "arguments 要是物件")
         try:
             out = reg.call(params["name"], args)
-            bad = isinstance(out, dict) and "error" in out
+            bad = isinstance(out, dict) and bool(out.get("error"))
         except Exception as e:
             out, bad = {"error": str(e) or type(e).__name__}, True
         text = json.dumps(out, ensure_ascii=False, default=str).replace(self.state.agent_loop, "…")
