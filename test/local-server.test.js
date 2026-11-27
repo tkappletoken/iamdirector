@@ -78,6 +78,39 @@ test('serverEnv：IMAGE_RECOVER 沒設預設 shadow；有設以環境變數為�
     ['IMAGE_RECOVER', 'LANG', 'PATH', 'PYTHONIOENCODING']);
 });
 
+test('serverFlags：預設全關＝環境變數跟以前一模一樣（沒帶、空的、全 false 都一樣）', () => {
+  const base = ls.serverEnv({ PATH: '/bin' });
+  for (const flags of [undefined, null, {}, { STUDIO_TTS_FIRST: false, STUDIO_VOICE_LINE: false, STUDIO_LIPSYNC_SHOT: false }]) {
+    assert.deepEqual(ls.serverEnv({ PATH: '/bin' }, flags), base, JSON.stringify(flags));
+  }
+  assert.deepEqual(Object.keys(base).sort(), ['IMAGE_RECOVER', 'LANG', 'PATH', 'PYTHONIOENCODING']);
+});
+
+test('serverFlags：白名單只有三個，打開的才帶 on；其他鍵、非 true 的值一律不帶', () => {
+  assert.deepEqual([...ls.SERVER_FLAGS].sort(), ['STUDIO_LIPSYNC_SHOT', 'STUDIO_TTS_FIRST', 'STUDIO_VOICE_LINE']);
+  const env = ls.serverEnv({ PATH: '/bin' }, { STUDIO_TTS_FIRST: true, STUDIO_VOICE_LINE: 'on', STUDIO_LIPSYNC_SHOT: 1,
+    STUDIO_LOCAL_MCP_DIRECT: true, SECRET_X: true, __proto__: { STUDIO_TTS_FIRST: true } });
+  assert.equal(env.STUDIO_TTS_FIRST, 'on');
+  assert.equal(env.STUDIO_VOICE_LINE, undefined, '只認 true，字串 on 不算');
+  assert.equal(env.STUDIO_LIPSYNC_SHOT, undefined);
+  assert.equal(env.STUDIO_LOCAL_MCP_DIRECT, undefined, '白名單以外的不帶');
+  assert.equal(env.SECRET_X, undefined);
+  assert.deepEqual(Object.keys(env).sort(), ['IMAGE_RECOVER', 'LANG', 'PATH', 'PYTHONIOENCODING', 'STUDIO_TTS_FIRST']);
+});
+
+test('serverFlags：值只從設定來，不讀父程序的環境變數（launchctl setenv 不算）', () => {
+  const parent = { PATH: '/bin', STUDIO_TTS_FIRST: 'on', STUDIO_VOICE_LINE: 'on', STUDIO_LIPSYNC_SHOT: 'on' };
+  assert.deepEqual(ls.serverEnv(parent), ls.serverEnv({ PATH: '/bin' }));
+  assert.deepEqual(ls.serverEnv(parent, { STUDIO_VOICE_LINE: true }).STUDIO_TTS_FIRST, undefined);
+});
+
+test('pickFlags：設定檔讀回來只留白名單的布林值，缺的補 false', () => {
+  assert.deepEqual(ls.pickFlags(undefined), { STUDIO_TTS_FIRST: false, STUDIO_VOICE_LINE: false, STUDIO_LIPSYNC_SHOT: false });
+  assert.deepEqual(ls.pickFlags({ STUDIO_VOICE_LINE: true, STUDIO_TTS_FIRST: 'yes', OTHER: true }),
+    { STUDIO_TTS_FIRST: false, STUDIO_VOICE_LINE: true, STUDIO_LIPSYNC_SHOT: false });
+  assert.deepEqual(ls.pickFlags('x'), ls.pickFlags(null));
+});
+
 test('整條管道：權杖、金鑰交給 keystore、stdin 關掉就結束', { skip: !DIR && '沒設 IAMDIRECTOR_LOCAL_SERVER_DIR' }, async () => {
   const up = await fakeUpstream();
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-'));

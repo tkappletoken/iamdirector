@@ -26,14 +26,30 @@ function devFfmpegDir({ appRoot, arch, platform, exists }) {
   return exists(path.join(dir, platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')) ? dir : null;
 }
 
-// IMAGE_RECOVER (off|shadow|on): the server defaults to off; the desktop app ships shadow
-// (log-only) unless the user's environment sets it.
-function serverEnv(parent) {
-  return { PATH: parent.PATH || '', LANG: 'en_US.UTF-8', PYTHONIOENCODING: 'utf-8',
-    IMAGE_RECOVER: parent.IMAGE_RECOVER || 'shadow' };
+// Feature switches the settings page may turn on for the local server (all default off).
+// Only these names ever reach the server, and only from the app's own settings: the parent
+// environment (e.g. launchctl setenv) is not read for them.
+const SERVER_FLAGS = Object.freeze(['STUDIO_TTS_FIRST', 'STUDIO_VOICE_LINE', 'STUDIO_LIPSYNC_SHOT']);
+
+// settings.json value -> { NAME: boolean } for exactly the whitelisted names (missing/invalid = false).
+function pickFlags(saved) {
+  const src = saved && typeof saved === 'object' ? saved : {};
+  const out = {};
+  for (const k of SERVER_FLAGS) out[k] = Object.prototype.hasOwnProperty.call(src, k) && src[k] === true;
+  return out;
 }
 
-function start({ spawn, runtime, dataDir, keystore, gatewayBase, onExit, openh264Dir }) {
+// IMAGE_RECOVER (off|shadow|on): the server defaults to off; the desktop app ships shadow
+// (log-only) unless the user's environment sets it.
+function serverEnv(parent, flags) {
+  const env = { PATH: parent.PATH || '', LANG: 'en_US.UTF-8', PYTHONIOENCODING: 'utf-8',
+    IMAGE_RECOVER: parent.IMAGE_RECOVER || 'shadow' };
+  const on = pickFlags(flags);
+  for (const k of SERVER_FLAGS) if (on[k]) env[k] = 'on';
+  return env;
+}
+
+function start({ spawn, runtime, dataDir, keystore, gatewayBase, onExit, openh264Dir, flags }) {
   const token = crypto.randomBytes(32).toString('hex');
   let initialKey = null;
   try { initialKey = keystore.load() || null; } catch (_) { initialKey = null; }
@@ -42,7 +58,7 @@ function start({ spawn, runtime, dataDir, keystore, gatewayBase, onExit, openh26
   if (runtime.ffmpegDir) args.push('--ffmpeg-dir', runtime.ffmpegDir);
   const child = spawn(runtime.python, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: serverEnv(process.env),
+    env: serverEnv(process.env, flags),
     windowsHide: true,
   });
   let buf = '';
@@ -119,4 +135,4 @@ function gatewayOverride(value, isPackaged) {
   return /^http:\/\/127\.0\.0\.1:\d{1,5}\/[A-Za-z0-9/_-]*$/.test(value) ? value : null;
 }
 
-module.exports = { resolveRuntime, serverEnv, start, needsToken, gatewayOverride, TOKEN_HEADER: 'X-Local-Token' };
+module.exports = { resolveRuntime, serverEnv, pickFlags, SERVER_FLAGS, start, needsToken, gatewayOverride, TOKEN_HEADER: 'X-Local-Token' };
