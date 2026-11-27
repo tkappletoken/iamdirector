@@ -417,6 +417,7 @@ class Editor {
       this.orbitCam.enabled = !e.value && this.view === 'cam';
       if (e.value) { this.pause(); this.beginEdit(); this.dragBefore = this.poseOfSel(); }
       else this.commit();
+      if (!e.value) this.liveBlocking();
     });
     tc.addEventListener('objectChange', () => { this.fromGizmo(); this.paintRead(); });
     tc.addEventListener('mouseUp', () => { this.$read.style.display = 'none'; });
@@ -932,6 +933,16 @@ class Editor {
     if (this.undo[this.undo.length - 1] !== snap) this.undo.push(snap);
     if (this.undo.length > 60) this.undo.shift();
     this.redo = [];
+  }
+  liveBlocking() {
+    if (typeof this.ctx.blockingLive !== 'function') return;
+    const bk = C.blockingOf(this.scene, 0);
+    const sig = this.sid + '|' + JSON.stringify(bk.blocking);
+    if (sig === this.liveSig) return;
+    this.liveSig = sig;
+    Promise.resolve()
+      .then(() => this.ctx.blockingLive(this.sid, { blocking: bk.blocking, blockingNotes: bk.notes }))
+      .then(msg => { if (msg) this.toast(msg); }, e => this.toast('站位沒同步：' + (e && e.message || e)));
   }
   commit() { this.dirty = true; this.queueSave(); this.renderTracks(); this.paintTrail(); this.paintCamPath(); this.renderLeft(); }
   doUndo() {

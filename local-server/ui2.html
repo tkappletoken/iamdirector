@@ -948,6 +948,16 @@ pre.err { color:var(--ng); }
           </div>
         </div>
         
+        <div id="srvFlags2Wrap" hidden style="margin-top:14px">
+          <div class="printed" style="font-weight:600">導演台與合併（測試中）</div>
+          <div class="chk" id="sfBlockingSyncRow" hidden style="margin-top:6px"><input type="checkbox" id="sfBlockingSync"><label for="sfBlockingSync">站位換算成導演控制<span class="note"> · Agent 可以把 3D 預演裡人偶的站位換算成這一鏡的導演控制（previs_blocking_sync）；不花錢</span></label></div>
+          <div class="chk" id="sfWorkFramesRow" hidden style="margin-top:6px"><input type="checkbox" id="sfWorkFrames"><label for="sfWorkFrames">每一鏡指定首尾幀<span class="note"> · 作品的每一鏡可以指定首尾幀或參考圖，Agent 一條龍照它送件（work_run）；生成照舊走核准卡，會產生費用</span></label></div>
+          <div class="chk" id="sfMuteAudioRow" hidden style="margin-top:6px"><input type="checkbox" id="sfMuteAudio"><label for="sfMuteAudio">合併時原聲預設靜音<span class="note"> · 合併成一部時，影片原本的聲音預設換成靜音（配音另外鋪）；不花錢</span></label></div>
+          <div class="hint" id="srvFlags2Note">預設全關。改了要重新開啟 App 才生效。</div>
+          <button type="button" id="srvFlags2Relaunch" class="ghost" hidden style="margin-top:6px">重新開啟 App 套用</button>
+        </div>
+        
+        
         <div id="srvFlagsWrap" hidden style="margin-top:14px">
           <div class="printed" style="font-weight:600">配音與對嘴（測試中）</div>
           <div class="chk" style="margin-top:6px"><input type="checkbox" id="sfVoiceLine"><label for="sfVoiceLine">一句台詞配音<span class="note"> · Agent 可以替一句台詞配音（voice_line）；會產生費用</span></label></div>
@@ -955,6 +965,26 @@ pre.err { color:var(--ng); }
           <div class="chk" style="margin-top:6px"><input type="checkbox" id="sfTtsFirst"><label for="sfTtsFirst">先配音再對嘴<span class="note"> · Agent 一次做完配音＋對嘴報價（dub_lipsync_shot）；配音會產生費用</span></label></div>
           <div class="hint" id="srvFlagsNote">預設全關。打開之後 Agent 經本機 MCP 多出對應的工具；花錢照舊走核准卡與上限。改了要重新開啟 App 才生效。</div>
           <button type="button" id="srvFlagsRelaunch" class="ghost" hidden style="margin-top:6px">重新開啟 App 套用</button>
+        </div>
+        
+        
+        <div id="filmSetWrap" hidden style="margin-top:14px">
+          <div class="printed" style="font-weight:600">長片與接縫（測試中）</div>
+          <div class="chk" style="margin-top:6px"><input type="checkbox" id="fsLongFilm"><label for="fsLongFilm">長片接力<span class="note"> · 只給一句話時切成 6–10 段、每段約 8 秒；段數變多，生成費用跟著變多（照舊走核准卡與上限）</span></label></div>
+          <div class="hint" id="fsLongFilmNote"></div>
+          <div class="chk" style="margin-top:6px"><input type="checkbox" id="fsSeamRedo"><label for="fsSeamRedo">接縫不合格自動重做<span class="note"> · 交片前接不上的那一段重拍一次（每個接縫最多 1 次）；會產生費用</span></label></div>
+          <div class="hint" id="fsSeamRedoNote"></div>
+          <div class="chk" style="margin-top:6px"><input type="checkbox" id="fsSeamXfade"><label for="fsSeamXfade">接縫畫面淡接<span class="note"> · 交片與匯出時段落之間淡接，總長不變；在這台電腦處理，不花錢</span></label></div>
+          <div class="hint" id="fsSeamXfadeNote"></div>
+          <div class="chk" style="margin-top:6px"><input type="checkbox" id="fsSeamAfade"><label for="fsSeamAfade">原聲淡出淡入<span class="note"> · 每段原聲頭尾淡出淡入，對嘴時間不變；不花錢</span></label></div>
+          <div class="hint" id="fsSeamAfadeNote"></div>
+          <div class="chk" style="margin-top:6px"><input type="checkbox" id="fsSeamTrim"><label for="fsSeamTrim">去掉接力首幀<span class="note"> · 交片時首幀接力的那一段去掉第 1 格，避免同一格出現兩次；不花錢</span></label></div>
+          <div class="hint" id="fsSeamTrimNote"></div>
+          <div style="margin-top:6px"><label for="fsSeamSeconds">淡接秒數<span class="note"> · 畫面淡接與原聲淡出淡入共用，0.05–1.5 秒</span></label>
+            <input type="number" id="fsSeamSeconds" min="0.05" max="1.5" step="0.05" style="width:90px;margin-left:6px"></div>
+          <div class="hint" id="fsSeamSecondsNote"></div>
+          <div class="hint" id="filmSetNote">預設全關。只有你本人能改（Agent 讀得到、改不了）；存在這台電腦的資料夾，下一次交片或匯出就照新的設定。</div>
+          <button type="button" id="filmSetReset" class="ghost" style="margin-top:6px">全部回到預設</button>
         </div>
         
         
@@ -971,11 +1001,15 @@ pre.err { color:var(--ng); }
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pbM6"><label for="pbM6">積木清單的新積木（調色、浮水印、變速、封面）用完整參數表單（測試中，預設關）</label></div>
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvBlocking"><label for="pvBlocking">3D 預演放進動作來源時，同步把站位寫進那一鏡的導演控制（左中右、前中後、面向、走到哪；可以還原；測試中，預設關）</label></div>
+        
+        <div class="chk" style="margin-top:6px;margin-left:24px"><input type="checkbox" id="pvBlockingLive"><label for="pvBlockingLive">拖完就同步：在 3D 預演裡每拖完一次人偶或攝影機，就把站位寫進那一鏡的導演控制（要先開上面那個；可以還原；測試中，預設關）</label></div>
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvRig"><label for="pvRig">3D 預演加「景別照角色身高」與「對準角色」（過肩、反打、雙人；後者限桌面版；測試中，預設關）</label></div>
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="pvCamAdj"><label for="pvCamAdj">3D 預演加「運鏡微調」（距離、機位升降、繞主體轉、焦距、滾轉疊在運鏡上；測試中，預設關）</label></div>
         
         <div class="chk" style="margin-top:10px"><input type="checkbox" id="dcPanel"><label for="dcPanel">分鏡每一鏡加「導演控制」（走位、表演、運鏡；測試中，預設關）</label></div>
+        
+        <div class="chk" id="perfVoiceRow" hidden style="margin-top:6px;margin-left:24px"><input type="checkbox" id="perfVoice"><label for="perfVoice">表演筆記語音輸入（導演控制的每份表演筆記旁多一顆錄音鍵，辨識出的文字接在筆記後面；測試中，預設關）<span class="note"> · 會用你的金鑰、產生費用</span></label></div>
         
         <div class="chk" id="agRunRow" hidden style="margin-top:10px"><input type="checkbox" id="agRun"><label for="agRun">右下角顯示「Agent 拍片進度」（第幾鏡、花了多少、Agent 的提問、交片；測試中，預設關）</label></div>
         
@@ -4865,6 +4899,7 @@ document.addEventListener('keydown', e => {
    ['capAuto', '/api/transcribe'],
    ['mergeGo', '/api/concat'], ['saveRate', '/api/rates'],
    ].forEach(([id, path]) => { if (missing[path] !== undefined) mute($$(id), missing[path]); });
+  window.__STUDIO_MUTE__ = (el, path) => { if (missing[path] === undefined) return false; mute(el, missing[path]); return true; };
   $$('rateJson').readOnly = true;
 
   if ($$('sbTextModelPick')) {
@@ -16152,6 +16187,17 @@ document.addEventListener('keydown', e => {
     box.checked = blockingOn();
     box.onchange = () => { try { localStorage.setItem(BLOCKING_KEY, box.checked ? 'on' : 'off'); } catch (e) {} };
   })();
+  const BLOCKING_LIVE_KEY = 'iamd-previs-blocking-live';
+  const blockingLiveOn = () => { try { return localStorage.getItem(BLOCKING_LIVE_KEY) === 'on'; } catch (e) { return false; } };
+  (() => {
+    const box = document.getElementById('pvBlockingLive'), parent = document.getElementById('pvBlocking');
+    if (!box) return;
+    box.checked = blockingLiveOn();
+    box.onchange = () => { try { localStorage.setItem(BLOCKING_LIVE_KEY, box.checked ? 'on' : 'off'); } catch (e) {} };
+    const sync = () => { box.disabled = !(parent && parent.checked); };
+    if (parent) parent.addEventListener('change', sync);
+    sync();
+  })();
   async function writeBlocking(sh, meta) {
     const list = Array.isArray(meta && meta.blocking) ? meta.blocking : [];
     const notes = Array.isArray(meta && meta.blockingNotes) ? meta.blockingNotes : [];
@@ -16168,6 +16214,20 @@ document.addEventListener('keydown', e => {
     return '；' + list.length + ' 個角色的站位寫進了第 ' + (shots.indexOf(sh) + 1) + ' 鏡的導演控制（可以還原）' + (notes.length ? '，' + notes.join('、') : '');
   }
   const R2 = () => window.__R2__ || {};
+  const seedOn = () => blockingOn() && !!window.__PREVIS_SEED__;
+  async function seedLoad(sid) {
+    const v = await loadScene(sid);
+    if (v) return v;
+    const sh = shots.find(s => s.sid === sid);
+    const dc = sh && sh.dc && typeof sh.dc === 'object' ? sh.dc : null;
+    if (!dc || !Array.isArray(dc.blocking) || !dc.blocking.length) return v;
+    const sec = Number(sh.seconds);
+    let scene = null;
+    try { scene = await window.__PREVIS_SEED__.fromDc(dc, sec > 0 ? Math.min(30, Math.max(1, sec)) : 5, aspect()); } catch (e) { return v; }
+    if (!scene || typeof scene !== 'object') return v;
+    say('第 ' + (shots.indexOf(sh) + 1) + ' 鏡：照導演控制的站位擺好了初始預演場景（動了才會存）', true);
+    return scene;
+  }
 
   const suffixNow = () => {
     let seg = location.pathname.startsWith('/w/') ? location.pathname.slice(3) : 'all';
@@ -16251,7 +16311,7 @@ document.addEventListener('keydown', e => {
       keyName, thumb,
       align: n => (typeof window.__ALIGN_SECONDS__ === 'function' ? window.__ALIGN_SECONDS__(model(), n) : { seconds: Math.ceil(n), max: null }),
       model, aspect,
-      load: loadScene,
+      load: seedOn() ? seedLoad : loadScene,
       save: saveScene,
       camMoves: () => moves,
       camGroups: () => cat.groups,
@@ -16284,6 +16344,15 @@ document.addEventListener('keydown', e => {
       onClose: () => { try { renderShots(); } catch (e) {} },
       ...(window.__PREVIS_RIG__ && window.__PREVIS_RIG__.isOn() ? window.__PREVIS_RIG__.ctx() : {}),
       ...(window.__PREVIS_CAMADJ__ && window.__PREVIS_CAMADJ__.isOn() ? { camAdjOn: true } : {}),
+      ...(blockingOn() && blockingLiveOn() ? { blockingLive: async (sid, meta) => {
+        const sh = shots.find(s => s.sid === sid);
+        if (!sh) return '這一鏡已經不在分鏡表上，站位沒同步';
+        const bk = await writeBlocking(sh, meta);
+        saveShots();
+        try { renderShots(); } catch (e) {}
+        say('第 ' + (shots.indexOf(sh) + 1) + ' 鏡：拖完就同步' + bk, true);
+        return bk.replace(/^；/, '');
+      } } : {}),
     };
   }
 
@@ -26279,6 +26348,48 @@ document.addEventListener('keydown', e => {
   const desk = window.iamdirectorDesktop;
   if (!desk || !desk.serverFlags || typeof desk.serverFlags.get !== 'function') return;
   const $ = id => document.getElementById(id);
+  const wrap = $('srvFlags2Wrap'), note = $('srvFlags2Note'), again = $('srvFlags2Relaunch');
+  if (!wrap) return;
+  const BASE = note ? note.textContent : '';
+  const ROWS = [{ id: 'sfBlockingSync', key: 'STUDIO_LOCAL_BLOCKING_SYNC' }, { id: 'sfWorkFrames', key: 'STUDIO_WORK_FRAMES' },
+    { id: 'sfMuteAudio', key: 'STUDIO_MUTE_MODEL_AUDIO' }];
+  const known = st => ROWS.filter(row => Array.isArray(st.keys) && st.keys.includes(row.key));
+  const show = st => {
+    if (!st || !st.saved || !st.active) return false;
+    const rows = known(st);
+    if (!rows.length) return false;
+    let pending = false;
+    rows.forEach(row => {
+      const ctl = $(row.id), line = $(row.id + 'Row');
+      if (!ctl) return;
+      if (line) line.hidden = false;
+      ctl.checked = st.saved[row.key] === true;
+      if ((st.saved[row.key] === true) !== (st.active[row.key] === true)) pending = true;
+    });
+    wrap.hidden = false;
+    if (note) note.textContent = BASE + (pending ? ' 已經存好，重新開啟 App 之後才會生效。' : '');
+    if (again) again.hidden = !pending;
+    return true;
+  };
+  Promise.resolve(desk.serverFlags.get()).then(show).catch(() => {});
+  ROWS.forEach(row => {
+    const ctl = $(row.id);
+    if (!ctl) return;
+    ctl.addEventListener('change', () => {
+      const want = ctl.checked;
+      Promise.resolve(desk.serverFlags.set(row.key, ctl.checked))
+        .then(st => { if (!show(st)) ctl.checked = !want; })
+        .catch(() => { ctl.checked = !want; });
+    });
+  });
+  if (again) again.addEventListener('click', () => { Promise.resolve(desk.serverFlags.relaunch()).catch(() => {}); });
+})();
+
+(() => {
+  if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
+  const desk = window.iamdirectorDesktop;
+  if (!desk || !desk.serverFlags || typeof desk.serverFlags.get !== 'function') return;
+  const $ = id => document.getElementById(id);
   const wrap = $('srvFlagsWrap'), note = $('srvFlagsNote'), again = $('srvFlagsRelaunch');
   if (!wrap) return;
   const BASE = note ? note.textContent : '';
@@ -26310,6 +26421,57 @@ document.addEventListener('keydown', e => {
     });
   });
   if (again) again.addEventListener('click', () => { Promise.resolve(desk.serverFlags.relaunch()).catch(() => {}); });
+})();
+
+(() => {
+  if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
+  const $ = id => document.getElementById(id);
+  const wrap = $('filmSetWrap'), note = $('filmSetNote'), reset = $('filmSetReset');
+  if (!wrap) return;
+  const PATH = '/api/local/film-settings';
+  const BASE = note ? note.textContent : '';
+  const ROWS = [{ id: 'fsLongFilm', key: 'long_film' }, { id: 'fsSeamRedo', key: 'seam_redo' }, { id: 'fsSeamXfade', key: 'seam_xfade' },
+    { id: 'fsSeamAfade', key: 'seam_afade' }, { id: 'fsSeamTrim', key: 'seam_trim' }, { id: 'fsSeamSeconds', key: 'seam_xfade_seconds', num: true }];
+  const RANGE = [0.05, 1.5];
+  const say = t => { if (note) note.textContent = BASE + (t ? ' ' + t : ''); };
+  const show = d => {
+    const items = d && d.items;
+    if (!items || typeof items !== 'object') return false;
+    ROWS.forEach(row => {
+      const ctl = $(row.id), it = items[row.key], hint = $(row.id + 'Note');
+      if (!ctl || !it) return;
+      if (row.num) ctl.value = String(it.value); else ctl.checked = it.on === true;
+      const byEnv = it.source === 'env';
+      ctl.disabled = byEnv;
+      if (hint) hint.textContent = byEnv ? '由環境變數 ' + it.env_name + '＝' + it.env + ' 決定，在這裡改不會生效。' : '';
+    });
+    wrap.hidden = false;
+    return true;
+  };
+  const load = () => fetch(PATH).then(r => (r.ok ? r.json() : null)).then(show).catch(() => false);
+  const post = body => fetch(PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(r => r.json().catch(() => ({})).then(d => ({ ok: r.ok, d })))
+    .then(({ ok, d }) => {
+      if (ok && show(d)) { say(''); return; }
+      say('沒有存進去：' + (errMsg(d) || '本機伺服器沒有回應') + '。畫面已經回到原本的設定。');
+      return load();
+    })
+    .catch(() => { say('沒有存進去：連不到本機伺服器。畫面已經回到原本的設定。'); return load(); });
+  load();
+  ROWS.forEach(row => {
+    const ctl = $(row.id);
+    if (!ctl) return;
+    ctl.addEventListener('change', () => {
+      if (!row.num) return post({ [row.key]: ctl.checked === true });
+      const v = Number(ctl.value);
+      if (!(ctl.value !== '' && isFinite(v) && v >= RANGE[0] && v <= RANGE[1])) {
+        say('淡接秒數要是 ' + RANGE[0] + '–' + RANGE[1] + ' 之間的數字，沒有存。');
+        return load();
+      }
+      return post({ [row.key]: Math.round(v * 1000) / 1000 });
+    });
+  });
+  if (reset) reset.addEventListener('click', () => post({ on: null }));
 })();
 
 (() => {
@@ -27644,8 +27806,11 @@ window.__UI_CTX__ = { resolve: kind => uiCtxResolve(kind, uiCtxEnv()) };
         const rm = el('button', 'r2-mini', '✕'); rm.type = 'button'; rm.title = '移除這份筆記';
         nm.oninput = () => { p.name = nm.value; save(); };
         notes.oninput = () => { p.notes = notes.value; save(); };
+        const PV = window.__PERF_VOICE__;
+        const mic = PV ? PV.button(t => { notes.value = PV.join(notes.value, t); p.notes = notes.value; save(); }) : null;
         rm.onclick = () => { dc.perf.splice(k, 1); save(); paintPerf(); };
         r.append(labeled('角色', nm), labeled('筆記', notes), rm);
+        if (mic) r.insertBefore(mic, rm);
         perf.append(r);
       });
       const add = el('button', 'r2-mini', '＋ 加表演筆記'); add.type = 'button';
@@ -27873,6 +28038,87 @@ window.__UI_CTX__ = { resolve: kind => uiCtxResolve(kind, uiCtxEnv()) };
   }
   window.__DIRCTL__ = { isOn: () => on, pollOnce, sheet, cardMark, derive: (p, stops) => dcDerive(p && p.prompt, p && p.controls, stops) };
 })();
+(function studioPerfVoice() {
+  const S = window.__STUDIO__;
+  if (!S) return;
+  const KEY = 'iamd-perf-voice';
+  const NOTE = '會用你的金鑰、產生費用';
+  const MAX_MS = 120000;
+  const isOn = () => { try { return localStorage.getItem(KEY) === 'on'; } catch (e) { return false; } };
+  (() => {
+    const row = document.getElementById('perfVoiceRow'), box = document.getElementById('perfVoice');
+    if (!row || !box || !S.local) return;
+    row.hidden = false;
+    box.checked = isOn();
+    box.onchange = () => {
+      try { localStorage.setItem(KEY, box.checked ? 'on' : 'off'); } catch (e) {}
+      try { if (typeof window.renderShots === 'function') window.renderShots(); } catch (e) {}
+    };
+  })();
+  const join = (old, add) => {
+    const a = String(old || '').replace(/\s+$/, ''), b = String(add || '').trim();
+    if (!b) return String(old || '');
+    return a ? a + '\n' + b : b;
+  };
+  const toDataURL = blob => new Promise((ok, no) => {
+    const fr = new FileReader();
+    fr.onload = () => ok(String(fr.result));
+    fr.onerror = () => no(fr.error || new Error('讀不到錄音'));
+    fr.readAsDataURL(blob);
+  });
+  const errText = d => errMsg(d) || '';
+  function button(onText) {
+    if (!S.local || !isOn()) return null;
+    const wrap = document.createElement('span');
+    wrap.className = 'pv-voice';
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'r2-mini'; b.textContent = '🎙 錄音';
+    b.title = '說一段表演筆記，辨識出的文字接在這份筆記後面（' + NOTE + '）';
+    const tag = document.createElement('span');
+    tag.className = 'note'; tag.textContent = NOTE;
+    wrap.append(b, tag);
+    if (typeof window.__STUDIO_MUTE__ === 'function' && window.__STUDIO_MUTE__(b, '/api/transcribe')) return wrap;
+    let rec = null, timer = null;
+    b.onclick = async () => {
+      if (rec) { rec.stop(); return; }
+      if (!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') || typeof MediaRecorder === 'undefined') {
+        tag.textContent = '這裡不能錄音（沒有麥克風功能）'; return;
+      }
+      let stream;
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch (e) { tag.textContent = '拿不到麥克風：' + (e && e.message || e); return; }
+      const chunks = [];
+      const r = rec = new MediaRecorder(stream);
+      r.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+      r.onstop = async () => {
+        clearTimeout(timer);
+        try { stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+        rec = null;
+        b.disabled = true; b.textContent = '辨識中…';
+        try {
+          const audio = await toDataURL(new Blob(chunks, { type: r.mimeType || 'audio/webm' }));
+          const res = await fetch('/api/transcribe', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                       body: JSON.stringify({ audio }) });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(errText(d) || 'HTTP ' + res.status);
+          const t = String(d.text || '').trim();
+          if (t) { onText(t); tag.textContent = NOTE; }
+          else tag.textContent = d.note || '沒聽到內容，筆記沒改';
+        } catch (e) {
+          tag.textContent = '辨識失敗，筆記沒改：' + (e && e.message || e);
+        } finally {
+          b.disabled = false; b.textContent = '🎙 錄音';
+        }
+      };
+      r.start();
+      b.textContent = '■ 停止錄音';
+      tag.textContent = '錄音中（再按一次停止，最多 2 分鐘）';
+      timer = setTimeout(() => { if (rec === r) r.stop(); }, MAX_MS);
+    };
+    return wrap;
+  }
+  window.__PERF_VOICE__ = { isOn, button, join };
+})();
 (function studioPrevisRig() {
   const KEY = 'iamd-previs-rig';
   const box = document.getElementById('pvRig');
@@ -27891,6 +28137,14 @@ window.__UI_CTX__ = { resolve: kind => uiCtxResolve(kind, uiCtxEnv()) };
   window.__PREVIS_RIG__ = {
     isOn: () => on,
     ctx: () => (LOCAL ? { rigOn: true, rig } : { rigOn: true }),
+  };
+})();
+(function studioPrevisSeed() {
+  if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
+  window.__PREVIS_SEED__ = {
+    fromDc: (dc, dur, aspect) => fetch('/api/previs-from-dc', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                               body: JSON.stringify({ dc, dur, aspect }) })
+      .then(r => r.json().then(d => (r.ok && d && d.scene ? d.scene : null))),
   };
 })();
 (function studioPrevisCamAdj() {

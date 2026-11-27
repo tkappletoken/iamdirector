@@ -16,10 +16,14 @@ GOOD = "-".join(["at", "local", secrets.token_hex(12)])
 SEEN = []
 RES_PRICED = re.compile(r"(?i)minimax-h3|seedance")
 FAKE = {"quote_ttl": 900, "expired": set(), "price": None, "issued": {}, "usage": [], "images": {}, "unique_jobs": False,
-        "videos": {}, "assets": [], "models": None}
+        "videos": {}, "assets": [], "models": None,
+        "long": False, "long_quotes": {}, "long_jobs": {}, "long_blobs": {}, "verdicts": []}
+LONG_MODEL = "gputw/minimax-h3"
+LONG_PASS = {"subjects_ok": True, "colors_ok": True, "defects": "", "overall": 8}
 
 def reset_fake():
-    FAKE.update(quote_ttl=900, expired=set(), price=None, issued={}, usage=[], images={}, unique_jobs=False, videos={}, assets=[], models=None)
+    FAKE.update(quote_ttl=900, expired=set(), price=None, issued={}, usage=[], images={}, unique_jobs=False, videos={}, assets=[], models=None,
+                long=False, long_quotes={}, long_jobs={}, long_blobs={}, verdicts=[])
 GONE = set()
 PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4c40000000049454e44ae426082")
 MEDIA = {"mp4": b"\x00\x00\x00\x18ftypmp42" + b"x" * 100, "mp3": b"ID3" + b"\x00" * 7 + b"\xff\xfb" + b"a" * 400}
@@ -41,6 +45,60 @@ def make_media():
         return True
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+def _long_first(body):
+    fi = body.get("frame_images")
+    ref = None
+    if isinstance(fi, list) and fi:
+        x = next((f for f in fi if not isinstance(f, dict) or f.get("frame_type") in (None, "first_frame")), None)
+        ref = x.get("image_url") if isinstance(x, dict) else x
+    ref = ref or body.get("image_url")
+    m = re.match(r"^asset://(ast_[0-9a-f]{20})$", str(ref or ""))
+    return FAKE["long_blobs"].get(m.group(1)) if m else None
+
+def _long_video(jid):
+    job = FAKE["long_jobs"][jid]
+    if job.get("mp4"):
+        return job["mp4"]
+    import random
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        return MEDIA["mp4"]
+    body = job["body"]
+    sec = max(0.5, float(body.get("seconds") or 2))
+    rnd = random.Random(jid)
+    d = tempfile.mkdtemp(prefix="fake-long-")
+    try:
+        noise = os.path.join(d, "n.ppm")
+        with open(noise, "wb") as f:
+            f.write(b"P6 80 60 255\n" + bytes(rnd.randrange(256) for _ in range(80 * 60 * 3)))
+        args = [ff, "-loglevel", "error", "-y", "-loop", "1", "-framerate", "12", "-t", str(sec), "-i", noise,
+                "-f", "lavfi", "-i", "sine=f=%d:d=%s" % (220 + rnd.randrange(600), sec)]
+        first = _long_first(body)
+        if first:
+            fp = os.path.join(d, "first.png")
+            with open(fp, "wb") as f:
+                f.write(first)
+            args += ["-i", fp, "-filter_complex",
+                     "[0:v]scale=320:240:flags=neighbor,setsar=1[b];[2:v]scale=320:240,setsar=1[f];"
+                     "[b][f]overlay=enable='lt(n,6)'[v]", "-map", "[v]"]
+        else:
+            args += ["-vf", "scale=320:240:flags=neighbor,setsar=1", "-map", "0:v"]
+        out = os.path.join(d, "v.mp4")
+        enc = ["-c:v", "libx264", "-crf", "4"] if _has_x264(ff) else ["-c:v", "h264_videotoolbox", "-b:v", "20M"]
+        subprocess.run(args + ["-map", "1:a", "-t", str(sec), "-pix_fmt", "yuv420p"] + enc + ["-c:a", "aac", out],
+                       check=True, timeout=120)
+        with open(out, "rb") as f:
+            job["mp4"] = f.read()
+        return job["mp4"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+def _has_x264(ff, _seen={}):
+    if ff not in _seen:
+        r = subprocess.run([ff, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=30)
+        _seen[ff] = "libx264" in r.stdout
+    return _seen[ff]
 
 class FakeUpstream(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -72,9 +130,16 @@ class FakeUpstream(BaseHTTPRequestHandler):
         if p == "/v2/models" and FAKE.get("models"):
             return self._out(200, {"data": FAKE["models"]})
         if p == "/v2/models":
-            return self._out(200, {"data": [
-                {"slug": "siraya/Seedance-2.0", "ref": "siraya/Seedance-2.0", "family": "seedance-2.0",
-                 "provider": {"id": "siraya"}, "capabilities": ["video"], "modality": "video", "name": "Seedance-2.0"}]})
+            data = [{"slug": "siraya/Seedance-2.0", "ref": "siraya/Seedance-2.0", "family": "seedance-2.0",
+                     "provider": {"id": "siraya"}, "capabilities": ["video"], "modality": "video", "name": "Seedance-2.0"}]
+            if FAKE["long"]:
+                data.append({"slug": LONG_MODEL, "ref": LONG_MODEL, "family": "minimax-h3", "provider": {"id": "gputw"},
+                             "capabilities": ["video"], "modality": "video", "name": "minimax-h3"})
+            return self._out(200, {"data": data})
+        if FAKE["long"] and p.startswith("/v2/videos/") and p.endswith("/content") and p.split("/")[3] in FAKE["long_jobs"]:
+            return self._out(200, _long_video(p.split("/")[3]), "video/mp4")
+        if FAKE["long"] and re.match(r"^/v2/assets/ast_[0-9a-f]{20}/content$", p) and p.split("/")[3] in FAKE["long_blobs"]:
+            return self._out(200, FAKE["long_blobs"][p.split("/")[3]], "image/png")
         if p.startswith("/v2/videos/job_tr") and p.endswith("/content"):
             return self._out(200, MEDIA.get("mp4a", MEDIA["mp4"]), "video/mp4")
         if p.startswith("/v2/videos/") and p.endswith("/content"):
@@ -120,12 +185,18 @@ class FakeUpstream(BaseHTTPRequestHandler):
                                             or FAKE["issued"].get(body["quote_id"], 1e18) <= time.time()):
                     return self._out(400, {"error": {"code": "validation_error",
                                                      "message": "確認單已過期（有效期 15 分鐘），請重新送出一次請求"}})
+                if body.get("confirm") and FAKE["long"]:
+                    jid = "job_" + secrets.token_hex(6)
+                    FAKE["long_jobs"][jid] = {"body": FAKE["long_quotes"].get(body["quote_id"]) or {}}
+                    return self._out(200, {"id": jid, "status": "queued"})
                 if body.get("confirm"):
                     jid = "job_" + secrets.token_hex(6) if FAKE["unique_jobs"] else "job_abc123"
                     return self._out(200, {"id": jid, "status": "queued"})
                 return self._out(200, {"quote_id": body["quote_id"], "status": "cancelled"})
             qid, exp = "q_" + secrets.token_hex(4), time.time() + FAKE["quote_ttl"]
             FAKE["issued"][qid] = exp
+            if FAKE["long"]:
+                FAKE["long_quotes"][qid] = body
             return self._out(200, {"quote_id": qid, "estimate": {"points": FAKE["price"] or "3.00"},
                                    "expires_at": datetime.datetime.fromtimestamp(exp, datetime.timezone.utc).isoformat(),
                                    "resolved": {k: v for k, v in body.items() if k != "require_confirmation"},
@@ -136,6 +207,12 @@ class FakeUpstream(BaseHTTPRequestHandler):
             return self._out(200, MEDIA.get("wav", MEDIA["mp3"]), "audio/wav" if "wav" in MEDIA else "audio/mpeg")
         if p == "/v2/music/generations":
             return self._out(200, {"id": "mus_abc", "status": "completed"})
+        if p == "/v2/assets" and FAKE["long"]:
+            import base64 as b64
+            aid = "ast_" + secrets.token_hex(10)
+            m = re.match(r"^data:[^;,]+;base64,(.*)$", str(body.get("source") or ""), re.S)
+            FAKE["long_blobs"][aid] = b64.b64decode(m.group(1)) if m else b""
+            return self._out(200, {"id": aid, "status": "ready"})
         if p == "/v2/assets":
             return self._out(200, {"id": "ast_" + "a1" * 10, "status": "ready"})
         if p == "/v2/images/generations":
@@ -154,6 +231,11 @@ class FakeUpstream(BaseHTTPRequestHandler):
             ok = isinstance(body.get("file"), str) and body["file"].startswith("data:audio/wav;base64,")
             return self._out(200 if ok else 400, {"text": "雨停之前，我會一直在這裡等。"} if ok else
                              {"error": {"code": "validation_error", "message": "file 只接受音訊"}})
+        if p == "/v2/chat/completions" and FAKE["long"]:
+            v = FAKE["verdicts"].pop(0) if FAKE["verdicts"] else LONG_PASS
+            return self._out(200, {"id": "chatcmpl_long", "usage": {"prompt_tokens": 10, "completion_tokens": 20,
+                                                                     "total_tokens": 30},
+                                   "choices": [{"message": {"content": json.dumps(v)}}]})
         if p == "/v2/chat/completions":
             shots = [{"prompt": "便利店夜景，店員抬頭", "seconds": 5}, {"prompt": "客人推門進來", "seconds": 5}]
             return self._out(200, {"id": "chatcmpl_1", "usage": {"prompt_tokens": 10, "completion_tokens": 20,

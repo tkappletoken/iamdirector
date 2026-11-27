@@ -157,7 +157,7 @@ class Registry:
                   "tags": {"type": "array", "items": {"type": "string"}}}),
             self._h_asset_upload_remote, t.spends)
         if not self.local:
-            for name in _LOCAL_DIRCTL_TOOLS:
+            for name in _LOCAL_DIRCTL_TOOLS + _LOCAL_DIRCTL_GATED:
                 self._tools.pop(name, None)
         else:
             for name in _LOCAL_UNREACHABLE:
@@ -316,7 +316,11 @@ class Registry:
             "allow_cuts＝允許切鏡頭（預設 false＝一鏡到底）、count_animals（預設 true：characters 寫成「名字: 描述; …」"
             "就自動加 Only N animals in the entire video）、cap_setup、cap_twist、flash_before、style＝meme／memebox）。"
             "範本的 negative 與「只用環境音」由伺服器寫，報價用 quote_work；回應的 warnings 要看。"
-            "dry_run=true（只限 template）＝只驗欄位、回組好的提示詞與警告，不建作品。count_animals 也可以給 1–9 的數字。",
+            "dry_run=true（只限 template）＝只驗欄位、回組好的提示詞與警告，不建作品。count_animals 也可以給 1–9 的數字。"
+            + ("一般分鏡的每一鏡也可以帶 first_frame／last_frame（網址或 asset://）或 input_references"
+               "（[{type: image／video／audio, url, role?}]，跟首尾幀擇一）；work_run 開拍時照它送"
+               "（那一鏡不做首幀接力），範本作品的首尾幀也會帶進 work_run。"
+               if self.local and os.environ.get("STUDIO_WORK_FRAMES", "").strip().lower() in ("1", "on", "true") else ""),
             _obj({"name": {"type": "string", "minLength": 1},
                   "shots": {"type": "array", "items": {"type": "object"}},
                   "script": {"type": "string"}, "model": {"type": "string"},
@@ -1565,6 +1569,15 @@ class Registry:
             _obj({"project_id": {"type": "string"}, "shot": {"type": ["integer", "string"]},
                   "dc": {"type": ["object", "null"]}, "undo": {"type": "boolean"}}, ["project_id", "shot"]),
             self._h_shot_dirctl)
+        if gate_on("previs_blocking_sync"):
+            add("previs_blocking_sync",
+                "場面調度：把某一鏡的 3D 預演裡人偶擺在哪（左中右、前中後、面向、走到哪）換算成這一鏡導演控制的 blocking。"
+                "換算規則跟畫面上「放進動作來源」同一份。預設只回草稿（blocking、notes、合併後的 dc、原本的 prev）；"
+                "apply=true 才寫入（走 shot_dirctl_set 同一條：留上一版，undo=true 退回）。同名角色的 action 留著，預演裡沒有的角色原樣留著。"
+                "t＝取第幾秒的站位（預設 0）。這一鏡沒有預演場景回 404。免費。",
+                _obj({"project_id": {"type": "string"}, "shot": {"type": ["integer", "string"]},
+                      "t": {"type": "number"}, "apply": {"type": "boolean"}}, ["project_id", "shot"]),
+                self._h_previs_blocking_sync)
 
     def _h_previs_rig(self, a):
         scene = a.get("scene")
@@ -1576,6 +1589,18 @@ class Registry:
             if not isinstance(scene, dict):
                 raise ValidationError("store 裡沒有這個預演場景：%s" % key)
         return self.wb.previs_rig(scene, a["spec"])
+
+    def _h_previs_blocking_sync(self, a):
+        body = {"project_id": a["project_id"], "shot": a["shot"]}
+        if a.get("t") is not None:
+            body["t"] = a["t"]
+        r = self.wb.work_shot_blocking(body)
+        if a.get("apply") is not True:
+            return dict(r, applied=False)
+        if r.get("error") or not r.get("dc"):
+            return dict(r, applied=False)
+        w = self.wb.work_shot_dirctl({"project_id": a["project_id"], "shot": a["shot"], "dc": r["dc"]})
+        return dict(r, applied=True, written=w)
 
     def _h_shot_dirctl(self, a):
         body = {"project_id": a["project_id"], "shot": a["shot"]}
@@ -2031,7 +2056,8 @@ def _shot_payload(a):
     return model_caps.with_res_default(body)
 
 _GATED_TOOLS = {"voice_line": "STUDIO_VOICE_LINE", "lipsync_shot": "STUDIO_LIPSYNC_SHOT",
-                "dub_lipsync_shot": "STUDIO_TTS_FIRST"}
+                "dub_lipsync_shot": "STUDIO_TTS_FIRST",
+                "previs_blocking_sync": "STUDIO_LOCAL_BLOCKING_SYNC"}
 
 _MP3_BITRATE = {1: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
                 2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)}
@@ -2109,6 +2135,7 @@ _SPENDING_NAMES = ("video_confirm", "submit_approved", "image_generate", "audio_
                    "pitch_create")
 _DESTRUCTIVE_NAMES = ("project_delete", "asset_delete", "store_delete")
 _LOCAL_DIRCTL_TOOLS = ("dirctl_catalog", "dirctl_compose", "previs_rig", "shot_dirctl_set")
+_LOCAL_DIRCTL_GATED = ("previs_blocking_sync",)
 _LOCAL_UNREACHABLE = ("export_request", "agent_pending_status", "export_download",
                       "image_outpaint", "post_process", "post_process_status", "post_process_fetch",
                       "video_download_url", "post_process_download_url", "asset_download_url", "audio_music_download_url")

@@ -12,6 +12,7 @@ BLOCKED = ("card_pending", "repriced", "over_limit")
 REQUEST_MAX = 500
 SEG_TARGET = 15
 LOG_MAX = 500
+SEAM_REDO_MAX = 1
 
 class LoopError(ValueError):
     pass
@@ -45,6 +46,23 @@ def draft(request, target_seconds=60):
     return {"version": 1, "segments": [{"prompt": "%s（第 %d／%d 段）" % (request, i + 1, n), "seconds": sec}
                                        for i in range(n)]}
 
+LONG_SEGS = (6, 10)
+LONG_SEG_TARGET = 8
+LONG_BEATS = ("開場", "鋪陳", "發展", "轉折", "高潮", "收尾")
+
+def draft_long(request, target_seconds=60):
+    n = min(LONG_SEGS[1], max(LONG_SEGS[0], math.ceil(target_seconds / LONG_SEG_TARGET)))
+    total = int(target_seconds)
+    secs = [total // n + (1 if i < total % n else 0) for i in range(n)]
+    if not all(long_plan.SEG_MIN <= x <= long_plan.SEG_MAX for x in secs):
+        raise LoopError("長片退路要切成 %d–%d 段、每段 %d–%d 秒：%s 秒切不出來（請 Agent 自己寫腳本）"
+                        % (LONG_SEGS[0], LONG_SEGS[1], long_plan.SEG_MIN, long_plan.SEG_MAX, target_seconds))
+
+    def beat(i):
+        return LONG_BEATS[-1] if i == n - 1 else LONG_BEATS[min(len(LONG_BEATS) - 2, i * (len(LONG_BEATS) - 1) // n)]
+    return {"version": 1, "segments": [{"prompt": "%s（第 %d／%d 段・%s）" % (request, i + 1, n, beat(i)), "seconds": secs[i]}
+                                       for i in range(n)]}
+
 def _controls(st, storyboard, cast):
     try:
         dc = dir_controls.from_storyboard_all(storyboard, cast)
@@ -65,7 +83,8 @@ def _controls(st, storyboard, cast):
     _log(st, "controls", must_ask=dc["must_ask"])
 
 def start(request, desc=None, caps=None, *, budget=None, has_cast_refs=False, price_per_second=None, max_retakes=1,
-          target_seconds=None, gate="loop", storyboard=None, cast=None, blockout=None):
+          target_seconds=None, gate="loop", storyboard=None, cast=None, blockout=None, long_film=False,
+          seam_redo=False):
     if not isinstance(request, str) or not request.strip() or len(request) > REQUEST_MAX:
         raise LoopError("需求要是 1–%d 字的文字" % REQUEST_MAX)
     request = request.strip()
@@ -73,7 +92,10 @@ def start(request, desc=None, caps=None, *, budget=None, has_cast_refs=False, pr
         raise LoopError("gate 要是 %s" % "、".join(GATES))
     bud = clean_budget(budget)
     warnings = []
-    if desc is None:
+    if desc is None and long_film:
+        desc = draft_long(request, target_seconds or 60)
+        warnings += ["script_draft", "script_draft_long"]
+    elif desc is None:
         desc = draft(request, target_seconds or 60)
         warnings.append("script_draft")
     try:
@@ -97,6 +119,8 @@ def start(request, desc=None, caps=None, *, budget=None, has_cast_refs=False, pr
           "budget": bud, "spent": 0.0, "held": 0.0, "shots": shots, "inflight": None, "pause": None,
           "approved": None, "seq": 0, "log": [], "warnings": warnings + p["warnings"], "must_ask": [],
           "controls_gaps": {}, "cast": cast}
+    if seam_redo:
+        st["seam_redo"] = {"max": SEAM_REDO_MAX, "threshold": long_plan.SEAM_THRESHOLD, "items": {}}
     if storyboard is not None:
         _controls(st, storyboard, cast)
     if blockout is not None:
@@ -242,8 +266,14 @@ def _next(st):
             return _issue(st, act)
         st["phase"] = "deliver"
         _log(st, "phase", to="deliver")
-    return _issue(st, {"do": "deliver", "chain_segments": st["plan"]["chain_segments"],
-                       "picks": {s["key"]: s["picked"] for s in st["shots"]}})
+    act = {"do": "deliver", "chain_segments": st["plan"]["chain_segments"],
+           "picks": {s["key"]: s["picked"] for s in st["shots"]}}
+    sr = st.get("seam_redo")
+    if sr is not None:
+        act["seam_redo"] = {"threshold": sr["threshold"],
+                            "seams": [[x["after"], x["before"]] for x in st["plan"]["seams"]],
+                            "done": sorted(k for k, v in sr["items"].items() if v["count"] >= sr["max"])}
+    return _issue(st, act)
 
 def _reports(rs):
     if not isinstance(rs, list) or not rs:
@@ -312,9 +342,37 @@ def _apply_exec(st, ev):
             _log(st, "pick", shot_key=s["key"], take=tk["take"], by="agent")
         else:
             _redo(st, s, "qc_fail")
+    elif act["do"] == "deliver" and t == "seam_failed" and st.get("seam_redo") is not None:
+        sr = st["seam_redo"]
+        bad = ev.get("seams")
+        if not isinstance(bad, list) or not bad:
+            raise LoopError("seam_failed 要帶 seams（[{key, score}]）")
+        todo = []
+        for x in bad:
+            key, score = (x or {}).get("key"), (x or {}).get("score")
+            s = _shot(st, key)
+            it = sr["items"].setdefault(key, {"count": 0, "scores": [], "est_cost": 0.0})
+            if it["count"] >= sr["max"]:
+                raise LoopError("%s 的接縫已經重做過 %d 次，不再重做" % (key, it["count"]))
+            todo.append((s, it, score))
+        for s, it, score in todo:
+            it["count"] += 1
+            it["scores"].append(None if score is None else round(float(score), 3))
+            est = s["cost"] if s["cost"] is not None else next((t.get("cost") for t in reversed(s["takes"])
+                                                                if t.get("cost") is not None), None)
+            it["est_cost"] = round(it["est_cost"] + (est or 0), 2)
+            s["status"], s["reason"] = "pending", "seam_jump"
+            _log(st, "seam_redo", shot_key=s["key"], score=it["scores"][-1], est_cost=est, count=it["count"])
+        st["phase"] = "execute"
+        _log(st, "phase", to="execute")
     elif act["do"] == "deliver" and t == "delivered":
         st["phase"] = "done"
-        _log(st, "phase", to="done", export=ev.get("export"))
+        sr = st.get("seam_redo")
+        if sr is not None:
+            sr["final"] = ev.get("seams")
+            _log(st, "phase", to="done", export=ev.get("export"), seam_redo=seam_redo_summary(st))
+        else:
+            _log(st, "phase", to="done", export=ev.get("export"))
     else:
         raise LoopError("動作 %s 不收 %s" % (act["do"], t))
     st["inflight"] = None
@@ -377,13 +435,30 @@ def step(state, event=None):
             st["pause"] = None
             _controls(st, event.get("storyboard"), event.get("cast", st.get("cast")))
             st["cast"] = event.get("cast", st.get("cast"))
-        elif t in ("generated", "generate_failed", "submit_blocked", "refunded", "checked", "delivered"):
+        elif t in ("generated", "generate_failed", "submit_blocked", "refunded", "checked", "delivered", "seam_failed"):
             _apply_exec(st, event)
         else:
             raise LoopError("不認得的事件 %s" % t)
     return st, _next(st)
 
+def seam_redo_summary(st):
+    sr = st.get("seam_redo")
+    if sr is None:
+        return None
+    items = [dict(v, key=k) for k, v in sorted(sr["items"].items())]
+    skipped = [{"key": x.get("key"), "after": x.get("after"), "score": x.get("score"), "reason": x["skipped"]}
+               for x in sr.get("final") or [] if isinstance(x, dict) and x.get("skipped")]
+    return {"count": sum(v["count"] for v in items), "est_cost": round(sum(v["est_cost"] for v in items), 2),
+            "threshold": sr["threshold"], "max_per_seam": sr["max"], "items": items, "final": sr.get("final"),
+            "skipped": skipped}
+
 def summary(st):
+    out = _summary(st)
+    if st.get("seam_redo") is not None:
+        out["seam_redo"] = seam_redo_summary(st)
+    return out
+
+def _summary(st):
     return {"phase": st["phase"], "spent": st["spent"], "held": st["held"], "budget": st["budget"],
             "pause": {k: v for k, v in (st["pause"] or {}).items() if k != "blocked"} or None,
             "shots": [{"key": s["key"], "status": s["status"], "attempts": len(s["takes"]), "redos": s["redos"],
