@@ -29,7 +29,10 @@ function devFfmpegDir({ appRoot, arch, platform, exists }) {
 // Feature switches the settings page may turn on for the local server (all default off).
 // Only these names ever reach the server, and only from the app's own settings: the parent
 // environment (e.g. launchctl setenv) is not read for them.
-const SERVER_FLAGS = Object.freeze(['STUDIO_TTS_FIRST', 'STUDIO_VOICE_LINE', 'STUDIO_LIPSYNC_SHOT']);
+// 0.2.24: dubbing / lip-sync (cost money). 0.2.26: previs blocking -> director controls for the Agent,
+// per-shot first/last frames for work_run (generation still goes through approval cards), mute model audio on merge.
+const SERVER_FLAGS = Object.freeze(['STUDIO_TTS_FIRST', 'STUDIO_VOICE_LINE', 'STUDIO_LIPSYNC_SHOT',
+  'STUDIO_LOCAL_BLOCKING_SYNC', 'STUDIO_WORK_FRAMES', 'STUDIO_MUTE_MODEL_AUDIO']);
 
 // settings.json value -> { NAME: boolean } for exactly the whitelisted names (missing/invalid = false).
 function pickFlags(saved) {
