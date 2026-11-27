@@ -389,6 +389,9 @@ class Workbench:
     def work_shot_dirctl(self, body):
         return self.c.post("/api/works/shot-dirctl", body)
 
+    def work_shot_blocking(self, body):
+        return self.c.post("/api/works/shot-blocking", body)
+
     def work_get(self, project_id):
         _check(project_id, PROJECT_ID_RE, "project id", "^[0-9a-fA-F-]{36}$")
         return self.c.get("/api/works/get", params={"project_id": project_id})

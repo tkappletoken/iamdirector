@@ -57,7 +57,13 @@ def run(state, executor, *, max_steps=MAX_STEPS, max_polls=MAX_POLLS, sleep=None
         elif d == "deliver":
             if not hasattr(executor, "deliver"):
                 return st, act
-            ev = {"type": "delivered", "export": (executor.deliver(act) or {}).get("export")}
+            out = executor.deliver(act) or {}
+            if out.get("seam_failed"):
+                ev = {"type": "seam_failed", "seams": out["seam_failed"]}
+            elif "seams" in out:
+                ev = {"type": "delivered", "export": out.get("export"), "seams": out["seams"]}
+            else:
+                ev = {"type": "delivered", "export": out.get("export")}
         else:
             raise ExecutorError("不認得的動作 %s" % d)
         if ev is None:

@@ -26,11 +26,12 @@ FAILED = ("failed", "error", "cancelled", "canceled", "generation_failed")
 
 class LocalExecutor:
     def __init__(self, port, secret, *, model, aspect_ratio="9:16", resolution="720p", project_id=None, ids=None,
-                 timeout=30, caps=None, frames=None, relay=None, relay_cache=None, extra=None):
+                 timeout=30, caps=None, frames=None, relay=None, relay_cache=None, extra=None, work_frames=None):
         self.base = "http://127.0.0.1:%d" % port
         self._secret = secret
         self.model, self.aspect_ratio, self.resolution = model, aspect_ratio, resolution
-        self.extra = {k: v for k, v in (extra or {}).items() if k in PAYLOAD_EXTRA}
+        self.extra = {k: v for k, v in (extra or {}).items() if k in PAYLOAD_EXTRA + PAYLOAD_EXTRA_FRAMES}
+        self._work_frames = work_frames if isinstance(work_frames, dict) else {}
         self.project_id = project_id
         self.ids = ids if ids is not None else {}
         self.timeout = timeout
@@ -98,7 +99,7 @@ class LocalExecutor:
         if card is None:
             src = req["first_frame"].get("source")
             relay_ref = None
-            if src == "prev_last" and self._relay is not None:
+            if src == "prev_last" and self._relay is not None and not self._work_frames.get(req["shot_key"]):
                 relay_ref = rec.get("relay") or self._relay_first(req, rec)
             elif src in ("prev_last", "blockout"):
                 self._note("first_frame")
@@ -165,6 +166,9 @@ class LocalExecutor:
 
     def _body(self, req, relay_first=None):
         body = self._body_base(req)
+        wf = self._work_frames.get(req.get("shot_key"))
+        if wf:
+            return self._with_work_frames(body, wf, req)
         if relay_first and not any(k in body for k in ("frame_images", "image_url")):
             if self._frames is None:
                 self._note("frame_relay:fallback:no_caps")
@@ -177,6 +181,28 @@ class LocalExecutor:
             body.update(extra)
             for n in notes:
                 self._note("frames:" + n)
+        return body
+
+    def _with_work_frames(self, body, wf, req):
+        if any(k in body for k in ("frame_images", "image_url", "input_references")):
+            self._note("work_frames:controls_win")
+            return body
+        if (req.get("first_frame") or {}).get("source") == "prev_last":
+            self._note("work_frames:over_relay")
+        if wf.get("input_references"):
+            body["input_references"] = [dict(r) for r in wf["input_references"]]
+            self._note("work_frames:refs")
+            return body
+        if self._frames is None:
+            raise fexec.ExecutorError("這一鏡指定了首尾幀，但沒有 model_caps.frames_payload 可以換欄位")
+        try:
+            extra, notes = self._frames(self.model, wf.get("first_frame"), wf.get("last_frame"))
+        except ValueError as e:
+            raise fexec.ExecutorError(str(e)) from None
+        body.update(extra)
+        self._note("work_frames:frames")
+        for n in notes:
+            self._note("frames:" + n)
         return body
 
     def _body_base(self, req):
@@ -332,13 +358,25 @@ NEXT_DRAFT = ("這只是草稿：你只給了一句需求，規劃把整句平�
 START_KEYS = {"request", "input", "caps", "has_cast_refs", "max_retakes", "target_seconds", "model", "aspect_ratio",
               "resolution", "project_id", "budget", "storyboard", "cast", "payload_extra"}
 PAYLOAD_EXTRA = ("negative_prompt", "generate_audio")
+PAYLOAD_EXTRA_FRAMES = ("frame_images", "image_url")
+WORK_FRAMES_ENV = "STUDIO_WORK_FRAMES"
 
-def clean_extra(v):
+def clean_extra(v, frames=False):
     if v is None:
         return {}
-    if not isinstance(v, dict) or set(v) - set(PAYLOAD_EXTRA):
-        raise ValueError("payload_extra 只收 %s" % "、".join(PAYLOAD_EXTRA))
+    keys = PAYLOAD_EXTRA + (PAYLOAD_EXTRA_FRAMES if frames else ())
+    if not isinstance(v, dict) or set(v) - set(keys):
+        raise ValueError("payload_extra 只收 %s" % "、".join(keys))
     out = {}
+    if frames and v.get("frame_images") is not None:
+        fi = v["frame_images"]
+        if not isinstance(fi, list) or not 0 < len(fi) <= 2 or not all(isinstance(x, (str, dict)) for x in fi):
+            raise ValueError("payload_extra.frame_images 要是 1–2 個的陣列（網址字串或 {frame_type, image_url}）")
+        out["frame_images"] = fi
+    if frames and v.get("image_url") is not None:
+        if not isinstance(v["image_url"], str) or not v["image_url"].strip():
+            raise ValueError("payload_extra.image_url 要是字串")
+        out["image_url"] = v["image_url"]
     if v.get("negative_prompt") is not None:
         if not isinstance(v["negative_prompt"], str) or len(v["negative_prompt"]) > 2000:
             raise ValueError("payload_extra.negative_prompt 要是 2000 字以內的字串")
@@ -348,6 +386,89 @@ def clean_extra(v):
             raise ValueError("payload_extra.generate_audio 要是 true／false")
         out["generate_audio"] = v["generate_audio"]
     return out
+LONG_FILM_ENV = "STUDIO_LONG_FILM"
+SEAM_REDO_ENV = "STUDIO_LONG_FILM_SEAM_REDO"
+NEXT_DRAFT_LONG = ("這是長片退路的草稿（STUDIO_LONG_FILM）：照目標秒數切成 6–10 段、每段標上段落位置，內容還是同一句需求。"
+                   "你自己寫的分鏡永遠優先：把需求拆成鏡頭表寫成 input，再呼叫一次 agent_plan")
+
+def _clean_shot_frames(v):
+    if v is None:
+        return {}
+    if not isinstance(v, dict) or len(v) > 30:
+        raise ValueError("shot_frames 要是 {鏡號: {…}}（最多 30 鏡）")
+    out = {}
+    for k, f in v.items():
+        if not isinstance(f, dict) or not f or set(f) - {"first_frame", "last_frame", "input_references"}:
+            raise ValueError("shot_frames.%s 只能有 first_frame、last_frame 或 input_references" % k)
+        if f.get("input_references") and (f.get("first_frame") or f.get("last_frame")):
+            raise ValueError("shot_frames.%s：首尾幀跟參考圖只能選一種" % k)
+        if any(f.get(x) is not None and not isinstance(f[x], str) for x in ("first_frame", "last_frame")) or \
+                (f.get("input_references") is not None and not isinstance(f["input_references"], list)):
+            raise ValueError("shot_frames.%s 的型別不對" % k)
+        out[str(k)] = f
+    return out
+
+def _flag(env, name):
+    return str((env if env is not None else os.environ).get(name, "")).strip().lower() in ("1", "on", "true")
+
+def long_film_on(env=None):
+    return _flag(env, LONG_FILM_ENV)
+
+def seam_redo_on(env=None):
+    return _flag(env, SEAM_REDO_ENV)
+
+def _plan_caps(body, caps_of, env):
+    caps = body.get("caps")
+    if caps is not None or not long_film_on(env) or caps_of is None:
+        return caps, []
+    model = body.get("model")
+    if not isinstance(model, str) or not model.strip():
+        return caps, ["caps_no_model"]
+    caps = caps_of(model.strip()) or {}
+    warn = ["caps_auto"]
+    if (caps.get("first_frame") or {}).get("status") != "ok":
+        warn.append("caps_no_first_frame")
+    return caps, warn
+
+class SeamGate:
+
+    def __init__(self, inner, ids, seam, user_frames=()):
+        self._inner, self._ids, self._seam = inner, ids, seam
+        self._user_frames = set(user_frames or ())
+        self.notes = inner.notes
+
+    def __getattr__(self, k):
+        return getattr(self._inner, k)
+
+    def _note(self, code):
+        if code not in self.notes:
+            self.notes.append(code)
+
+    def deliver(self, req):
+        sr = req.get("seam_redo")
+        if not sr:
+            return self._inner.deliver(req)
+        job_of = {r["take"]: r.get("job") for r in self._ids.values() if isinstance(r, dict) and r.get("take")}
+        picks = req.get("picks") or {}
+        scores, bad = [], []
+        for after, before in sr["seams"]:
+            a, b = job_of.get(picks.get(after)), job_of.get(picks.get(before))
+            try:
+                score = self._seam(a, b) if a and b else None
+            except Exception:
+                score = None
+            score = None if score is None else round(float(score), 3)
+            scores.append({"key": before, "after": after, "score": score})
+            if score is None:
+                self._note("seam_redo:unmeasured")
+            elif score < sr["threshold"] and before in self._user_frames:
+                scores[-1]["skipped"] = "user_frame"
+            elif score < sr["threshold"] and before not in sr["done"]:
+                bad.append({"key": before, "score": score})
+        if bad:
+            return {"seam_failed": bad}
+        return dict(self._inner.deliver(req) or {}, seams=scores)
+
 STEP_KEYS = {"run", "decision", "event"}
 CALLER_EVENTS = ("checked", "interrupt", "controls")
 _GUARD = threading.Lock()
@@ -384,7 +505,8 @@ def _executor(rec, port, secret, caps_of, frames, relay=None):
     e = rec["exec"]
     return LocalExecutor(port, secret, model=e["model"], aspect_ratio=e["aspect_ratio"], resolution=e["resolution"],
                          project_id=e.get("project_id"), ids=rec["ids"], caps=caps_of(e["model"]) if caps_of else None,
-                         frames=frames, relay=relay, relay_cache=rec.setdefault("relay_by_take", {}), extra=e.get("extra"))
+                         frames=frames, relay=relay, relay_cache=rec.setdefault("relay_by_take", {}), extra=e.get("extra"),
+                         work_frames=e.get("frames"))
 
 _RENDERING = set()
 
@@ -547,7 +669,8 @@ def film_shots(data_dir, run):
             "request": st.get("request"), "model": (rec.get("exec") or {}).get("model"),
             "shots": [{"key": s["key"], "takes": [t["take"] for t in s.get("takes") or [] if t.get("take")],
                        "prompt": (segs.get(s["key"]) or {}).get("prompt"), "seconds": (segs.get(s["key"]) or {}).get("seconds")}
-                      for s in st.get("shots") or []]}
+                      for s in st.get("shots") or []],
+            **({"seam_redo": agent_loop.seam_redo_summary(st)} if st.get("seam_redo") is not None else {})}
 
 def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpeg=None, render=None, env=None,
            video_of=None, relay=None, auto_qc=False, seam=None):
@@ -573,20 +696,24 @@ def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpe
         if isinstance(bud, dict) and "auto" in bud:
             return 400, {"error": "這裡沒有 auto：要不要自動核准由核准卡的預先授權決定（你本人在 App 裡設）"}
         try:
-            st = agent_loop.start(body.get("request"), body.get("input"), body.get("caps"), budget=bud,
+            caps, caps_warn = _plan_caps(body, caps_of, env)
+            st = agent_loop.start(body.get("request"), body.get("input"), caps, budget=bud,
                                   has_cast_refs=body.get("has_cast_refs", False), max_retakes=body.get("max_retakes", 1),
                                   target_seconds=body.get("target_seconds"), gate="cards",
-                                  storyboard=body.get("storyboard"), cast=body.get("cast"))
+                                  storyboard=body.get("storyboard"), cast=body.get("cast"),
+                                  long_film=long_film_on(env), seam_redo=seam_redo_on(env))
+            st["warnings"] += caps_warn
         except agent_loop.LoopError as e:
             return 400, {"error": str(e)}
         p = st["plan"]
         return 200, {"dry_run": True, "summary": agent_loop.summary(st), "totals": p["totals"], "warnings": st["warnings"],
                      "segments": [{k: s.get(k) for k in ("key", "seconds", "prompt", "first_frame")} for s in p["segments"]],
                      "seams": p["seams"], "must_ask": st.get("must_ask") or [], "controls_gaps": st.get("controls_gaps") or {},
-                     "next": NEXT_DRAFT if "script_draft" in st["warnings"] else
+                     "next": NEXT_DRAFT_LONG if "script_draft_long" in st["warnings"] else
+                     NEXT_DRAFT if "script_draft" in st["warnings"] else
                      "要開拍就 agent_run(action=start, 同樣的 request／input／storyboard＋model)；花錢照核准卡與上限"}
     if op == "start":
-        extra = set(body) - START_KEYS
+        extra = set(body) - START_KEYS - ({"shot_frames"} if _flag(env, WORK_FRAMES_ENV) else set())
         if extra:
             return 400, {"error": "不認得的欄位 %s" % "、".join(sorted(extra))}
         model = body.get("model")
@@ -596,17 +723,24 @@ def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpe
         if isinstance(bud, dict) and "auto" in bud:
             return 400, {"error": "這裡沒有 auto：要不要自動核准由核准卡的預先授權決定（你本人在 App 裡設）"}
         try:
-            extra = clean_extra(body.get("payload_extra"))
+            extra = clean_extra(body.get("payload_extra"), frames=_flag(env, WORK_FRAMES_ENV))
+            wframes = _clean_shot_frames(body.get("shot_frames"))
         except ValueError as e:
             return 400, {"error": str(e)}
         run = "agr_" + secrets.token_hex(12)
         try:
-            st = agent_loop.start(body.get("request"), body.get("input"), body.get("caps"), budget=bud,
+            caps, caps_warn = _plan_caps(body, caps_of, env)
+            st = agent_loop.start(body.get("request"), body.get("input"), caps, budget=bud,
                                   has_cast_refs=body.get("has_cast_refs", False), max_retakes=body.get("max_retakes", 1),
                                   target_seconds=body.get("target_seconds"), gate="cards",
-                                  storyboard=body.get("storyboard"), cast=body.get("cast"))
+                                  storyboard=body.get("storyboard"), cast=body.get("cast"),
+                                  long_film=long_film_on(env), seam_redo=seam_redo_on(env))
+            st["warnings"] += caps_warn
         except agent_loop.LoopError as e:
             return 400, {"error": str(e)}
+        unknown = sorted(set(wframes) - {s["key"] for s in st["shots"]})
+        if unknown:
+            return 400, {"error": "shot_frames 的鏡號 %s 不在規劃裡" % "、".join(unknown)}
         if blockout_frames.mode(env) != "legacy":
             scenes = agent_loop.mark_blockout_pending(st, body.get("input"))
             if scenes:
@@ -620,6 +754,8 @@ def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpe
             "resolution": body.get("resolution") or "720p", "project_id": body.get("project_id")}}
         if extra:
             rec["exec"]["extra"] = extra
+        if wframes:
+            rec["exec"]["frames"] = wframes
         event = None
     elif op == "step":
         extra = set(body) - STEP_KEYS
@@ -647,6 +783,8 @@ def handle(op, body, *, data_dir, port, secret, caps_of=None, frames=None, ffmpe
         ex = _executor(rec, port, secret, caps_of, frames, relay)
         if auto_qc:
             ex = AutoQC(ex, _auto_extras(rec, ex, video_of, ffmpeg or ffr.find_ffmpeg(), env, seam))
+        if seam is not None and (rec["state"].get("seam_redo") is not None):
+            ex = SeamGate(ex, rec["ids"], seam, (rec["exec"].get("frames") or {}).keys())
         st = rec["state"]
         if op == "step":
             _blockout_sync(data_dir, run, rec, st, **bo_kw)

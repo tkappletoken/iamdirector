@@ -52,6 +52,8 @@ import qc
 import sqlite_store
 import storyboard
 import studio_store
+import film_settings
+import work_frames
 import studio_tools
 import takes
 import gen_retry
@@ -72,13 +74,25 @@ FILM_SEAM_TRIM_ENV = "STUDIO_FILM_SEAM_TRIM"
 FILM_SEAM_XFADE_ENV = "STUDIO_FILM_SEAM_XFADE"
 FILM_SEAM_XFADE_SECONDS_ENV = "STUDIO_FILM_SEAM_XFADE_SECONDS"
 FILM_SEAM_XFADE_DEFAULT = 0.2
+FILM_SEAM_AFADE_ENV = "STUDIO_FILM_SEAM_AFADE"
 MUTE_MODEL_AUDIO_ENV = "STUDIO_MUTE_MODEL_AUDIO"
 
-def film_seam_xfade():
-    if os.environ.get(FILM_SEAM_XFADE_ENV, "").strip().lower() not in ("1", "on", "true"):
+def film_seam_afade(env=None):
+    env = os.environ if env is None else env
+    if env.get(FILM_SEAM_AFADE_ENV, "").strip().lower() not in ("1", "on", "true"):
         return None
     try:
-        d = float(os.environ.get(FILM_SEAM_XFADE_SECONDS_ENV) or FILM_SEAM_XFADE_DEFAULT)
+        d = float(env.get(FILM_SEAM_XFADE_SECONDS_ENV) or FILM_SEAM_XFADE_DEFAULT)
+    except ValueError:
+        return FILM_SEAM_XFADE_DEFAULT
+    return round(d, 3) if 0.05 <= d <= 1.5 else FILM_SEAM_XFADE_DEFAULT
+
+def film_seam_xfade(env=None):
+    env = os.environ if env is None else env
+    if env.get(FILM_SEAM_XFADE_ENV, "").strip().lower() not in ("1", "on", "true"):
+        return None
+    try:
+        d = float(env.get(FILM_SEAM_XFADE_SECONDS_ENV) or FILM_SEAM_XFADE_DEFAULT)
     except ValueError:
         return FILM_SEAM_XFADE_DEFAULT
     return round(d, 3) if 0.05 <= d <= 1.5 else FILM_SEAM_XFADE_DEFAULT
@@ -103,10 +117,13 @@ MODELS_TTL = 60.0
 SB_QUOTE_TTL = 1800
 QUOTE_TTL = 3600
 BODY_MAX = 512 * 1024
+AUDIO_DATA = re.compile(r"^data:audio/(webm|ogg|wav|x-wav|wave)(?:;codecs=[A-Za-z0-9.,\"-]{1,40})?;base64,([A-Za-z0-9+/=]+)$")
+AUDIO_EXT = {"webm": ".webm", "ogg": ".ogg", "wav": ".wav", "x-wav": ".wav", "wave": ".wav"}
 DRAIN_MAX = 64 * 1024 * 1024
 BODY_LIMITS = {"/api/assets": 24 * 1024 * 1024, "/api/image-generate": 24 * 1024 * 1024,
                "/api/export": 24 * 1024 * 1024, "/api/local/work-import": 2 * 1024 * 1024,
-               "/api/qc": 3 * 1024 * 1024}
+               "/api/qc": 3 * 1024 * 1024,
+               "/api/transcribe": 14 * 1024 * 1024}
 MEDIA_MAX = 4 * 1024 ** 3
 MEDIA_MIME = re.compile(r"^(video/(mp4|quicktime|webm)|audio/(mpeg|mp3|mp4|aac|wav|x-wav|wave|flac|ogg)"
                         r"|image/(png|jpeg|webp|gif))$")
@@ -160,6 +177,7 @@ LOCAL_API = (
     "/api/dir-controls", "/api/dir-controls/preview",
     "/api/previs-rig",
     "/api/works/shot-dirctl",
+    "/api/works/shot-blocking", "/api/previs-from-dc",
     "/api/local/agent-scope",
     "/api/takes", "/api/takes/move", "/api/takes/qc", "/api/takes/pick", "/api/takes/retake-plan",
     "/api/chains", "/api/chains/next", "/api/chains/move",
@@ -168,6 +186,7 @@ LOCAL_API = (
     "/api/local/work/run",
     "/api/local/agent-qc",
     "/api/local/frame-relay",
+    "/api/local/film-settings",
     "/api/local/ui-desc", "/api/local/ui-profiles",
     "/api/local/mcp-direct",
 )
@@ -189,12 +208,14 @@ AGENT_ALLOWED |= {("POST", "/api/local/agent/start"), ("POST", "/api/local/agent
                   ("POST", "/api/local/agent/plan"), ("GET", "/api/local/agent/runs"), ("GET", "/api/local/agent/film"),
                   ("GET", "/api/local/agent-loop"), ("POST", "/api/local/work/run")}
 AGENT_ALLOWED |= {("GET", "/api/local/frame-relay")}
+AGENT_ALLOWED |= {("GET", "/api/local/film-settings")}
 AGENT_ALLOWED |= {("GET", "/api/local/ui-desc"), ("POST", "/api/local/ui-desc")}
 UI_PROFILES_OFF = "介面描述檔沒有開（設定 ui_profiles.json 或 STUDIO_LOCAL_UI_PROFILES=on）"
 AGENT_ALLOWED |= {("GET", "/api/local/mcp-direct")}
 AGENT_ALLOWED |= {("GET", "/api/local/agent-qc")}
 AGENT_ALLOWED |= {("GET", "/api/dir-controls"), ("POST", "/api/dir-controls/preview"), ("POST", "/api/previs-rig"),
                   ("POST", "/api/works/shot-dirctl")}
+AGENT_ALLOWED |= {("POST", "/api/works/shot-blocking")}
 AGENT_ALLOWED |= {("POST", "/api/concat"), ("GET", "/api/assets"), ("POST", "/api/assets"), ("GET", "/api/assets/support"),
                   ("POST", "/api/projects/create"), ("POST", "/api/projects/rename"), ("POST", "/api/projects/items"),
                   ("POST", "/api/captions"), ("POST", "/api/assets/update"), ("POST", "/api/check-asset"),
@@ -273,7 +294,8 @@ AGENT_FULL = {
     ("POST", "/api/works/shot-edit"), ("POST", "/api/works/shot-move"),
 }
 AGENT_SWITCHES = ("/api/local/agent-loop", "/api/local/mcp-direct", "/api/local/agent-qc", "/api/local/frame-relay",
-                  "/api/local/agent-scope", "/api/local/engine", "/api/local/concat-engine", "/api/local/ui-profiles")
+                  "/api/local/agent-scope", "/api/local/engine", "/api/local/concat-engine", "/api/local/ui-profiles",
+                  "/api/local/film-settings")
 if {("POST", p) for p in AGENT_SWITCHES} & (AGENT_ALLOWED | AGENT_FULL):
     raise RuntimeError("開關的 POST 不准放進 AGENT_ALLOWED／AGENT_FULL（只有人能切）")
 SPEND_TTL = 30 * 60
@@ -371,6 +393,18 @@ def _shot_index(board, shot):
                 return i
     return None
 PREVIS_RIG_OFF = "3D 預演的對準角色已關閉（STUDIO_LOCAL_PREVIS_RIG=off）"
+BLOCKING_SYNC_OFF = "預演站位換算成導演控制還沒開（STUDIO_LOCAL_BLOCKING_SYNC=on 才有，預設關）"
+_PREVIS_KEY = re.compile(r"^[a-z0-9_-]{1,32}$")
+_PREVIS_SID = re.compile(r"^[a-z0-9]{4,}$")
+
+def blocking_sync_on():
+    return os.environ.get("STUDIO_LOCAL_BLOCKING_SYNC", "").strip().lower() in ("1", "on", "true")
+
+def previs_keys(pid, sid):
+    seg = re.sub(r"[^0-9a-z]", "", str(pid or ""), flags=re.I)[:8].lower()
+    suffix = "-" + seg if seg else ""
+    k = "previs" + suffix + "-" + str(sid or "")
+    return (k if _PREVIS_KEY.match(k) and _PREVIS_SID.match(str(sid or "")) else ""), "previs" + suffix
 _LOGIN = "登入 iamdirector 帳號後才有這一項"
 ACTIVITY_MAX = 200
 OPEN_FRESH = 45
@@ -757,6 +791,13 @@ class State:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"on": bool(value)}, f)
             os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
+
+    def set_film_settings(self, updates):
+        try:
+            film_settings.write(self.data_dir, updates)
             return True
         except OSError:
             return False
@@ -1281,6 +1322,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.agentloop_info())
         if path == "/api/local/frame-relay":
             return self._json(200, st.frame_relay_info())
+        if path == "/api/local/film-settings":
+            return self._json(200, film_settings.info(st.data_dir))
         if path == "/api/local/agent-qc":
             return self._json(200, st.agent_qc_info())
         if path == "/api/local/ui-profiles":
@@ -1475,6 +1518,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._previs_rig(body)
         if path == "/api/works/shot-dirctl":
             return self._shot_dirctl(body)
+        if path == "/api/works/shot-blocking":
+            return self._shot_blocking(body)
+        if path == "/api/previs-from-dc":
+            return self._previs_from_dc(body)
         if path == "/api/local/ui-profiles":
             if not self._human():
                 return self._json(403, {"error": "介面描述檔的開關要你本人在 App 裡切"})
@@ -1535,6 +1582,15 @@ class Handler(BaseHTTPRequestHandler):
             if not st.set_frame_relay(v):
                 return self._json(500, {"error": "設定寫不進本機資料夾"})
             return self._json(200, st.frame_relay_info())
+        if path == "/api/local/film-settings":
+            if not self._human():
+                return self._json(403, {"error": "長片與接縫的開關（會影響花費與成片）要你本人在 App 裡切"})
+            try:
+                if not st.set_film_settings(body):
+                    return self._json(500, {"error": "設定寫不進本機資料夾"})
+            except film_settings.SettingsError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, film_settings.info(st.data_dir))
         if path in ("/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/plan"):
             return self._agentloop(path.rsplit("/", 1)[1], body)
         if path == "/api/local/work/run":
@@ -1615,6 +1671,13 @@ class Handler(BaseHTTPRequestHandler):
                 shots = studio_tools.parse_shots(body["script"], body.get("model"))
             if shots is None and isinstance(body.get("story"), str):
                 shots = studio_tools.parse_shots(studio_tools.story_to_script(body["story"]), body.get("model"))
+            if work_frames.on() and isinstance(shots, list):
+                try:
+                    per = work_frames.clean(shots)
+                except work_frames.FramesError as e:
+                    return self._json(400, {"error": str(e)})
+                if any(per):
+                    return self._work_create_framed(body.get("name"), shots, per)
             return self._store(studio_store.create_work, body.get("name"), shots)
         if path in ("/api/works/shot-edit", "/api/works/shot-move"):
             pid = str(body.get("project_id") or "")
@@ -1679,6 +1742,8 @@ class Handler(BaseHTTPRequestHandler):
             refs = body.get("input_references")
             return self._json(200, studio_tools.check_references(body.get("model"), refs if isinstance(refs, list) else []))
         if path == "/api/transcribe":
+            if "audio" in body:
+                return self._transcribe_audio(body)
             return self._transcribe(body)
         if path == "/api/storyboard/quote":
             return self._storyboard_quote(body)
@@ -2322,6 +2387,74 @@ class Handler(BaseHTTPRequestHandler):
         out["note"] = "已寫入這一鏡；送件時有 dc 就帶（跟畫面開關無關）。開著的導演台幾秒內自動重讀這一格"
         return self._json(200, out)
 
+    def _shot_blocking(self, body):
+        if not blocking_sync_on():
+            return self._json(501, {"error": BLOCKING_SYNC_OFF})
+        from filming import dir_controls as D, previs_blocking as PB
+        import shot_controls
+        body = body if isinstance(body, dict) else {}
+        pid, shot, t = body.get("project_id"), body.get("shot"), body.get("t", 0)
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t <= 30:
+            return self._json(400, {"error": "t 是第幾秒（0–30）"})
+
+        def tx(conn, uid):
+            studio_store._check_pid(pid)
+            board = studio_store.kv_get(conn, uid, studio_store.board_key(pid)).get("value")
+            if not isinstance(board, list) or not board:
+                raise studio_store.StoreError(404, "not_found", "找不到這部作品的分鏡")
+            idx = _shot_index(board, shot)
+            if idx is None:
+                raise studio_store.StoreError(404, "no_shot", "這部作品沒有這一鏡（shot 用 1 起算的第幾鏡，或 sid）")
+            sh = board[idx] if isinstance(board[idx], dict) else {}
+            key, legacy = previs_keys(pid, sh.get("sid"))
+            scene = studio_store.kv_get(conn, uid, key).get("value") if key else None
+            if not isinstance(scene, dict):
+                old = studio_store.kv_get(conn, uid, legacy).get("value")
+                scene = old.get(sh.get("sid")) if isinstance(old, dict) and sh.get("sid") else None
+                key = legacy if isinstance(scene, dict) else key
+            return idx, sh, key, scene
+        try:
+            idx, sh, key, scene = self.state.db.run(tx)
+        except studio_store.StoreError as e:
+            return self._json(e.code, e.body)
+        if not isinstance(scene, dict):
+            return self._json(404, {"error": "這一鏡還沒有 3D 預演場景（先在畫面上開 3D 預演擺好人偶）", "sid": sh.get("sid")})
+        res = PB.blocking_from_scene(scene, t)
+        prev = sh.get("dc") if isinstance(sh.get("dc"), dict) else None
+        out = {"shot": idx + 1, "sid": sh.get("sid"), "scene_key": key, "t": t, "blocking": res["blocking"],
+               "notes": res["notes"], "dc": None, "prev": prev}
+        if not res["blocking"]:
+            out["error"] = "預演裡沒有看得到、有名字的人偶" + ("：" + "、".join(res["notes"]) if res["notes"] else "")
+            return self._json(200, out)
+        dc = {k: v for k, v in (prev or {}).items() if k != "by"}
+        dc["blocking"] = PB.merge((prev or {}).get("blocking"), PB.flat(res["blocking"]))
+        try:
+            dc = dc_clean(dc)
+            D.check(dc_desc(dc))
+            shot_controls.check(dc_controls(dc))
+        except (ValueError, shot_controls.ControlsError) as e:
+            out["error"] = "合併後的導演控制不合法：%s" % e
+            return self._json(200, out)
+        out["dc"] = dc
+        return self._json(200, out)
+
+    def _previs_from_dc(self, body):
+        from filming import dir_controls as D
+        body = body if isinstance(body, dict) else {}
+        dur, aspect = body.get("dur", 5), body.get("aspect") or "16:9"
+        if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not 1 <= dur <= 30:
+            return self._json(400, {"error": "dur 是秒數（1–30）"})
+        if not isinstance(aspect, str) or not re.match(r"^\d{1,2}:\d{1,2}$", aspect):
+            return self._json(400, {"error": "aspect 要像 16:9"})
+        try:
+            dc = dc_clean(body.get("dc"))
+            if not dc.get("blocking"):
+                return self._json(400, {"error": "這一鏡的導演控制沒有站位（blocking）"})
+            scene = D.to_scene(dc_desc(dc), dur=dur, aspect=aspect)
+        except (ValueError, KeyError, TypeError) as e:
+            return self._json(400, {"error": str(e) or type(e).__name__})
+        return self._json(200, {"scene": scene})
+
     def _board_merge(self, key, value, meta):
         st = self.state
         sent = meta.get("rev")
@@ -2409,7 +2542,7 @@ class Handler(BaseHTTPRequestHandler):
             if op == "plan":
                 code, out = self._agentloop_raw("plan", body)
                 return (self._seconds_gate(body["model"].strip(), out) if code == 200 else (code, out))
-            code, out = self._agentloop_raw("plan", {k: v for k, v in body.items() if k != "payload_extra"})
+            code, out = self._agentloop_raw("plan", {k: v for k, v in body.items() if k not in ("payload_extra", "shot_frames")})
             if code == 200:
                 code2, gated = self._seconds_gate(body["model"].strip(), out)
                 if code2 != 200:
@@ -2462,6 +2595,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             vid_of = lambda job: os.path.join(st.media, self._cache_job(job))
             code, out = agent_exec.handle(op, body if isinstance(body, dict) else {}, data_dir=st.data_dir,
+                                          env=film_settings.effective_env(st.data_dir),
                                           port=self.port, secret=st.agent_loop, caps_of=model_caps.caps,
                                           frames=model_caps.frames_payload, ffmpeg=st.ffmpeg, video_of=vid_of,
                                           relay=(lambda take: frame_relay(st, vid_of, take)) if st.frame_relay_on() else None,
@@ -2505,6 +2639,18 @@ class Handler(BaseHTTPRequestHandler):
             out = nxt
         return self._json(200, self._work_reply(out))
 
+    def _work_create_framed(self, name, shots, per):
+        def go(c, u):
+            out = studio_store.create_work(c, u, name, shots)
+            board = studio_store.kv_get(c, u, out["board_key"]).get("value")
+            got = work_frames.by_sid(board, per)
+            studio_store.kv_put(c, u, work_frames.key(out["project_id"]), got)
+            return dict(out, frames=len(got))
+        try:
+            return self._json(200, self.state.db.run(go))
+        except studio_store.StoreError as e:
+            return self._json(e.code, e.body)
+
     def _work_start_body(self, b):
         pid = b.get("project_id")
         if not isinstance(pid, str) or not pid:
@@ -2520,10 +2666,13 @@ class Handler(BaseHTTPRequestHandler):
             except templates.TemplateError as e:
                 return None, (e.code, {"error": e.msg})
             shot = tp["shot"]
+            extra = {k: shot[k] for k in ("negative_prompt", "generate_audio") if shot.get(k) is not None}
+            if work_frames.on():
+                extra.update({k: shot[k] for k in work_frames.FRAME_KEYS if shot.get(k) is not None})
             return {"request": "拍「%s」" % name, "project_id": pid, "model": shot["model"],
                     "resolution": shot.get("resolution"), "aspect_ratio": shot.get("aspect_ratio"),
                     "input": {"version": 1, "segments": [{"prompt": shot["prompt"], "seconds": shot["seconds"]}]},
-                    "payload_extra": {k: shot[k] for k in ("negative_prompt", "generate_audio") if shot.get(k) is not None}}, None
+                    "payload_extra": extra}, None
         model = b.get("model")
         if not isinstance(model, str) or not model.strip():
             return None, (400, {"error": "這部作品不是範本作品：要給 model（模型 ref，例如 list_models 列出來的）"})
@@ -2537,8 +2686,17 @@ class Handler(BaseHTTPRequestHandler):
             if s.get("seconds") is None or upstream.bad_seconds({"seconds": s.get("seconds")}):
                 return None, (400, {"error": "第 %d 鏡的秒數不對（%r）" % (i, s.get("seconds"))})
             segs.append({"prompt": s["prompt"], "seconds": s["seconds"]})
-        return {"request": "拍「%s」" % name, "project_id": pid, "model": model.strip(),
-                "input": {"version": 1, "segments": segs}}, None
+        out = {"request": "拍「%s」" % name, "project_id": pid, "model": model.strip(),
+               "input": {"version": 1, "segments": segs}}
+        if work_frames.on():
+            try:
+                stored = self.state.db.run(lambda c, u: studio_store.kv_get(c, u, work_frames.key(pid))).get("value")
+            except studio_store.StoreError as e:
+                return None, (e.code, e.body)
+            frames = work_frames.for_run(shots, stored)
+            if frames:
+                out["shot_frames"] = frames
+        return out, None
 
     def _work_reply(self, out):
         run, act = out.get("run"), out.get("action") or {}
@@ -3120,6 +3278,50 @@ class Handler(BaseHTTPRequestHandler):
         text = r.get("text") if isinstance(r, dict) else None
         return self._json(200, {"text": text if isinstance(text, str) else "", "payer": "own_key"})
 
+    def _transcribe_audio(self, body):
+        st = self.state
+        m = AUDIO_DATA.match(body["audio"]) if isinstance(body.get("audio"), str) else None
+        if not m:
+            return self._json(400, {"error": "錄音要是 audio/webm、audio/ogg 或 audio/wav 的 data URL"})
+        try:
+            raw = base64.b64decode(m.group(2), validate=True)
+        except (binascii.Error, ValueError):
+            return self._json(400, {"error": "錄音的內容解不開"})
+        if not raw:
+            return self._json(400, {"error": "錄音是空的"})
+        if len(raw) > ASR_MAX:
+            return self._json(413, {"error": "錄音太長（超過上游 10MB 的上限，約 5 分鐘）"})
+        if not st.ffmpeg:
+            return self._json(409, {"error": "轉錄要先把錄音轉成 wav，這台找不到 ffmpeg"})
+        model = body.get("model") if isinstance(body.get("model"), str) and body["model"].strip() else ASR_DEFAULT
+        work = tempfile.mkdtemp(prefix="asr-", dir=st.data_dir)
+        try:
+            src = os.path.join(work, "in" + AUDIO_EXT[m.group(1)])
+            with open(src, "wb") as f:
+                f.write(raw)
+            wav = os.path.join(work, "a.wav")
+            p = subprocess.run([st.ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-i", src, "-vn", "-ac", "1",
+                                "-ar", "16000", "-c:a", "pcm_s16le", wav], capture_output=True, timeout=120)
+            if p.returncode != 0 or not os.path.exists(wav):
+                return self._json(400, {"error": "錄音讀不出來（格式不對或檔案壞了）"})
+            if os.path.getsize(wav) <= 44:
+                return self._json(200, {"text": "", "note": "錄音裡沒有聲音"})
+            if os.path.getsize(wav) > ASR_MAX:
+                return self._json(413, {"error": "錄音太長（超過上游 10MB 的上限，約 5 分鐘）"})
+            with open(wav, "rb") as f:
+                data = "data:audio/wav;base64," + base64.b64encode(f.read()).decode()
+        except (OSError, subprocess.SubprocessError):
+            return self._json(500, {"error": "處理錄音失敗"})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        try:
+            r = st.call("/audio/transcriptions", payload={"model": model.strip(), "file": data,
+                                                          "response_format": "json"}, timeout=GENERATE_TIMEOUT)
+        except ConsoleError as e:
+            return self._err(e)
+        text = r.get("text") if isinstance(r, dict) else None
+        return self._json(200, {"text": text if isinstance(text, str) else "", "payer": "own_key"})
+
     def _place_blocked(self, ids):
         st = self.state
         seen = st.workbench_open
@@ -3300,7 +3502,7 @@ class Handler(BaseHTTPRequestHandler):
                 "frames": int(v.get("nb_read_packets") or 0), "aspect": round(w / h, 3) if h else None,
                 "audio": any(x.get("codec_type") == "audio" for x in ss)}
 
-    def _concat_spec_body(self, ids, paths, mute=False, drop=(), xfade=None):
+    def _concat_spec_body(self, ids, paths, mute=False, drop=(), xfade=None, afade=None):
         infos = [self._concat_probe(p) for p in paths]
         st = self.state
         r = subprocess.run([st.ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
@@ -3317,7 +3519,10 @@ class Handler(BaseHTTPRequestHandler):
             cut = round(dur / info["frames"], 3) if k in drop and info["frames"] else 0
             video.append({"job": j, "in": cut, "out": dur})
             if info["audio"] and not mute:
-                audio.append({"lane": "A1", "job": j, "at": round(at, 3), "in": cut, "dur": round(dur - cut, 3), "gain": 1.0})
+                a = {"lane": "A1", "job": j, "at": round(at, 3), "in": cut, "dur": round(dur - cut, 3), "gain": 1.0}
+                if afade is not None:
+                    a["fade"] = afade
+                audio.append(a)
             at += dur - cut
         body = {"format": {"aspect": aspect, "resolution": res, "fps": 24, "fit": "pad"}, "video": video, "audio": audio,
                 "subtitles": "none", "disclosure": {"on": False}}
@@ -3325,12 +3530,12 @@ class Handler(BaseHTTPRequestHandler):
             body["pipeline"] = [{"use": "transition", "params": {"duration": xfade, "style": "fade"}}]
         return body
 
-    def _concat_blocks_render(self, ids, mute=False, drop=(), xfade=None):
+    def _concat_blocks_render(self, ids, mute=False, drop=(), xfade=None, afade=None):
         st = self.state
         if not (st.ffmpeg and st.ffprobe):
             raise render.RenderError("這台找不到 ffmpeg，沒辦法合併")
         paths = [os.path.join(st.media, self._cache_job(j)) for j in ids]
-        req = export_spec.normalize(self._concat_spec_body(ids, paths, mute, drop, xfade))
+        req = export_spec.normalize(self._concat_spec_body(ids, paths, mute, drop, xfade, afade))
         eid = "exp_" + secrets.token_hex(10)
         work = tempfile.mkdtemp(prefix="concat-blocks-", dir=st.data_dir)
         try:
@@ -3364,10 +3569,10 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(work, ignore_errors=True)
             raise
 
-    def _concat_blocks(self, ids, name, mute=False, drop=(), xfade=None):
+    def _concat_blocks(self, ids, name, mute=False, drop=(), xfade=None, afade=None):
         st = self.state
         name = safe_filename(name, 60) or "合併"
-        work, out = self._concat_blocks_render(ids, mute, drop, xfade)
+        work, out = self._concat_blocks_render(ids, mute, drop, xfade, afade)
         try:
             with open(out, "rb") as f:
                 sha = self._store_blob(f.read(), "video/mp4")
@@ -3467,14 +3672,22 @@ class Handler(BaseHTTPRequestHandler):
         sync = self._film_sync(plan, shots, rows)
         if sync:
             out["mainline"] = sync
+        if plan.get("seam_redo") is not None:
+            out["seam_redo"] = plan["seam_redo"]
+            warn = ["%s 跟上一鏡 %s 的接縫沒有接上（SSIM %s）：因為你指定了首幀，所以沒有接上，也沒有自動重做；要接上就換掉那張首幀再拍這一鏡"
+                    % (x["key"], x["after"], "—" if x.get("score") is None else "%.3f" % x["score"])
+                    for x in plan["seam_redo"].get("skipped") or [] if x.get("reason") == "user_frame"]
+            if warn:
+                out["seam_warnings"] = warn
         if files and not missing:
             try:
                 if len(files) == 1:
                     path, ctype = self._media_named(self._cache_job(files[0]))
                     out["film"] = {"src": "/api/download?id=" + files[0], "path": path, "content_type": ctype}
                 else:
-                    mute, xf = mute_model_audio(None), film_seam_xfade()
-                    code, f = (self._film_trimmed(files, plan, shots, mute, xf)
+                    eff = film_settings.effective_env(st.data_dir)
+                    mute, xf, af = mute_model_audio(None), film_seam_xfade(eff), film_seam_afade(eff)
+                    code, f = (self._film_trimmed(files, plan, shots, mute, xf, af, env=eff)
                                or self._concat_jobs(files, "agent-film", mute=mute))
                     if code == 200 and xf is not None:
                         qc_rep = self._film_seam_qc(files, shots, f)
@@ -3487,16 +3700,16 @@ class Handler(BaseHTTPRequestHandler):
                 out["film_error"] = str(e)
         return self._json(200, out)
 
-    def _film_trimmed(self, files, plan, shots, mute, xfade=None):
+    def _film_trimmed(self, files, plan, shots, mute, xfade=None, afade=None, env=None):
         relayed = set(plan.get("relayed") or ())
         picked = [s for s in shots if s.get("picked")]
         drop = [i for i, s in enumerate(picked) if i and s["picked"] in relayed]
-        if os.environ.get(FILM_SEAM_TRIM_ENV, "").strip().lower() not in ("1", "on", "true"):
+        if (os.environ if env is None else env).get(FILM_SEAM_TRIM_ENV, "").strip().lower() not in ("1", "on", "true"):
             drop = []
-        if not drop and xfade is None:
+        if not drop and xfade is None and afade is None:
             return None
         try:
-            code, out = self._concat_blocks(files, "agent-film", mute, drop, xfade)
+            code, out = self._concat_blocks(files, "agent-film", mute, drop, xfade, afade)
             reason = None if code == 200 else "status_%d" % code
         except ConsoleError:
             raise
@@ -3508,6 +3721,8 @@ class Handler(BaseHTTPRequestHandler):
                 out["seams_trimmed"] = [picked[i]["key"] for i in drop]
             if xfade is not None:
                 out["seam_xfade"] = xfade
+            if afade is not None:
+                out["seam_afade"] = afade
             return code, (dict(out, muted=True) if mute else out)
         sys.stderr.write("[postblocks] %s\n" % json.dumps({"event": "fallback", "what": "film_seam", "reason": reason}))
         return None
@@ -4250,6 +4465,7 @@ class Handler(BaseHTTPRequestHandler):
         body, stop = self._resolve_logos(body)
         if stop:
             return self._json(*stop)
+        body, seam_applied = film_settings.export_body(body, film_settings.effective_env(st.data_dir))
         try:
             req = export_spec.normalize(body)
         except export_spec.ExportError as e:
@@ -4265,6 +4481,8 @@ class Handler(BaseHTTPRequestHandler):
             st.exports[eid] = job
         threading.Thread(target=self._export_run, args=(eid, req, container), daemon=True).start()
         out = {"id": eid, "state": "staging"}
+        if seam_applied:
+            out["film_settings"] = seam_applied
         try:
             note = export_spec.pipeline_note(req, st.engine_now(), container, os.path.join(ROOT, "fonts"))
         except Exception as e:

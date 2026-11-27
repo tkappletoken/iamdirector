@@ -3,7 +3,7 @@ import subprocess
 
 from .base import Block
 
-_SSIM = re.compile(r"All:([0-9.]+)")
+_SSIM = re.compile(r"All:(-?[0-9.]+)")
 
 class SeamCheck(Block):
     id = "seam_check"

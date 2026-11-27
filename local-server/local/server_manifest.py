@@ -7,6 +7,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = (
     "local/studio_local.py", "local/sqlite_store.py", "local/agent_exec.py", "local/ui_profiles.py",
     "local/server_manifest.py", "local/smoke_packaged.py",
+    "local/work_frames.py",
+    "local/film_settings.py",
     "upstream.py", "studio_store.py", "studio_tools.py", "storyboard.py", "qc.py", "page_strip.py",
     "export_spec.py", "templates.py", "cast_refs.py", "shot_controls.py", "takes.py", "gen_retry.py", "approvals.py",
     "outpaint.py",
