@@ -31,8 +31,9 @@ function devFfmpegDir({ appRoot, arch, platform, exists }) {
 // environment (e.g. launchctl setenv) is not read for them.
 // 0.2.24: dubbing / lip-sync (cost money). 0.2.26: previs blocking -> director controls for the Agent,
 // per-shot first/last frames for work_run (generation still goes through approval cards), mute model audio on merge.
+// 0.2.27: chat-as-interface (UI v2 B, phase 1): the chat panel and the external Agent's chat_post / chat_inbox MCP tools.
 const SERVER_FLAGS = Object.freeze(['STUDIO_TTS_FIRST', 'STUDIO_VOICE_LINE', 'STUDIO_LIPSYNC_SHOT',
-  'STUDIO_LOCAL_BLOCKING_SYNC', 'STUDIO_WORK_FRAMES', 'STUDIO_MUTE_MODEL_AUDIO']);
+  'STUDIO_LOCAL_BLOCKING_SYNC', 'STUDIO_WORK_FRAMES', 'STUDIO_MUTE_MODEL_AUDIO', 'STUDIO_UI_V2_CHAT']);
 
 // settings.json value -> { NAME: boolean } for exactly the whitelisted names (missing/invalid = false).
 function pickFlags(saved) {

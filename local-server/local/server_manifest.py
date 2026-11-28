@@ -9,6 +9,7 @@ FILES = (
     "local/server_manifest.py", "local/smoke_packaged.py",
     "local/work_frames.py",
     "local/film_settings.py",
+    "local/chat_thread.py",
     "upstream.py", "studio_store.py", "studio_tools.py", "storyboard.py", "qc.py", "page_strip.py",
     "export_spec.py", "templates.py", "cast_refs.py", "shot_controls.py", "takes.py", "gen_retry.py", "approvals.py",
     "outpaint.py",

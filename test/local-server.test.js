@@ -87,10 +87,10 @@ test('serverFlags：預設全關＝環境變數跟以前一模一樣（沒帶、
   assert.deepEqual(Object.keys(base).sort(), ['IMAGE_RECOVER', 'LANG', 'PATH', 'PYTHONIOENCODING']);
 });
 
-test('serverFlags：白名單只有這六個，打開的才帶 on；其他鍵、非 true 的值一律不帶', () => {
-  // 0.2.24 三個（配音與對嘴）＋ 0.2.26 三個（場面調度站位換算、每鏡首尾幀、合併時原聲靜音）
+test('serverFlags：白名單只有這七個，打開的才帶 on；其他鍵、非 true 的值一律不帶', () => {
+  // 0.2.24 三個（配音與對嘴）＋ 0.2.26 三個（場面調度站位換算、每鏡首尾幀、合併時原聲靜音）＋ 0.2.27 一個（對話即介面）
   assert.deepEqual([...ls.SERVER_FLAGS].sort(), ['STUDIO_LIPSYNC_SHOT', 'STUDIO_LOCAL_BLOCKING_SYNC', 'STUDIO_MUTE_MODEL_AUDIO',
-    'STUDIO_TTS_FIRST', 'STUDIO_VOICE_LINE', 'STUDIO_WORK_FRAMES']);
+    'STUDIO_TTS_FIRST', 'STUDIO_UI_V2_CHAT', 'STUDIO_VOICE_LINE', 'STUDIO_WORK_FRAMES']);
   const env = ls.serverEnv({ PATH: '/bin' }, { STUDIO_TTS_FIRST: true, STUDIO_VOICE_LINE: 'on', STUDIO_LIPSYNC_SHOT: 1,
     STUDIO_LOCAL_MCP_DIRECT: true, SECRET_X: true, __proto__: { STUDIO_TTS_FIRST: true } });
   assert.equal(env.STUDIO_TTS_FIRST, 'on');
@@ -112,16 +112,25 @@ test('serverFlags：0.2.26 的三個各自只帶自己那一個；開關以外�
   assert.deepEqual(Object.keys(env).sort(), ['IMAGE_RECOVER', 'LANG', 'PATH', 'PYTHONIOENCODING']);
 });
 
+test('serverFlags：0.2.27 的對話即介面（STUDIO_UI_V2_CHAT）只帶自己那一個、只認 true', () => {
+  const env = ls.serverEnv({ PATH: '/bin' }, { STUDIO_UI_V2_CHAT: true });
+  assert.deepEqual(Object.keys(env).sort(), ['IMAGE_RECOVER', 'LANG', 'PATH', 'PYTHONIOENCODING', 'STUDIO_UI_V2_CHAT']);
+  assert.equal(env.STUDIO_UI_V2_CHAT, 'on');
+  for (const v of ['on', 1, 'true', null]) {
+    assert.equal(ls.serverEnv({ PATH: '/bin' }, { STUDIO_UI_V2_CHAT: v }).STUDIO_UI_V2_CHAT, undefined, String(v));
+  }
+});
+
 test('serverFlags：值只從設定來，不讀父程序的環境變數（launchctl setenv 不算）', () => {
   const parent = { PATH: '/bin', STUDIO_TTS_FIRST: 'on', STUDIO_VOICE_LINE: 'on', STUDIO_LIPSYNC_SHOT: 'on',
-    STUDIO_LOCAL_BLOCKING_SYNC: 'on', STUDIO_WORK_FRAMES: 'on', STUDIO_MUTE_MODEL_AUDIO: 'on' };
+    STUDIO_LOCAL_BLOCKING_SYNC: 'on', STUDIO_WORK_FRAMES: 'on', STUDIO_MUTE_MODEL_AUDIO: 'on', STUDIO_UI_V2_CHAT: 'on' };
   assert.deepEqual(ls.serverEnv(parent), ls.serverEnv({ PATH: '/bin' }));
   assert.deepEqual(ls.serverEnv(parent, { STUDIO_VOICE_LINE: true }).STUDIO_TTS_FIRST, undefined);
 });
 
 test('pickFlags：設定檔讀回來只留白名單的布林值，缺的補 false', () => {
   const none = { STUDIO_TTS_FIRST: false, STUDIO_VOICE_LINE: false, STUDIO_LIPSYNC_SHOT: false,
-    STUDIO_LOCAL_BLOCKING_SYNC: false, STUDIO_WORK_FRAMES: false, STUDIO_MUTE_MODEL_AUDIO: false };
+    STUDIO_LOCAL_BLOCKING_SYNC: false, STUDIO_WORK_FRAMES: false, STUDIO_MUTE_MODEL_AUDIO: false, STUDIO_UI_V2_CHAT: false };
   assert.deepEqual(ls.pickFlags(undefined), none);
   assert.deepEqual(ls.pickFlags({ STUDIO_VOICE_LINE: true, STUDIO_TTS_FIRST: 'yes', STUDIO_WORK_FRAMES: 1, OTHER: true }),
     { ...none, STUDIO_VOICE_LINE: true });

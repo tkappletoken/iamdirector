@@ -429,6 +429,17 @@ class Workbench:
     def ui_desc_post(self, body):
         return self.c.post("/api/local/ui-desc", body)
 
+    def chat_get(self, after=0, author=None, limit=None):
+        params = {"after": str(int(after or 0))}
+        if author:
+            params["author"] = author
+        if limit:
+            params["limit"] = str(int(limit))
+        return self.c.get("/api/local/chat", params=params)
+
+    def chat_post(self, body):
+        return self.c.post("/api/local/chat", body)
+
     def take_add(self, shot_key, project_id=None, job_id=None, parent_take=None, reason=None, approval_id=None,
                  status="queued"):
         body = {"shot_key": shot_key, "status": status}
