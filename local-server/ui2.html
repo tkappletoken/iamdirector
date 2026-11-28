@@ -28678,19 +28678,22 @@ function agFilmModel(st, items) {
   });
   x.addEventListener('click', () => { panel.hidden = true; });
   const css = document.createElement('style');
-  css.textContent = '.chat-toggle{position:fixed;left:16px;bottom:16px;z-index:62}' +
-    '.chat-panel{position:fixed;left:16px;bottom:60px;z-index:62;width:380px;max-width:calc(100vw - 32px);height:70vh;display:flex;flex-direction:column;' +
+  css.textContent = '.chat-toggle{position:fixed;left:0;top:50%;transform:translateY(-50%);z-index:62;width:auto;writing-mode:vertical-rl;' +
+    'padding:10px 6px;border-radius:0 8px 8px 0;line-height:1.2}' +
+    '.chat-panel{position:fixed;left:40px;top:16px;bottom:72px;z-index:62;width:380px;max-width:calc(100vw - 56px);display:flex;flex-direction:column;' +
     'padding:12px 14px;background:var(--panel,#1c1a17);color:inherit;border:1px solid rgba(240,236,226,.16);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.35);font-size:var(--fs-s,13px)}' +
     '.chat-panel[hidden]{display:none}.chat-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}' +
-    '.chat-x{background:none;border:0;color:inherit;font-size:18px;cursor:pointer}' +
+    '.chat-x{width:auto;background:none;border:0;color:inherit;font-size:18px;cursor:pointer}' +
     '.chat-list{flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px 0}' +
     '.chat-msg{max-width:92%;padding:8px 10px;border-radius:10px;background:rgba(240,236,226,.06)}' +
     '.chat-human{align-self:flex-end;background:rgba(232,163,61,.16)}.chat-agent{align-self:flex-start}' +
     '.chat-who{font-size:11px;opacity:.65;margin-bottom:2px}.chat-text{white-space:pre-wrap;word-break:break-word}' +
     '.chat-card{margin-top:6px;border:1px solid rgba(240,236,226,.16);border-radius:8px;padding:6px 8px}' +
-    '.chat-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px}.chat-card-body{margin-top:6px}' +
+    '.chat-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px}.chat-card-head button{width:auto;flex:0 0 auto}' +
+    '.chat-card-body{margin-top:6px}' +
     '.chat-note{opacity:.7;margin:4px 0}.chat-status{color:#e66;margin:4px 0 0}.chat-status:empty{display:none}' +
-    '.chat-form{display:flex;gap:6px;margin-top:6px}.chat-input{flex:1;resize:vertical}';
+    '.chat-form{display:flex;gap:6px;margin-top:6px;align-items:flex-end}.chat-input{flex:1;min-width:0;width:auto;resize:vertical}' +
+    '.chat-form button{width:auto;flex:0 0 auto}';
   document.head.append(css);
   timer = setInterval(() => { poll(); }, 4000);
   poll();
