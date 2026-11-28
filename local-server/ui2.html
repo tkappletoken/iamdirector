@@ -21075,7 +21075,7 @@ document.addEventListener('keydown', e => {
 
   const SCOPE_TXT = {
     read: ['查詢與報價', '看模型、報價、上傳素材、建專案、請工作台放片段。不花錢。'],
-    spend: ['花錢', '確認送件、生圖、後處理。開著確認模式時要你在這裡按核准。'],
+    spend: ['花錢', '確認送件、生圖、後處理。' + (!!(window.__STUDIO__ && window.__STUDIO__.approval_cards) ? '開著確認模式時要你在這裡按核准。' : '直接執行，只有每日點數上限會擋。')],
     delete: ['刪除／覆蓋', '刪素材、刪專案、覆蓋工作台自己的存檔。救不回來。'],
     topup: ['儲值', '建立 Stripe 付款頁（要你自己付）。跟花錢是反方向的權限。']
   };
@@ -21496,7 +21496,7 @@ document.addEventListener('keydown', e => {
   setTimeout(() => pollPending(true), 1800);
 
   const top = el('button', 'bar-act', '◎ AI 助手'); top.type = 'button'; top.id = 'agentTop';
-  top.title = '讓你的 Agent（Claude Code、Cursor…）直接操作這個工作台：發權杖、看它在做什麼、核准花錢的動作';
+  top.title = '讓你的 Agent（Claude Code、Cursor…）直接操作這個工作台：發權杖、看它在做什麼' + (!!(window.__STUDIO__ && window.__STUDIO__.approval_cards) ? '、核准花錢的動作' : '、設每日點數上限');
   top.onclick = () => (drawer.classList.contains('on') ? close() : open());
   const anchor = $('soundTop') || $('previsTop') || document.querySelector('.slatebar .spacer');
   if (anchor) anchor.after(top);
@@ -25953,7 +25953,7 @@ document.addEventListener('keydown', e => {
         'border:1px solid var(--edge2,#444);border-radius:14px;padding:20px 22px;box-shadow:0 20px 60px rgba(0,0,0,.5)');
       const head = el('div', 'display:flex;align-items:center;gap:10px;margin-bottom:12px');
       const h = el('h2', 'margin:0;font-size:18px;flex:1'); h.id = 'apvTitle';
-      const x = btn('關閉', close); x.setAttribute('aria-label', '關閉核准卡');
+      const x = btn('關閉', close); x.setAttribute('aria-label', CARDS ? '關閉核准卡' : '關閉花費上限');
       head.append(h, x);
       body = el('div'); body.id = 'apvBody';
       box.append(head, body);
@@ -26078,13 +26078,14 @@ document.addEventListener('keydown', e => {
   }
 
   async function openList() {
-    return fillList(shell('核准卡'), true);
+    return fillList(shell(CARDS ? '核准卡' : '花費上限'), true);
   }
   async function fillList(b, withLimits) {
     const r = await getJ('/api/approvals?status=pending');
     if (!r.ok) { b.append(el('p', null, errText(r.d) || ('讀不到核准卡（HTTP ' + r.status + '）'))); return; }
     const items = r.d.items || [];
-    b.append(el('p', 'margin:0 0 8px', items.length ? '等你核准的卡：' : '沒有等你核准的卡。'));
+    b.append(el('p', 'margin:0 0 8px', CARDS ? (items.length ? '等你核准的卡：' : '沒有等你核准的卡。')
+      : 'Agent 直接執行、不用等你點頭；這裡設的單支／每日上限會擋，超過就直接回錯誤。沒設就不擋。'));
     const seenBatch = {};
     items.forEach(c => {
       if (c.batch_id) {
@@ -26147,11 +26148,13 @@ document.addEventListener('keydown', e => {
     });
     off.id = 'apvAutoOff';
     autoBox.append(autoL, autoWarn, autoUsed, off);
+    autoBox.hidden = !CARDS;
     const save = btn('儲存上限', async () => {
       const bodyL = { auto_approve: auto.checked }; keys.forEach(([k]) => { bodyL[k] = inputs[k].value.trim() || null; });
       const at = snap();
       const r = await getJ('/api/approvals/limits', bodyL);
-      msg.textContent = r.ok ? (r.d.auto_approve ? '已儲存。自動核准開著：上限內的不再問你，超過的會出卡片。' : '已儲存。超過上限的卡會被擋下。')
+      msg.textContent = r.ok ? (!CARDS ? '已儲存。超過上限的會直接回錯誤。'
+                               : r.d.auto_approve ? '已儲存。自動核准開著：上限內的不再問你，超過的會出卡片。' : '已儲存。超過上限的卡會被擋下。')
                              : (errText(r.d) || '存不下來');
       if (r.ok) { if (snap() === at) fill(r.d); else msg.textContent = DIRTY; }
     });

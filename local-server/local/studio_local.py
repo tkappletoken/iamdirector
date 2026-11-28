@@ -455,7 +455,10 @@ def ui_desc_actions():
 
 def ui_desc_components():
     from filming import ui_schema
-    return ui_schema.client_components(local=True)
+    comps = ui_schema.client_components(local=True)
+    if not approvals.cards_on():
+        comps = {k: v for k, v in comps.items() if k != "approvals"}
+    return comps
 
 def last4(key):
     return key[-4:] if isinstance(key, str) and len(key) >= 8 else ""
