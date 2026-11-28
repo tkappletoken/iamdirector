@@ -226,7 +226,7 @@ class Registry:
         tools = {}
 
         def add(name, desc, schema, handler, spends=False):
-            tools[name] = Tool(name, desc, schema, handler, spends)
+            tools[name] = Tool(name, _direct_desc(name, desc), schema, handler, spends)
 
         add("workbench_health",
             "檢查 studio 服務層是否正常。這一支不需要創作者資格，"
@@ -1753,7 +1753,8 @@ class Registry:
         if not qid:
             return sheet
         if wait:
-            return dict(wait, next="請使用者核准這張配音卡，再用 submit_approved(approval_id=approval.id) 送出",
+            return dict(wait, next=("請使用者核准這張配音卡，再用 submit_approved(approval_id=approval.id) 送出" if cards_mode() else
+                                    "approval.status 是 approved 就直接用 submit_approved(approval_id=approval.id) 送出"),
                         cast_voice=cast_note)
         if a.get("max_points") is not None and sheet.get("payer") != "own_key":
             price = self._quoted.get(qid)
@@ -1837,7 +1838,8 @@ class Registry:
                                         "max_points": a.get("max_points")}, fmt="mp3")
             if isinstance(voice, dict) and voice.get("approval"):
                 return dict(voice, stage="voice_pending",
-                            next="請使用者核准這張配音卡；submit_approved(approval_id=approval.id) 會回 audio，"
+                            next=("請使用者核准這張配音卡；" if cards_mode() else "approval.status 是 approved 就直接送出：")
+                                 + "submit_approved(approval_id=approval.id) 會回 audio，"
                                  "再呼叫 dub_lipsync_shot 帶 audio=那個 audio.url（不會重配）")
             audio = (voice or {}).get("audio")
             secs = (voice or {}).get("seconds")
@@ -1865,6 +1867,8 @@ class Registry:
                 args[k] = a[k]
         sheet = self._h_lipsync_shot(args)
         nxt = ("要生成就用 request_approval(quote_id=quote.quote_id) 取得核准卡，人核准或預先授權之後用 "
+               "submit_approved(approval_id=approval.id) 送出" if self.local and cards_mode() else
+               "要生成就用 request_approval(quote_id=quote.quote_id) 取得卡片，approved 就直接用 "
                "submit_approved(approval_id=approval.id) 送出" if self.local else "要生成就把 quote 交給 video_confirm")
         return dict(out, stage="quoted", quote=sheet, next=nxt)
 
@@ -2123,6 +2127,60 @@ def _audio_seconds(raw):
         total += samples / rate
         i += samples // 8 * br // rate + pad
     return round(total, 3) if total else None
+
+def cards_mode():
+    return os.environ.get("STUDIO_APPROVAL_CARDS", "").strip().lower() in ("1", "on", "true")
+
+_DIRECT_FULL = {
+    "request_approval":
+        "取得一張報價的卡片：卡片 id、付款方、金額、模型、秒數、狀態。預設報價當下就決定，不用等任何人："
+        "approved＝直接 submit_approved；rejected＝超過使用者設的單支／每日上限（note 寫原因，照原話告訴使用者）；"
+        "expired＝重新報價。卡片 24 小時有效，送出時報價過期會自動重新報價（新價格還在上限內才送）。",
+}
+_DIRECT_TEXT = (
+    ("agent_run", "錢照既有規則：Agent 直送開著就在上限內直接送，超過上限或沒有預先授權就停下來（ask），等人處理後用 agent_answer 續跑。",
+     "錢：直接送出，只有使用者設的單支／每日上限會擋；超過就停下來（ask），告訴使用者，他調好上限後用 agent_answer 續跑。"),
+    ("character_angles", "每一張只建一張核准卡（回 quote_id 與 approval，不是失敗、不要重送），"
+                         "人核准或預先授權之後用 submit_approved(approval_id=approval.id) 送出；錢由核准卡的上限把關。",
+     "每一張建一張卡片（回 quote_id 與 approval，不是失敗、不要重送），approval.status 是 approved 就直接用 "
+     "submit_approved(approval_id=approval.id) 送出；錢由使用者設的上限把關，超過直接回錯誤。"),
+    ("character_angles", "開了確認模式時那一張回 pending_id（待人核准）。",
+     "超過上限的那一張回 error（照原話告訴使用者），不會等人確認。"),
+    ("chat_post", "film_preview 交片預覽、approvals 核准卡）", "film_preview 交片預覽）"),
+    ("chat_post", "要花錢的事照舊走 quote → request_approval → 人核准 → submit_approved；放一張 approvals 卡只是讓人在對話裡看得到、按得到。",
+     "要花錢的事直接做：quote 之後 approval.status 是 approved 就 submit_approved，只有使用者設的上限會擋。"),
+    ("quote_work", "同時建一張核准卡，跟 quote 一樣回 approval.approve_url——等使用者本人核准後用 submit_approved 送出。",
+     "同時建一張卡片，跟 quote 一樣回 approval；approval.status 是 approved 就直接用 submit_approved 送出"
+     "（只有使用者設的上限會擋，超過直接回錯誤）。"),
+    ("shots_confirm", "確認模式下每一張都會變成待人核准。", "不用等人按；只有權杖的每日上限會擋，超過直接回錯誤。"),
+    ("submit_approved", "漲價就不送、回 repriced，卡片退回 pending 等使用者重新核准。",
+     "新價格還在上限內就照送，超過上限就不送、回錯誤。"),
+    ("submit_approved", "重做請重新 quote、讓使用者再核准一次。", "重做請重新 quote。"),
+    ("work_run", "next（下一步怎麼做，例如要人核准哪張卡：approve_url）", "next（下一步怎麼做）"),
+    ("work_run", "錢照既有規則（核准卡、預先授權、Agent 直送和上限），Agent 改不了上限。",
+     "錢：直接送出，只有使用者設的單支／每日上限會擋（超過就停下來說明），Agent 改不了上限。"),
+    ("agent_pending_status", "人在工作台按核准之前一直是 pending。", "預設不會再產生待確認件（伺服器開著舊的核准卡模式才有）。"),
+    ("voice_line", "桌面本機要人核准時回核准卡（quote_id、approval，不是失敗、不要重送），核准後用 submit_approved(approval_id=approval.id) 送出。",
+     "桌面本機回卡片（quote_id、approval，不是失敗、不要重送），approval.status 是 approved 就直接用 "
+     "submit_approved(approval_id=approval.id) 送出。"),
+    ("dub_lipsync_shot", "stage=quoted 時（桌面本機）用 request_approval(quote_id=quote.quote_id) 取得核准卡，"
+                         "人核准或預先授權之後用 submit_approved(approval_id=approval.id) 生成。",
+     "stage=quoted 時（桌面本機）用 request_approval(quote_id=quote.quote_id) 取得卡片，approved 就直接用 "
+     "submit_approved(approval_id=approval.id) 生成。"),
+    ("dub_lipsync_shot", "voice_pending（桌面本機配音要人核准：核准後 submit_approved 會回 audio，",
+     "voice_pending（桌面本機配音建了卡片：submit_approved 會回 audio，"),
+)
+
+def _direct_desc(name, desc):
+    if cards_mode():
+        return desc
+    if name in _DIRECT_FULL:
+        return _DIRECT_FULL[name]
+    for n, old, new in _DIRECT_TEXT:
+        if n != name or old not in desc:
+            continue
+        desc = desc.replace(old, new)
+    return desc
 
 def gate_on(name):
     return os.environ.get(_GATED_TOOLS[name], "").strip().lower() in ("1", "on", "true")
