@@ -105,6 +105,14 @@ CREATE TABLE IF NOT EXISTS local_asset_meta (
   patch JSONB NOT NULL DEFAULT '{}',
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+-- 對話即介面（local/chat_thread.py；STUDIO_UI_V2_CHAT，預設關）：人跟外部 Agent 的對話串；card 是元件表裡的 id＋args
+CREATE TABLE IF NOT EXISTS local_chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  author TEXT NOT NULL CHECK (author IN ('human', 'agent')),
+  text TEXT NOT NULL DEFAULT '',
+  card JSONB,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 CREATE TABLE IF NOT EXISTS chain_runs (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,

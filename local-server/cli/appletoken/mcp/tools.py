@@ -126,7 +126,7 @@ class Registry:
         for name in _LOCAL_FILE_TOOLS:
             self._tools.pop(name, None)
         if not self.local:
-            for name in _LOCAL_UI_TOOLS + _LOCAL_AGENT_TOOLS + _LOCAL_MEDIA_TOOLS:
+            for name in _LOCAL_UI_TOOLS + _LOCAL_AGENT_TOOLS + _LOCAL_MEDIA_TOOLS + _LOCAL_CHAT_GATED:
                 self._tools.pop(name, None)
         self._tools.pop("session_logout", None)
         base = getattr(self.session, "public_url", None) or self.session.base_url
@@ -332,6 +332,7 @@ class Registry:
             self._add_ui_tools(add)
             self._add_agent_tools(add)
             self._add_local_media_tools(add)
+            self._add_chat_tools(add)
 
         add("take_list",
             "列一鏡（shot_key）或整個專案的候選（take）：狀態、品管報告、是不是定稿；best＝品管最好的那支。免費。",
@@ -1299,6 +1300,26 @@ class Registry:
         return {"state": "done", "url": "%s/api/download?id=%s" % (base, jid),
                 "auth": "GET 這個網址時帶同一把權杖：Authorization: Bearer <你的權杖>"}
 
+    def _add_chat_tools(self, add):
+        wb = self.wb
+        if gate_on("chat_post"):
+            add("chat_post",
+                "在 App 的對話區對使用者說話：text 是要說的話，card 可以夾一張能操作的卡（{component, args?}）。"
+                "component 只收 ui_actions_list 的元件表裡 mount=inline 的 id（stage 主線目前這一步、agent_run 拍片進度、"
+                "film_preview 交片預覽、approvals 核准卡）；args 是平的小物件（短字串、數字、布林）。不收 CSS、網址、程式碼。"
+                "要花錢的事照舊走 quote → request_approval → 人核准 → submit_approved；放一張 approvals 卡只是讓人在對話裡看得到、按得到。"
+                "text 與 card 至少給一個。免費。",
+                _obj({"text": {"type": "string"},
+                      "card": {"type": "object", "properties": {"component": {"type": "string"}, "args": {"type": "object"}},
+                               "required": ["component"], "additionalProperties": False}}),
+                lambda a: wb.chat_post({k: a[k] for k in ("text", "card") if k in a}))
+        if gate_on("chat_inbox"):
+            add("chat_inbox",
+                "讀使用者在 App 對話區說的話（舊到新）。after＝上次讀到的最後一則 id（回應的 last_id），只回比它新的；"
+                "不給就回最近的。all=true 連自己（Agent）說過的也一起回。免費。",
+                _obj({"after": {"type": "integer"}, "all": {"type": "boolean"}, "limit": {"type": "integer"}}),
+                lambda a: wb.chat_get(a.get("after") or 0, None if a.get("all") else "human", a.get("limit")))
+
     def _add_ui_tools(self, add):
         wb = self.wb
         s = lambda v: {"type": "string"} if v is None else v
@@ -2057,7 +2078,8 @@ def _shot_payload(a):
 
 _GATED_TOOLS = {"voice_line": "STUDIO_VOICE_LINE", "lipsync_shot": "STUDIO_LIPSYNC_SHOT",
                 "dub_lipsync_shot": "STUDIO_TTS_FIRST",
-                "previs_blocking_sync": "STUDIO_LOCAL_BLOCKING_SYNC"}
+                "previs_blocking_sync": "STUDIO_LOCAL_BLOCKING_SYNC",
+                "chat_post": "STUDIO_UI_V2_CHAT", "chat_inbox": "STUDIO_UI_V2_CHAT"}
 
 _MP3_BITRATE = {1: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
                 2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)}
@@ -2146,6 +2168,7 @@ _LOCAL_UI_TOOLS = ("ui_actions_list", "ui_get", "ui_compose", "ui_edit", "ui_pre
                    "ui_undo", "ui_onboarding_status")
 _LOCAL_AGENT_TOOLS = ("agent_plan", "agent_run", "agent_answer", "agent_film_preview", "agent_pick", "work_run")
 _LOCAL_MEDIA_TOOLS = ("video_concat", "agent_settings")
+_LOCAL_CHAT_GATED = ("chat_post", "chat_inbox")
 
 class _NoLedger:
 

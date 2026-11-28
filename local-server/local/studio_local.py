@@ -53,6 +53,7 @@ import sqlite_store
 import storyboard
 import studio_store
 import film_settings
+import chat_thread
 import work_frames
 import studio_tools
 import takes
@@ -187,6 +188,7 @@ LOCAL_API = (
     "/api/local/agent-qc",
     "/api/local/frame-relay",
     "/api/local/film-settings",
+    "/api/local/chat",
     "/api/local/ui-desc", "/api/local/ui-profiles",
     "/api/local/mcp-direct",
 )
@@ -209,6 +211,7 @@ AGENT_ALLOWED |= {("POST", "/api/local/agent/start"), ("POST", "/api/local/agent
                   ("GET", "/api/local/agent-loop"), ("POST", "/api/local/work/run")}
 AGENT_ALLOWED |= {("GET", "/api/local/frame-relay")}
 AGENT_ALLOWED |= {("GET", "/api/local/film-settings")}
+AGENT_ALLOWED |= {("GET", "/api/local/chat"), ("POST", "/api/local/chat")}
 AGENT_ALLOWED |= {("GET", "/api/local/ui-desc"), ("POST", "/api/local/ui-desc")}
 UI_PROFILES_OFF = "介面描述檔沒有開（設定 ui_profiles.json 或 STUDIO_LOCAL_UI_PROFILES=on）"
 AGENT_ALLOWED |= {("GET", "/api/local/mcp-direct")}
@@ -1251,6 +1254,8 @@ class Handler(BaseHTTPRequestHandler):
         if acts:
             manifest["ui_actions"] = acts
             manifest["ui_components"] = ui_desc_components()
+        if chat_thread.on():
+            manifest["ui_v2_chat"] = True
         web = os.environ.get("STUDIO_PUBLIC_ORIGIN", "").strip().rstrip("/")
         if re.match(r"^https?://[A-Za-z0-9.:-]+$", web):
             manifest["web_origin"] = web
@@ -1324,6 +1329,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.frame_relay_info())
         if path == "/api/local/film-settings":
             return self._json(200, film_settings.info(st.data_dir))
+        if path == "/api/local/chat":
+            return self._chat_get(q)
         if path == "/api/local/agent-qc":
             return self._json(200, st.agent_qc_info())
         if path == "/api/local/ui-profiles":
@@ -1591,6 +1598,8 @@ class Handler(BaseHTTPRequestHandler):
             except film_settings.SettingsError as e:
                 return self._json(400, {"error": str(e)})
             return self._json(200, film_settings.info(st.data_dir))
+        if path == "/api/local/chat":
+            return self._chat_post(body)
         if path in ("/api/local/agent/start", "/api/local/agent/step", "/api/local/agent/plan"):
             return self._agentloop(path.rsplit("/", 1)[1], body)
         if path == "/api/local/work/run":
@@ -4104,6 +4113,37 @@ class Handler(BaseHTTPRequestHandler):
                 return merged
         merged = self.state.db.run(put)
         return self._json(200, dict({"id": aid, "local": True}, **merged))
+
+    def _chat_get(self, q):
+        if not chat_thread.on():
+            return self._json(404, {"error": chat_thread.OFF})
+        try:
+            after = int((q.get("after") or ["0"])[0] or 0)
+            limit = int((q.get("limit") or [str(chat_thread.LIST_MAX)])[0] or chat_thread.LIST_MAX)
+        except ValueError:
+            return self._json(400, {"error": "after、limit 要是整數"})
+        author = (q.get("author") or [""])[0] or None
+        if author and author not in chat_thread.AUTHORS:
+            return self._json(400, {"error": "author 只收 human 或 agent"})
+        return self._json(200, dict(chat_thread.listing(self.state.db, after, author, limit), on=True))
+
+    def _chat_post(self, body):
+        if not chat_thread.on():
+            return self._json(404, {"error": chat_thread.OFF})
+        human = self._human()
+        try:
+            if human:
+                if body.get("card") is not None:
+                    return self._json(400, {"error": "卡片只有 Agent 能放（chat_post）；你在 App 裡只送文字"})
+                text, card = chat_thread.clean_text(body.get("text")), None
+            else:
+                comps = ui_desc_components() if ui_desc_actions() else {}
+                card = chat_thread.clean_card(body.get("card"), comps)
+                text = chat_thread.clean_text(body.get("text"), required=card is None)
+        except chat_thread.ChatError as e:
+            return self._json(400, {"error": str(e)})
+        msg = chat_thread.add(self.state.db, "human" if human else "agent", text, card)
+        return self._json(200, {"message": msg})
 
     def _asset_overlay(self, got, tag=None):
         if not isinstance(got, dict) or not isinstance(got.get("data"), list):

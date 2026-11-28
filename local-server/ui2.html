@@ -958,6 +958,14 @@ pre.err { color:var(--ng); }
         </div>
         
         
+        <div id="srvFlags3Wrap" hidden style="margin-top:14px">
+          <div class="printed" style="font-weight:600">對話即介面（測試中）</div>
+          <div class="chk" id="sfUiV2ChatRow" hidden style="margin-top:6px"><input type="checkbox" id="sfUiV2Chat"><label for="sfUiV2Chat">對話區<span class="note"> · 開了之後，外部 Agent 才能用 chat_post／chat_inbox 跟你對話，回話可以夾一張能操作的卡；App 不內建語言模型、不花錢（要花錢的照舊在核准卡上由你按）</span></label></div>
+          <div class="hint" id="srvFlags3Note">預設關。改了要重新開啟 App 才生效。</div>
+          <button type="button" id="srvFlags3Relaunch" class="ghost" hidden style="margin-top:6px">重新開啟 App 套用</button>
+        </div>
+        
+        
         <div id="srvFlagsWrap" hidden style="margin-top:14px">
           <div class="printed" style="font-weight:600">配音與對嘴（測試中）</div>
           <div class="chk" style="margin-top:6px"><input type="checkbox" id="sfVoiceLine"><label for="sfVoiceLine">一句台詞配音<span class="note"> · Agent 可以替一句台詞配音（voice_line）；會產生費用</span></label></div>
@@ -25457,7 +25465,8 @@ document.addEventListener('keydown', e => {
     window.__ASSIST__ = { open: () => openA(true), ask, intent: assistIntent };
   }
   window.__SIMPLE__ = { get mode() { return MODE; }, setMode: m => setMode(m, true), pages: SM_PAGES, work, saveWorks, render, go,
-                        get works() { return WORKS; }, get projects() { return PROJ; } };
+                        get works() { return WORKS; }, get projects() { return PROJ; },
+                        get pid() { return curPid(); }, steps: STEPS };
 
   (async function init() {
     const m = GATED ? 'simple' : await decideMode();
@@ -26353,6 +26362,46 @@ document.addEventListener('keydown', e => {
   const BASE = note ? note.textContent : '';
   const ROWS = [{ id: 'sfBlockingSync', key: 'STUDIO_LOCAL_BLOCKING_SYNC' }, { id: 'sfWorkFrames', key: 'STUDIO_WORK_FRAMES' },
     { id: 'sfMuteAudio', key: 'STUDIO_MUTE_MODEL_AUDIO' }];
+  const known = st => ROWS.filter(row => Array.isArray(st.keys) && st.keys.includes(row.key));
+  const show = st => {
+    if (!st || !st.saved || !st.active) return false;
+    const rows = known(st);
+    if (!rows.length) return false;
+    let pending = false;
+    rows.forEach(row => {
+      const ctl = $(row.id), line = $(row.id + 'Row');
+      if (!ctl) return;
+      if (line) line.hidden = false;
+      ctl.checked = st.saved[row.key] === true;
+      if ((st.saved[row.key] === true) !== (st.active[row.key] === true)) pending = true;
+    });
+    wrap.hidden = false;
+    if (note) note.textContent = BASE + (pending ? ' 已經存好，重新開啟 App 之後才會生效。' : '');
+    if (again) again.hidden = !pending;
+    return true;
+  };
+  Promise.resolve(desk.serverFlags.get()).then(show).catch(() => {});
+  ROWS.forEach(row => {
+    const ctl = $(row.id);
+    if (!ctl) return;
+    ctl.addEventListener('change', () => {
+      const want = ctl.checked;
+      Promise.resolve(desk.serverFlags.set(row.key, ctl.checked))
+        .then(st => { if (!show(st)) ctl.checked = !want; })
+        .catch(() => { ctl.checked = !want; });
+    });
+  });
+  if (again) again.addEventListener('click', () => { Promise.resolve(desk.serverFlags.relaunch()).catch(() => {}); });
+})();
+(() => {
+  if (!(window.__STUDIO__ && window.__STUDIO__.local)) return;
+  const desk = window.iamdirectorDesktop;
+  if (!desk || !desk.serverFlags || typeof desk.serverFlags.get !== 'function') return;
+  const $ = id => document.getElementById(id);
+  const wrap = $('srvFlags3Wrap'), note = $('srvFlags3Note'), again = $('srvFlags3Relaunch');
+  if (!wrap) return;
+  const BASE = note ? note.textContent : '';
+  const ROWS = [{ id: 'sfUiV2Chat', key: 'STUDIO_UI_V2_CHAT' }];
   const known = st => ROWS.filter(row => Array.isArray(st.keys) && st.keys.includes(row.key));
   const show = st => {
     if (!st || !st.saved || !st.active) return false;
@@ -28486,5 +28535,165 @@ function agFilmModel(st, items) {
   const autoEnable = () => { let v = null; try { v = localStorage.getItem(KEY); } catch (e) {} if (v === null && !on) enable(); };
   window.__AGENTRUN__ = { open, close, refresh, enable, autoEnable, mount, unmount, isOn: () => on };
   if (on) open();
+})();
+(() => {
+  const S = window.__STUDIO__ || {};
+  if (!(S.local && S.ui_v2_chat)) return;
+  const PATH = '/api/local/chat';
+  const COMPS = S.ui_components || {};
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const errText = d => errMsg(d) || '';
+  const MOUNT = {
+    agent_run: c => (window.__AGENTRUN__ && window.__AGENTRUN__.mount ? (window.__AGENTRUN__.mount(c), () => window.__AGENTRUN__.unmount()) : null),
+    film_preview: c => MOUNT.agent_run(c),
+    approvals: c => (window.__APPROVALS__ && window.__APPROVALS__.mountList ? (window.__APPROVALS__.mountList(c), () => window.__APPROVALS__.unmountList()) : null),
+    stage: c => {
+      const sm = window.__SIMPLE__;
+      const pid = sm && sm.pid, w = pid && sm.works ? sm.works[pid] : null;
+      const proj = pid && sm.projects ? (sm.projects.find ? sm.projects.find(x => x && x.id === pid) : null) : null;
+      if (!w) { c.append(el('p', 'chat-note', '還沒有打開任何作品。')); return () => {}; }
+      const label = (sm.steps && sm.steps[w.step - 1]) || '';
+      c.append(el('p', 'chat-stage', (proj && proj.name ? '「' + proj.name + '」' : '這部作品') + '：第 ' + w.step + ' 步' + (label ? '・' + label : '')));
+      const b = el('button', 'ghost', '回到這一步');
+      b.type = 'button';
+      b.addEventListener('click', () => { if (sm.setMode) sm.setMode('simple'); if (sm.render) sm.render(); });
+      c.append(b);
+      return () => {};
+    },
+  };
+  let last = 0, opened = null, unread = 0, timer = null, sending = false;
+  const btn = el('button', 'chat-toggle', '💬 對話');
+  btn.type = 'button';
+  btn.setAttribute('aria-label', '對話');
+  const panel = el('aside', 'chat-panel');
+  panel.hidden = true;
+  panel.setAttribute('aria-label', '跟 Agent 對話');
+  const head = el('div', 'chat-head');
+  head.append(el('strong', null, '跟 Agent 對話（測試中）'));
+  const x = el('button', 'chat-x', '×');
+  x.type = 'button';
+  x.setAttribute('aria-label', '收起對話');
+  head.append(x);
+  const list = el('div', 'chat-list');
+  const note = el('p', 'chat-note', '外部 Agent 經 MCP 的 chat_inbox 讀你說的話、chat_post 回話。要花錢的事照舊要你在核准卡上按。');
+  const form = el('form', 'chat-form');
+  const input = el('textarea', 'chat-input');
+  input.rows = 2;
+  input.maxLength = 4000;
+  input.placeholder = '跟 Agent 說你想拍什麼…';
+  const send = el('button', null, '送出');
+  send.type = 'submit';
+  form.append(input, send);
+  const status = el('p', 'chat-status');
+  panel.append(head, list, note, form, status);
+  document.body.append(btn, panel);
+
+  const say = t => { status.textContent = t || ''; };
+  const badge = () => { btn.textContent = '💬 對話' + (unread ? '（' + unread + '）' : ''); };
+  function closeCard() {
+    if (!opened) return;
+    const o = opened;
+    opened = null;
+    try { o.undo && o.undo(); } catch (e) {}
+    o.body.textContent = '';
+    o.body.hidden = true;
+    o.btn.textContent = '打開';
+  }
+  function openCard(cid, body, b) {
+    closeCard();
+    body.textContent = '';
+    body.hidden = false;
+    const undo = (MOUNT[cid] || (() => null))(body);
+    if (undo === null) body.append(el('p', 'chat-note', '這張卡（' + cid + '）在這一頁還打不開。'));
+    opened = { undo, body, btn: b };
+    b.textContent = '收起';
+  }
+  function bubble(m) {
+    const row = el('div', 'chat-msg chat-' + (m.author === 'human' ? 'human' : 'agent'));
+    row.dataset.id = String(m.id);
+    row.append(el('div', 'chat-who', m.author === 'human' ? '你' : 'Agent'));
+    if (m.text) row.append(el('div', 'chat-text', m.text));
+    const card = m.card;
+    if (card && typeof card.component === 'string') {
+      const cid = card.component, comp = COMPS[cid];
+      const box = el('div', 'chat-card');
+      box.dataset.component = cid;
+      const top = el('div', 'chat-card-head');
+      top.append(el('span', null, comp && comp.label ? comp.label : cid));
+      const body = el('div', 'chat-card-body');
+      body.hidden = true;
+      if (comp && comp.mount === 'inline') {
+        const b = el('button', 'ghost', '打開');
+        b.type = 'button';
+        b.addEventListener('click', () => { if (opened && opened.body === body) closeCard(); else openCard(cid, body, b); });
+        top.append(b);
+      } else {
+        top.append(el('span', 'chat-note', '（這一頁沒有這個元件）'));
+      }
+      box.append(top, body);
+      row.append(box);
+    }
+    return row;
+  }
+  async function poll() {
+    let r, d;
+    try {
+      r = await fetch(PATH + '?after=' + last);
+      d = await r.json().catch(() => ({}));
+    } catch (e) { say('連不到本機伺服器，對話暫時沒有更新。'); return; }
+    if (!r.ok) { say('對話讀不到：' + (errText(d) || '本機伺服器沒有回應')); return; }
+    say('');
+    const msgs = Array.isArray(d.messages) ? d.messages : [];
+    for (const m of msgs) {
+      if (!m || !(m.id > last)) continue;
+      last = m.id;
+      list.append(bubble(m));
+      if (panel.hidden && m.author === 'agent') unread++;
+    }
+    if (msgs.length) { list.scrollTop = list.scrollHeight; badge(); }
+  }
+  async function post() {
+    const text = input.value.trim();
+    if (!text || sending) return;
+    sending = true;
+    send.disabled = true;
+    let r, d;
+    try {
+      r = await fetch(PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+      d = await r.json().catch(() => ({}));
+    } catch (e) { r = null; }
+    sending = false;
+    send.disabled = false;
+    if (!r) { say('沒送出去：連不到本機伺服器。你打的字還在。'); return; }
+    if (!r.ok) { say('沒送出去：' + (errText(d) || '本機伺服器沒有回應') + '。你打的字還在。'); return; }
+    input.value = '';
+    say('');
+    await poll();
+  }
+  form.addEventListener('submit', e => { if (e && e.preventDefault) e.preventDefault(); post(); });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); post(); } });
+  btn.addEventListener('click', () => {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) { unread = 0; badge(); poll(); input.focus && input.focus(); }
+  });
+  x.addEventListener('click', () => { panel.hidden = true; });
+  const css = document.createElement('style');
+  css.textContent = '.chat-toggle{position:fixed;left:16px;bottom:16px;z-index:62}' +
+    '.chat-panel{position:fixed;left:16px;bottom:60px;z-index:62;width:380px;max-width:calc(100vw - 32px);height:70vh;display:flex;flex-direction:column;' +
+    'padding:12px 14px;background:var(--panel,#1c1a17);color:inherit;border:1px solid rgba(240,236,226,.16);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.35);font-size:var(--fs-s,13px)}' +
+    '.chat-panel[hidden]{display:none}.chat-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}' +
+    '.chat-x{background:none;border:0;color:inherit;font-size:18px;cursor:pointer}' +
+    '.chat-list{flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px 0}' +
+    '.chat-msg{max-width:92%;padding:8px 10px;border-radius:10px;background:rgba(240,236,226,.06)}' +
+    '.chat-human{align-self:flex-end;background:rgba(232,163,61,.16)}.chat-agent{align-self:flex-start}' +
+    '.chat-who{font-size:11px;opacity:.65;margin-bottom:2px}.chat-text{white-space:pre-wrap;word-break:break-word}' +
+    '.chat-card{margin-top:6px;border:1px solid rgba(240,236,226,.16);border-radius:8px;padding:6px 8px}' +
+    '.chat-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px}.chat-card-body{margin-top:6px}' +
+    '.chat-note{opacity:.7;margin:4px 0}.chat-status{color:#e66;margin:4px 0 0}.chat-status:empty{display:none}' +
+    '.chat-form{display:flex;gap:6px;margin-top:6px}.chat-input{flex:1;resize:vertical}';
+  document.head.append(css);
+  timer = setInterval(() => { poll(); }, 4000);
+  poll();
+  window.__CHAT__ = { poll, closeCard, get last() { return last; }, get opened() { return opened; }, timer: () => timer };
 })();
 </script>
