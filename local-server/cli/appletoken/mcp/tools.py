@@ -462,9 +462,10 @@ class Registry:
             lambda a: wb.work_export(a["project_id"], a["job_id"], a.get("overrides"), a["pipeline"]))
 
         add("quote",
-            "**只報價，不扣款、不建工作**。同時建一張核准卡（pending）：回 quote_id、金額、付款方，"
-            "approval.id 與 approval.approve_url。把連結交給使用者，**等他本人在 App 或網頁按核准**——"
-            "你自己核准不了。核准之後用 submit_approved 送出。" + _SHOT_INPUTS_DOC,
+            "**只報價，不扣款、不建工作**。同時建一張卡片（流水帳）：回 quote_id、金額、付款方、approval.id。"
+            "approval.status 是 approved（預設：不用等人，只有使用者設的單支／每日上限會擋，超過直接回錯誤）就"
+            "直接用 submit_approved 送出；只有 pending 時才要把 approve_url 交給使用者等他按"
+            "（伺服器開了舊的核准卡模式才會出現）。" + _SHOT_INPUTS_DOC,
             _obj(dict({"model": {"type": "string"}, "prompt": {"type": "string"},
                        "seconds": {"type": "integer"}, "resolution": {"type": "string"},
                        "aspect_ratio": {"type": "string"}, "negative_prompt": {"type": "string"},
@@ -901,7 +902,7 @@ class Registry:
                 lambda a: wb.qc_rate(a["job_id"], a["score"], a.get("tags"), a.get("comment")), spends=True)
 
             add("submit_approved",
-                "送出一張**使用者已經核准**的核准卡（quote 建的那張）。**這一步會扣款。**"
+                "送出一張 approved 的卡片（quote 建的那張；預設報價當下就是 approved，不用等人）。**這一步會扣款。**"
                 "只收 approved 的卡；卡片只能送一次；帶 expect_amount 時金額要跟卡片一致，對不上就拒絕。"
                 "報價過期會先自動重新報價（付款方不變）；漲價就不送、回 repriced，卡片退回 pending 等使用者重新核准。"
                 "被拒或失敗都**不要自動重試**：重做請重新 quote、讓使用者再核准一次。",

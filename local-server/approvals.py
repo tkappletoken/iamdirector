@@ -1,6 +1,7 @@
 import datetime
 import decimal
 import json
+import os
 import re
 import secrets
 
@@ -20,6 +21,11 @@ LIMIT_KEYS = ("per_job_points", "daily_points", "per_job_upstream", "daily_upstr
 _COLS = ("id", "user_id", "charge_id", "quote_ref", "kind", "payer", "points", "upstream_cost",
          "summary", "status", "token_id", "job_id", "error", "expires_at", "decided_at", "submitted_at", "created_at",
          "payload", "quote_expires_at", "approved_points", "approved_upstream", "batch_id", "note", "decided_by")
+
+CARDS_ENV = "STUDIO_APPROVAL_CARDS"
+
+def cards_on():
+    return (os.environ.get(CARDS_ENV) or "").strip().lower() in ("1", "on", "true")
 
 class ApprovalError(Exception):
     def __init__(self, code, message):
@@ -236,10 +242,32 @@ def apply_requote(conn, user_id, card, charge, quote_expires_at):
     cap = approved_amount(card)
     unit = "點" if measure(card["payer"]) == "points" else "AppleToken 額度"
     if new is None or cap is None or new > cap:
+        if not cards_on() and str(card.get("decided_by") or "").startswith("direct:"):
+            return _requote_direct(conn, user_id, card, charge, quote_expires_at, new, unit)
         note = "價格變了：核准的是 %s %s，重新報價是 %s %s，要重新核准" % (fmt(cap), unit, fmt(new), unit)
         reprice(conn, user_id, card["id"], charge, quote_expires_at, note)
         return get(conn, user_id, card["id"]), note
     replace_quote(conn, user_id, card["id"], charge, quote_expires_at)
+    return get(conn, user_id, card["id"]), None
+
+def _requote_direct(conn, user_id, card, charge, quote_expires_at, new, unit):
+    m = measure(card["payer"])
+    lock_limits(conn, user_id)
+    used = used_today(conn, user_id, m)
+    dec_at = _ts(card.get("decided_at"))
+    if dec_at and iso(dec_at) >= day_start():
+        used -= (approved_amount(card) or 0)
+    probe = dict(card, points=charge.get("points"), upstream_cost=charge.get("upstream_cost"))
+    why = "重新報價量不出金額" if new is None else check_limits(probe, limits_get(conn, user_id), used)
+    if why:
+        note = "價格變了（重新報價是 %s %s）：%s" % (fmt(new), unit, why)
+        mark_result(conn, user_id, card["id"], error=note)
+        return get(conn, user_id, card["id"]), note
+    replace_quote(conn, user_id, card["id"], charge, quote_expires_at)
+    pts, up = _amt(charge)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE approval_cards SET approved_points = %s, approved_upstream = %s WHERE id = %s AND user_id = %s::uuid",
+                    (pts, up, str(card["id"]), str(user_id)))
     return get(conn, user_id, card["id"]), None
 
 def ids_for_batch(conn, user_id, body):
@@ -381,7 +409,7 @@ def try_auto(conn, user_id, card, now=None):
 
 DIRECT_NO_LIMITS = "Agent 直送要先在設定設好單支與每日上限（沒有上限，Agent 就能無上限地花你的錢）。"
 
-def try_direct(conn, user_id, card, now=None):
+def try_direct(conn, user_id, card, now=None, require_limits=True):
     if card is None or card.get("status") != "pending":
         return card, None
     m = measure(card.get("payer"))
@@ -392,11 +420,11 @@ def try_direct(conn, user_id, card, now=None):
                 cur.execute("UPDATE approval_cards SET note = %s, decided_by = %s WHERE id = %s AND user_id = %s::uuid",
                             (msg[:500], "direct", str(card["id"]), str(user_id)))
         return get(conn, user_id, card["id"]), (code, msg)
-    if not auto_ready(dict(limits_get(conn, user_id), auto_approve=True), m):
+    if require_limits and not auto_ready(dict(limits_get(conn, user_id), auto_approve=True), m):
         return refuse(409, DIRECT_NO_LIMITS)
     lock_limits(conn, user_id)
     lim = limits_get(conn, user_id)
-    if not auto_ready(dict(lim, auto_approve=True), m):
+    if require_limits and not auto_ready(dict(lim, auto_approve=True), m):
         return refuse(409, DIRECT_NO_LIMITS)
     why = check_limits(card, lim, used_today(conn, user_id, m, now))
     if why:
@@ -437,6 +465,10 @@ def limits_set(conn, user_id, body):
                     " daily_upstream = excluded.daily_upstream, auto_approve = excluded.auto_approve,"
                     " limits_version = excluded.limits_version, updated_at = now()",
                     (str(user_id),) + tuple(vals) + (auto, ver))
+        if not cards_on():
+            cur.execute("UPDATE approval_cards SET status = 'expired', note = %s"
+                        " WHERE user_id = %s::uuid AND status = 'approved' AND decided_by LIKE 'direct:%%'",
+                        ("上限改了：這一張作廢，請重新報價", str(user_id)))
         cur.execute("UPDATE approval_cards SET status = 'pending', decided_at = NULL, decided_by = NULL,"
                     " approved_points = NULL, approved_upstream = NULL, note = %s"
                     " WHERE user_id = %s::uuid AND status = 'approved'"

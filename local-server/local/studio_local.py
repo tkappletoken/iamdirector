@@ -859,7 +859,8 @@ class State:
 
     def mcp_direct_info(self):
         env = os.environ.get("STUDIO_LOCAL_MCP_DIRECT", "").strip().lower() or None
-        return {"on": self.mcp_direct_on(), "setting": self.mcp_direct_setting(), "env": env}
+        return {"on": self.mcp_direct_on(), "setting": self.mcp_direct_setting(), "env": env,
+                "approval_cards": approvals.cards_on()}
 
     def set_mcp_direct(self, value):
         path = os.path.join(self.data_dir, "mcp_direct.json")
@@ -995,6 +996,17 @@ class State:
         return self._page
 
 MCP_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+MCP_INSTRUCTIONS_DIRECT = (
+    "這是「我是導演」桌面版（本機模式）的 MCP。花錢的規則：先 quote（免費），回應的 approval.status 是 approved 就"
+    "直接用 submit_approved 送出，不用等任何人按——只有你設的單支／每日上限會擋，超過會直接回錯誤（照錯誤訊息告訴使用者）。"
+    "卡片只能用一次，失敗不要自動重試，要重做就重新 quote。"
+    "status 查進度（排隊再久都不是失敗），result 拿成品在這台電腦上的路徑。付款方一律是使用者自己的 AppleToken 額度。"
+    "第一次連上：先 ui_onboarding_status，needed=true 就照 ui_actions_list 的訪談題目問使用者、ui_compose 組出介面、ui_apply 套用。"
+    "要一路拍到交片：create_work 建作品（帶分鏡），再 work_run 一步一步往下跑，每一步的回應都會寫下一步（next）。")
+
+def mcp_instructions():
+    return MCP_INSTRUCTIONS if approvals.cards_on() else MCP_INSTRUCTIONS_DIRECT
+
 MCP_INSTRUCTIONS = (
     "這是「我是導演」桌面版（本機模式）的 MCP。花錢的規則：先 quote（免費，同時建一張核准卡），"
     "把 approval.approve_url（iamdirector://approve/<id>）交給使用者，等他本人在 App 裡按核准——你自己核准不了。"
@@ -1254,6 +1266,8 @@ class Handler(BaseHTTPRequestHandler):
         if acts:
             manifest["ui_actions"] = acts
             manifest["ui_components"] = ui_desc_components()
+        if approvals.cards_on():
+            manifest["approval_cards"] = True
         if chat_thread.on():
             manifest["ui_v2_chat"] = True
         web = os.environ.get("STUDIO_PUBLIC_ORIGIN", "").strip().rstrip("/")
@@ -1565,7 +1579,7 @@ class Handler(BaseHTTPRequestHandler):
             if not st.set_mcp_direct(v):
                 return self._json(500, {"error": "設定寫不進本機資料夾"})
             out = st.mcp_direct_info()
-            if not out["on"]:
+            if not out["on"] and approvals.cards_on():
                 try:
                     out["revoked"] = st.db.run(lambda c, u: approvals.revoke_direct(c, u))
                 except Exception as e:
@@ -2126,8 +2140,8 @@ class Handler(BaseHTTPRequestHandler):
         return "iamdirector://approve/%s" % cid
 
     def _decide_card(self, c, u, card):
-        if not self._human() and self.state.mcp_direct_on():
-            got, stop = approvals.try_direct(c, u, card)
+        if not approvals.cards_on() or (not self._human() and self.state.mcp_direct_on()):
+            got, stop = approvals.try_direct(c, u, card, require_limits=approvals.cards_on())
             return dict(got, _direct_stop=stop) if stop else dict(got, _direct=True)
         return approvals.try_auto(c, u, card) or approvals.get(c, u, card["id"])
 
@@ -2197,7 +2211,7 @@ class Handler(BaseHTTPRequestHandler):
                "note": "要使用者核准這張卡（或在預先授權上限內），再用 submit_approved 送出"}
         if card.get("direct"):
             out["direct"] = True
-            out["note"] = "Agent 直送：已在你設的上限內核准，直接用 submit_approved 送出"
+            out["note"] = "Agent 直送：已核准（只有你設的上限會擋），直接用 submit_approved 送出"
         return self._json(200, out)
 
     def _spend_run(self, ref, kind):
@@ -2794,7 +2808,7 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         try:
             card = st.db.run(lambda c, u: approvals.claim_for_submit(c, u, body.get("id"), body.get("expect_amount"),
-                                                                      direct_on=st.mcp_direct_on()))
+                                                                      direct_on=st.mcp_direct_on() or not approvals.cards_on()))
         except approvals.ApprovalError as e:
             return self._json(e.code, {"error": e.message})
         if card.get("payload") and approvals.quote_stale(card):
@@ -2892,7 +2906,7 @@ class Handler(BaseHTTPRequestHandler):
         if card.get("status") == "approved":
             try:
                 c = st.db.run(lambda cn, u: approvals.claim_for_submit(cn, u, card["id"], card.get("amount"),
-                                                                       direct_on=st.mcp_direct_on()))
+                                                                       direct_on=st.mcp_direct_on() or not approvals.cards_on()))
                 stop = None
                 if c.get("payload") and approvals.quote_stale(c):
                     c, stop = self._approval_requote(c)
@@ -3103,7 +3117,7 @@ class Handler(BaseHTTPRequestHandler):
             ver = want if want in MCP_VERSIONS else MCP_VERSIONS[0]
             return {"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": ver, "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "iamdirector-local", "version": "dev"}, "instructions": MCP_INSTRUCTIONS}}
+                "serverInfo": {"name": "iamdirector-local", "version": "dev"}, "instructions": mcp_instructions()}}
         if method == "ping":
             return {"jsonrpc": "2.0", "id": mid, "result": {}}
         if method not in ("tools/list", "tools/call"):

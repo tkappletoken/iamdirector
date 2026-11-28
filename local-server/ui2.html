@@ -960,7 +960,7 @@ pre.err { color:var(--ng); }
         
         <div id="srvFlags3Wrap" hidden style="margin-top:14px">
           <div class="printed" style="font-weight:600">對話即介面（測試中）</div>
-          <div class="chk" id="sfUiV2ChatRow" hidden style="margin-top:6px"><input type="checkbox" id="sfUiV2Chat"><label for="sfUiV2Chat">對話區<span class="note"> · 開了之後，外部 Agent 才能用 chat_post／chat_inbox 跟你對話，回話可以夾一張能操作的卡；App 不內建語言模型、不花錢（要花錢的照舊在核准卡上由你按）</span></label></div>
+          <div class="chk" id="sfUiV2ChatRow" hidden style="margin-top:6px"><input type="checkbox" id="sfUiV2Chat"><label for="sfUiV2Chat">對話區<span class="note"> · 開了之後，外部 Agent 才能用 chat_post／chat_inbox 跟你對話，回話可以夾一張能操作的卡；App 不內建語言模型、不花錢（Agent 要花錢的只受你設的上限擋）</span></label></div>
           <div class="hint" id="srvFlags3Note">預設關。改了要重新開啟 App 才生效。</div>
           <button type="button" id="srvFlags3Relaunch" class="ghost" hidden style="margin-top:6px">重新開啟 App 套用</button>
         </div>
@@ -20779,7 +20779,7 @@ document.addEventListener('keydown', e => {
   new MutationObserver(queueTag).observe(document.body, { childList: true, subtree: true });
   queueTag();
 
-  let policy = { cdpConfirm: false };
+  let policy = { cdpConfirm: !(window.__STUDIO__ && window.__STUDIO__.approval_cards) };
   storeGet('agent-policy').then(v => { if (v && typeof v === 'object') policy = Object.assign(policy, v); }).catch(() => {});
   window.__AGENT_POLICY__ = { get: () => Object.assign({}, policy) };
   function setPolicy(p) { policy = Object.assign(policy, p); storeSet('agent-policy', policy); }
@@ -21147,10 +21147,11 @@ document.addEventListener('keydown', e => {
     });
     s2.append(sc);
     const sw = el('label', 'ag-sw');
-    const cConf = el('input'); cConf.type = 'checkbox'; cConf.checked = true; cConf.id = 'agentTokConfirm';
+    const cConf = el('input'); cConf.type = 'checkbox'; cConf.checked = !!(window.__STUDIO__ && window.__STUDIO__.approval_cards); cConf.id = 'agentTokConfirm';
     const swt = el('div'); swt.append(el('b', null, '確認模式：花錢要我按核准'),
       el('span', null, 'Agent 送件時先停在這裡等你按，不會直接扣款。建議一直開著，除非你設了每日上限而且信得過這個 Agent。'));
     sw.append(cConf, swt); s2.append(sw);
+    sw.hidden = !(window.__STUDIO__ && window.__STUDIO__.approval_cards);
     const g2 = el('div', 'ag-grid');
     const fLim = el('div', 'ag-f'); fLim.append(el('label', null, '每日點數上限（空白＝不設）'));
     const iLim = el('input'); iLim.id = 'agentTokLimit'; iLim.type = 'number'; iLim.min = '0'; iLim.step = '1'; iLim.placeholder = '例如 300';
@@ -21225,7 +21226,8 @@ document.addEventListener('keydown', e => {
     const h = el('div', 'ag-rh');
     h.append(el('b', null, tk.name), el('code', null, tk.display));
     tk.scopes.forEach(s => h.append(el('span', 'ag-chip ' + s, s)));
-    h.append(el('span', 'ag-chip ' + (tk.confirm_spend ? 'safe' : 'spend'), tk.confirm_spend ? '確認模式' : '直接送'));
+    const confirmMode = tk.confirm_spend && !!(window.__STUDIO__ && window.__STUDIO__.approval_cards);
+    h.append(el('span', 'ag-chip ' + (confirmMode ? 'safe' : 'spend'), confirmMode ? '確認模式' : '直接送'));
     if (!tk.active) h.append(el('span', 'ag-chip delete', tk.revoked_at ? '已撤銷' : '已過期'));
     r.append(h);
     const lim = tk.daily_points_limit != null ? Number(tk.daily_points_limit) : null, used = Number(tk.spent_today || 0);
@@ -21247,6 +21249,7 @@ document.addEventListener('keydown', e => {
       const tg = el('button', 'ag-btn', tk.confirm_spend ? '改成直接送' : '開確認模式'); tg.type = 'button';
       tg.dataset.agent = 'agent-token-confirm:' + tk.id;
       tg.onclick = async () => { await api('POST', '/api/agent/tokens/update', { id: tk.id, confirm_spend: !tk.confirm_spend }); load(); };
+      tg.hidden = !(window.__STUDIO__ && window.__STUDIO__.approval_cards);
       const lb = el('button', 'ag-btn', '改上限'); lb.type = 'button'; lb.dataset.agent = 'agent-token-limit:' + tk.id;
       lb.onclick = () => {
         const f = el('input'); f.type = 'number'; f.min = '0'; f.value = lim != null ? lim : ''; f.placeholder = '空白＝不設';
@@ -25923,6 +25926,7 @@ document.addEventListener('keydown', e => {
   const S = window.__STUDIO__;
   if (!S) return;
   const LOCAL = !!S.local;
+  const CARDS = !!S.approval_cards;
   const WEB = String(S.web_origin || '').replace(/\/+$/, '');
   const ID_RE = /^apv_[A-Za-z0-9]{16,32}$/, BATCH_RE = /^apb_[A-Za-z0-9]{16,32}$/;
   const el = (tag, css, text) => { const x = document.createElement(tag); if (css) x.style.cssText = css; if (text != null) x.textContent = text; return x; };
@@ -26188,6 +26192,7 @@ document.addEventListener('keydown', e => {
 
   let pill = null, label = null, badge = null, known = null;
   async function paintPill() {
+    if (!CARDS) { if (pill) pill.hidden = true; return; }
     const r = await getJ('/api/approvals?status=pending').catch(() => null);
     if (!r || !r.ok) return;
     const items = r.d.items || [], n = items.length;
@@ -26317,9 +26322,13 @@ document.addEventListener('keydown', e => {
   const fullAdds = list => SCOPE_WORDS.filter(([re]) => (list || []).some(x => re.test(x))).map(([, w]) => w);
   const ROWS = [
     { id: 'agLoop', path: '/api/local/agent-loop', env: 'STUDIO_LOCAL_AGENT_LOOP',
-      base: '打開之後，Agent（例如 Claude Code）可以經本機 MCP 自己規劃、生成、檢查、交片。花錢照舊：每一鏡都先出核准卡，沒有預先授權就停下來等你。預設關。' },
+      base: '打開之後，Agent（例如 Claude Code）可以經本機 MCP 自己規劃、生成、檢查、交片。' + (!!(window.__STUDIO__ && window.__STUDIO__.approval_cards)
+        ? '花錢照舊：每一鏡都先出核准卡，沒有預先授權就停下來等你。預設關。'
+        : '花錢不用等你點頭，只有你設的單支／每日上限會擋（超過就停下來告訴你）。預設關。') },
     { id: 'agDirect', path: '/api/local/mcp-direct', env: 'STUDIO_LOCAL_MCP_DIRECT',
-      base: '打開之後，Agent 的報價在你設的上限內就直接送出、不用每次等你點頭（會花錢，但不會超過上限）；超過上限照樣停下來等你。關掉時，還沒送出的直送核准一律收回。預設關。' },
+      base: !!(window.__STUDIO__ && window.__STUDIO__.approval_cards)
+        ? '打開之後，Agent 的報價在你設的上限內就直接送出、不用每次等你點頭（會花錢，但不會超過上限）；超過上限照樣停下來等你。關掉時，還沒送出的直送核准一律收回。預設關。'
+        : 'Agent 一律直接執行、不用等你點頭（會花錢，但不會超過上限）：只有你設的單支／每日上限會擋，超過就直接回錯誤；沒設就不擋。按「上限」設定。' },
     { id: 'agScope', path: '/api/local/agent-scope', env: 'STUDIO_LOCAL_AGENT_SCOPE', key: 'scope' },
     { id: 'agQc', path: '/api/local/agent-qc', env: 'STUDIO_LOCAL_AGENT_QC',
       base: '打開之後，每拍好一鏡會自動送一張驗片。會花錢：每鏡一張驗片卡，走預先授權與上限。預設關。' },
@@ -27098,7 +27107,7 @@ window.__UI_CTX__ = { resolve: kind => uiCtxResolve(kind, uiCtxEnv()) };
   const MOUNT = {
     agent_run: c => (window.__AGENTRUN__ && window.__AGENTRUN__.mount ? (window.__AGENTRUN__.mount(c), () => window.__AGENTRUN__.unmount()) : null),
     film_preview: c => MOUNT.agent_run(c),
-    approvals: c => (window.__APPROVALS__ && window.__APPROVALS__.mountList ? (window.__APPROVALS__.mountList(c), () => window.__APPROVALS__.unmountList()) : null),
+    approvals: c => (!!(window.__STUDIO__ && window.__STUDIO__.approval_cards) && window.__APPROVALS__ && window.__APPROVALS__.mountList ? (window.__APPROVALS__.mountList(c), () => window.__APPROVALS__.unmountList()) : null),
   };
   const afterRender = d => {
     if (d.panels.some(p => p.items.some(it => it.action === 'agent.panel')) && window.__AGENTRUN__ && window.__AGENTRUN__.autoEnable) {
@@ -28546,7 +28555,7 @@ function agFilmModel(st, items) {
   const MOUNT = {
     agent_run: c => (window.__AGENTRUN__ && window.__AGENTRUN__.mount ? (window.__AGENTRUN__.mount(c), () => window.__AGENTRUN__.unmount()) : null),
     film_preview: c => MOUNT.agent_run(c),
-    approvals: c => (window.__APPROVALS__ && window.__APPROVALS__.mountList ? (window.__APPROVALS__.mountList(c), () => window.__APPROVALS__.unmountList()) : null),
+    approvals: c => (!!(window.__STUDIO__ && window.__STUDIO__.approval_cards) && window.__APPROVALS__ && window.__APPROVALS__.mountList ? (window.__APPROVALS__.mountList(c), () => window.__APPROVALS__.unmountList()) : null),
     stage: c => {
       const sm = window.__SIMPLE__;
       const pid = sm && sm.pid, w = pid && sm.works ? sm.works[pid] : null;
@@ -28575,7 +28584,8 @@ function agFilmModel(st, items) {
   x.setAttribute('aria-label', '收起對話');
   head.append(x);
   const list = el('div', 'chat-list');
-  const note = el('p', 'chat-note', '外部 Agent 經 MCP 的 chat_inbox 讀你說的話、chat_post 回話。要花錢的事照舊要你在核准卡上按。');
+  const note = el('p', 'chat-note', '外部 Agent 經 MCP 的 chat_inbox 讀你說的話、chat_post 回話。' +
+    (!!(window.__STUDIO__ && window.__STUDIO__.approval_cards) ? '要花錢的事照舊要你在核准卡上按。' : '要花錢的事 Agent 直接做，只有你在設定設的上限會擋。'));
   const form = el('form', 'chat-form');
   const input = el('textarea', 'chat-input');
   input.rows = 2;
